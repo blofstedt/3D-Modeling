@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { RotateCcw, Compass, Maximize2 } from 'lucide-react';
+import { House } from 'lucide-react';
 
 export type CubeFace = 'top' | 'bottom' | 'front' | 'back' | 'right' | 'left' | 'iso';
 
@@ -15,165 +15,93 @@ interface ViewCubeProps {
   onResetCamera: () => void;
 }
 
+const SIZE = 64;
+const HALF = SIZE / 2;
+
+// Each face sits on its world axis. The cube lives in a CSS frame that is the
+// world frame with Y flipped (CSS y points down), hence the -90/90 on top/bottom.
+const FACES: { face: Exclude<CubeFace, 'iso'>; label: string; transform: string }[] = [
+  { face: 'front', label: 'Front', transform: `translateZ(${HALF}px)` },
+  { face: 'back', label: 'Back', transform: `rotateY(180deg) translateZ(${HALF}px)` },
+  { face: 'right', label: 'Right', transform: `rotateY(90deg) translateZ(${HALF}px)` },
+  { face: 'left', label: 'Left', transform: `rotateY(-90deg) translateZ(${HALF}px)` },
+  { face: 'top', label: 'Top', transform: `rotateX(90deg) translateZ(${HALF}px)` },
+  { face: 'bottom', label: 'Bottom', transform: `rotateX(-90deg) translateZ(${HALF}px)` },
+];
+
 export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCubeProps) {
-  const [transformStyle, setTransformStyle] = useState<string>('');
-  const [hoveredFace, setHoveredFace] = useState<string | null>(null);
+  const cubeRef = useRef<HTMLDivElement | null>(null);
 
+  // Mirror the camera orientation straight onto the DOM (no React re-render per frame).
   useEffect(() => {
-    let animId: number;
-    const tempMat = new THREE.Matrix4();
-    const tempEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    if (!camera) return;
+    const q = new THREE.Quaternion();
+    const m = new THREE.Matrix4();
+    const e = new Array<number>(16);
+    let raf = 0;
 
-    const updateRotation = () => {
-      if (camera) {
-        // Extract camera rotation inverse so cube matches scene view
-        tempMat.copy(camera.matrixWorldInverse);
-        tempEuler.setFromRotationMatrix(tempMat, 'YXZ');
-        
-        // CSS 3D uses degrees; invert Pitch/Yaw to match screen orientation
-        const rotX = THREE.MathUtils.radToDeg(tempEuler.x);
-        const rotY = THREE.MathUtils.radToDeg(tempEuler.y);
-        const rotZ = THREE.MathUtils.radToDeg(tempEuler.z);
-
-        setTransformStyle(`rotateX(${-rotX}deg) rotateY(${rotY}deg) rotateZ(${-rotZ}deg)`);
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const el = cubeRef.current;
+      if (!el) return;
+      // World -> view rotation is the inverse of the camera orientation.
+      q.copy(camera.quaternion).invert();
+      m.makeRotationFromQuaternion(q);
+      const r = m.elements; // column-major
+      // S = F * R * F with F = diag(1,-1,1) converts to CSS's y-down frame.
+      const f = [1, -1, 1];
+      for (let col = 0; col < 3; col++) {
+        for (let row = 0; row < 3; row++) {
+          e[col * 4 + row] = f[row] * r[col * 4 + row] * f[col];
+        }
+        e[col * 4 + 3] = 0;
       }
-      animId = requestAnimationFrame(updateRotation);
+      e[12] = e[13] = e[14] = 0;
+      e[15] = 1;
+      el.style.transform = `matrix3d(${e.join(',')})`;
     };
-
-    updateRotation();
-    return () => cancelAnimationFrame(animId);
+    tick();
+    return () => cancelAnimationFrame(raf);
   }, [camera]);
 
-  const size = 68; // cube size in pixels
-  const half = size / 2;
-
-  const faceStyle = (
-    translateZ: number,
-    rotateX: number,
-    rotateY: number,
-    isHovered: boolean
-  ): React.CSSProperties => ({
-    position: 'absolute',
-    width: `${size}px`,
-    height: `${size}px`,
-    transform: `rotateY(${rotateY}deg) rotateX(${rotateX}deg) translateZ(${translateZ}px)`,
-    backfaceVisibility: 'hidden',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '9px',
-    fontWeight: 700,
-    fontFamily: 'monospace',
-    letterSpacing: '0.05em',
-    border: '1px solid rgba(56, 189, 248, 0.35)',
-    backgroundColor: isHovered ? 'rgba(6, 182, 212, 0.45)' : 'rgba(15, 23, 42, 0.85)',
-    color: isHovered ? '#ffffff' : '#94a3b8',
-    cursor: 'pointer',
-    userSelect: 'none',
-    boxShadow: isHovered ? '0 0 12px rgba(6, 182, 212, 0.5)' : 'inset 0 0 8px rgba(0, 0, 0, 0.5)',
-    transition: 'background-color 0.15s, color 0.15s, box-shadow 0.15s',
-  });
-
   return (
-    <div className="absolute top-3 right-3 z-30 flex flex-col items-center gap-1.5 pointer-events-auto">
-      {/* 3D Interactive View Cube Container */}
-      <div
-        className="relative"
-        style={{
-          width: `${size + 24}px`,
-          height: `${size + 24}px`,
-          perspective: '450px',
-        }}
-        title="Shapr3D View Cube (Click face to orient)"
-      >
+    <div className="absolute top-3 right-3 z-20 flex flex-col items-center gap-1 pointer-events-auto">
+      <div className="relative" style={{ width: SIZE + 28, height: SIZE + 28, perspective: 380 }}>
         <div
-          className="absolute inset-0 flex items-center justify-center pointer-events-auto"
+          ref={cubeRef}
+          className="absolute"
           style={{
+            left: 14,
+            top: 14,
+            width: SIZE,
+            height: SIZE,
             transformStyle: 'preserve-3d',
-            transform: transformStyle,
-            transition: 'transform 0.04s ease-out',
           }}
         >
-          {/* TOP */}
-          <div
-            style={faceStyle(half, 90, 0, hoveredFace === 'top')}
-            onMouseEnter={() => setHoveredFace('top')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('top')}
-          >
-            TOP
-          </div>
-
-          {/* BOTTOM */}
-          <div
-            style={faceStyle(half, -90, 0, hoveredFace === 'bottom')}
-            onMouseEnter={() => setHoveredFace('bottom')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('bottom')}
-          >
-            BOTTOM
-          </div>
-
-          {/* FRONT */}
-          <div
-            style={faceStyle(half, 0, 0, hoveredFace === 'front')}
-            onMouseEnter={() => setHoveredFace('front')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('front')}
-          >
-            FRONT
-          </div>
-
-          {/* BACK */}
-          <div
-            style={faceStyle(half, 0, 180, hoveredFace === 'back')}
-            onMouseEnter={() => setHoveredFace('back')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('back')}
-          >
-            BACK
-          </div>
-
-          {/* RIGHT */}
-          <div
-            style={faceStyle(half, 0, 90, hoveredFace === 'right')}
-            onMouseEnter={() => setHoveredFace('right')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('right')}
-          >
-            RIGHT
-          </div>
-
-          {/* LEFT */}
-          <div
-            style={faceStyle(half, 0, -90, hoveredFace === 'left')}
-            onMouseEnter={() => setHoveredFace('left')}
-            onMouseLeave={() => setHoveredFace(null)}
-            onClick={() => onSelectFace('left')}
-          >
-            LEFT
-          </div>
+          {FACES.map(({ face, label, transform }) => (
+            <button
+              key={face}
+              type="button"
+              onClick={() => onSelectFace(face)}
+              aria-label={`${label} view`}
+              className="absolute inset-0 flex items-center justify-center text-[11px] font-medium text-slate-300 bg-slate-800/90 border border-white/15 hover:bg-accent-500 hover:text-white hover:border-accent-300 transition-colors"
+              style={{ transform, backfaceVisibility: 'hidden' }}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
-
-      {/* Quick Navigation Control Strip */}
-      <div className="flex items-center gap-1 bg-slate-900/90 backdrop-blur-md px-1.5 py-1 rounded-xl border border-slate-700/80 shadow-lg text-[10px] font-mono text-slate-300">
-        <button
-          onClick={() => onSelectFace('iso')}
-          className="px-2 py-0.5 rounded hover:bg-cyan-500/20 hover:text-cyan-300 text-white/80 font-bold transition cursor-pointer"
-          title="Isometric View"
-        >
-          ISO
-        </button>
-        <div className="h-3 w-[1px] bg-slate-700" />
-        <button
-          onClick={onResetCamera}
-          className="p-1 rounded hover:bg-cyan-500/20 hover:text-cyan-300 text-white/80 transition cursor-pointer"
-          title="Reset Camera & Center Plane"
-        >
-          <RotateCcw size={12} />
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={onResetCamera}
+        aria-label="Fit model in view"
+        title="Fit model in view"
+        className="h-7 px-2.5 rounded-lg bg-slate-900/90 border border-white/10 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 text-xs transition-colors"
+      >
+        <House size={13} />
+        Home
+      </button>
     </div>
   );
 }

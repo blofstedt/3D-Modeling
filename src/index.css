@@ -1,37 +1,100 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  /* Neutral graphite scale replaces Tailwind's blue-tinted slate. */
+  --color-slate-50: #f5f6f8;
+  --color-slate-100: #e9ebef;
+  --color-slate-200: #d3d6dd;
+  --color-slate-300: #b0b5bf;
+  --color-slate-400: #8a909c;
+  --color-slate-500: #6a707c;
+  --color-slate-600: #4a4f59;
+  --color-slate-700: #30343c;
+  --color-slate-800: #23262c;
+  --color-slate-900: #1a1c21;
+  --color-slate-950: #121317;
+
+  /* Single product accent. */
+  --color-accent-50: #eff5ff;
+  --color-accent-100: #dbe8ff;
+  --color-accent-200: #bcd4ff;
+  --color-accent-300: #8fb6ff;
+  --color-accent-400: #5f93fb;
+  --color-accent-500: #3b7bf6;
+  --color-accent-600: #2563e0;
+  --color-accent-700: #1d4fb8;
 }
 
-/* Custom glass styling and neat scrollbars for workspace lists */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-slate-950);
+  color: var(--color-slate-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+
+/* Quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.6);
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(96, 165, 250, 0.8);
+  background: rgba(255, 255, 255, 0.28);
 }
 
-.animate-spin-slow {
-  animation: spin 16s linear infinite;
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
+/* Range inputs */
+input[type="range"] {
+  accent-color: var(--color-accent-400);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
-  to {
-    transform: rotate(360deg);
-  }
 }
-

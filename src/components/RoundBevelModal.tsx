@@ -9,22 +9,18 @@ import { Sparkles, X, CornerDownRight, Check, Sliders } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface RoundBevelModalProps {
-  isOpen: boolean;
   onClose: () => void;
-  selectedBody: Body3D | null;
+  selectedBody: Body3D;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
   onApplyCornerRadius: (id: string, radius: number) => void;
 }
 
 export default function RoundBevelModal({
-  isOpen,
   onClose,
   selectedBody,
   onUpdateBody,
   onApplyCornerRadius,
 }: RoundBevelModalProps) {
-  if (!isOpen || !selectedBody) return null;
-
   const cornerRadius = selectedBody.cornerRadius || 0;
   const bevelEnabled = selectedBody.bevelEnabled !== undefined ? selectedBody.bevelEnabled : true;
   const bevelSize = selectedBody.bevelSize !== undefined ? selectedBody.bevelSize : 1;
@@ -45,10 +41,10 @@ export default function RoundBevelModal({
               <Sparkles size={18} />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white tracking-wide">
+              <h2 className="text-sm font-semibold text-white tracking-wide">
                 Round Corners &amp; Bevel Edges
               </h2>
-              <p className="text-[11px] text-white/50 font-mono">
+              <p className="text-[11px] text-white/50 ">
                 Target: <span className="text-amber-300 font-semibold">{selectedBody.name}</span>
               </p>
             </div>
@@ -69,12 +65,12 @@ export default function RoundBevelModal({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <CornerDownRight size={16} className="text-amber-400" />
-                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                <span className="text-xs font-semibold text-white ">
                   1. Round Corners (2D Fillet)
                 </span>
               </div>
-              <span className="text-xs font-mono font-bold text-amber-300 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
-                {cornerRadius} px radius
+              <span className="text-xs  font-semibold text-amber-300 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
+                {cornerRadius} mm radius
               </span>
             </div>
 
@@ -93,7 +89,7 @@ export default function RoundBevelModal({
                 onChange={(e) => onApplyCornerRadius(selectedBody.id, parseInt(e.target.value))}
                 className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-400 focus:outline-none"
               />
-              <div className="flex justify-between text-[9px] font-mono text-white/30">
+              <div className="flex justify-between text-[11px]  text-white/30">
                 <span>0 (Sharp)</span>
                 <span>10 (Subtle)</span>
                 <span>20 (Smooth)</span>
@@ -103,7 +99,7 @@ export default function RoundBevelModal({
 
             {/* Quick preset chips */}
             <div className="flex items-center gap-1.5 pt-1">
-              <span className="text-[10px] text-white/40 font-mono mr-1">Presets:</span>
+              <span className="text-[11px] text-white/40  mr-1">Presets:</span>
               {[
                 { label: 'Sharp', val: 0 },
                 { label: 'Subtle', val: 4 },
@@ -113,9 +109,9 @@ export default function RoundBevelModal({
                 <button
                   key={p.label}
                   onClick={() => onApplyCornerRadius(selectedBody.id, p.val)}
-                  className={`px-2 py-1 rounded-lg text-[10px] font-mono cursor-pointer transition border ${
+                  className={`px-2 py-1 rounded-lg text-[11px]  cursor-pointer transition border ${
                     cornerRadius === p.val
-                      ? 'bg-amber-500/20 border-amber-400 text-amber-300 font-bold'
+                      ? 'bg-amber-500/20 border-amber-400 text-amber-300 font-semibold'
                       : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
                   }`}
                 >
@@ -129,22 +125,22 @@ export default function RoundBevelModal({
           <div className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Sliders size={16} className="text-cyan-400" />
-                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                <Sliders size={16} className="text-accent-400" />
+                <span className="text-xs font-semibold text-white ">
                   2. Bevel &amp; Round 3D Edges
                 </span>
               </div>
 
               {/* Bevel Toggle */}
               <label className="flex items-center gap-2 cursor-pointer select-none">
-                <span className="text-[11px] font-mono text-white/50">
+                <span className="text-[11px]  text-white/50">
                   {bevelEnabled ? 'Enabled' : 'Disabled'}
                 </span>
                 <input
                   type="checkbox"
                   checked={bevelEnabled}
                   onChange={(e) => onUpdateBody(selectedBody.id, { bevelEnabled: e.target.checked })}
-                  className="rounded border-white/20 text-cyan-500 focus:ring-0 w-4 h-4 cursor-pointer accent-cyan-400"
+                  className="rounded border-white/20 text-accent-500 focus:ring-0 w-4 h-4 cursor-pointer accent-accent-400"
                 />
               </label>
             </div>
@@ -157,7 +153,7 @@ export default function RoundBevelModal({
               <div className="flex flex-col gap-3.5 pt-1">
                 {/* Style Selector: Chamfer vs Round */}
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] font-mono uppercase tracking-wider text-white/40">
+                  <label className="text-[11px] text-white/40">
                     Edge Profile Style
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -165,12 +161,12 @@ export default function RoundBevelModal({
                       onClick={() => onUpdateBody(selectedBody.id, { bevelSegments: 1 })}
                       className={`py-2 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex flex-col gap-0.5 ${
                         bevelSegments <= 1
-                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 font-bold'
+                          ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                           : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
                       }`}
                     >
                       <span>Chamfer (Flat Cut)</span>
-                      <span className="text-[9px] font-mono text-white/40 font-normal">
+                      <span className="text-[11px]  text-white/40 font-normal">
                         Clean 45° planar angle
                       </span>
                     </button>
@@ -179,12 +175,12 @@ export default function RoundBevelModal({
                       onClick={() => onUpdateBody(selectedBody.id, { bevelSegments: 4 })}
                       className={`py-2 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex flex-col gap-0.5 ${
                         bevelSegments > 1
-                          ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 font-bold'
+                          ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                           : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
                       }`}
                     >
                       <span>Fillet (Rounded)</span>
-                      <span className="text-[9px] font-mono text-white/40 font-normal">
+                      <span className="text-[11px]  text-white/40 font-normal">
                         Smooth circular curve
                       </span>
                     </button>
@@ -193,9 +189,9 @@ export default function RoundBevelModal({
 
                 {/* Bevel Size Slider */}
                 <div className="flex flex-col gap-1.5">
-                  <div className="flex justify-between text-[11px] font-mono text-white/60">
+                  <div className="flex justify-between text-[11px]  text-white/60">
                     <span>Edge Bevel Size / Depth</span>
-                    <span className="text-cyan-300 font-bold">{bevelSize} units</span>
+                    <span className="text-accent-300 font-semibold">{bevelSize} mm</span>
                   </div>
                   <input
                     type="range"
@@ -204,9 +200,9 @@ export default function RoundBevelModal({
                     step="0.5"
                     value={bevelSize}
                     onChange={(e) => onUpdateBody(selectedBody.id, { bevelSize: parseFloat(e.target.value) })}
-                    className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
+                    className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-400 focus:outline-none"
                   />
-                  <div className="flex justify-between text-[9px] font-mono text-white/30">
+                  <div className="flex justify-between text-[11px]  text-white/30">
                     <span>0.5 (Fine)</span>
                     <span>5.0 (Moderate)</span>
                     <span>12.0 (Bold)</span>
@@ -223,7 +219,7 @@ export default function RoundBevelModal({
         <div className="px-6 py-4 border-t border-white/10 flex items-center justify-end bg-white/5">
           <button
             onClick={onClose}
-            className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold transition-all shadow-lg shadow-cyan-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
+            className="px-5 py-2.5 bg-accent-500 hover:bg-accent-400 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-accent-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
           >
             <Check size={14} />
             <span>Done</span>

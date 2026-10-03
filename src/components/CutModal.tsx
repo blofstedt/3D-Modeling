@@ -9,7 +9,6 @@ import { Scissors, ArrowRightLeft, Check, X, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface CutModalProps {
-  isOpen: boolean;
   onClose: () => void;
   bodies: Body3D[];
   initialTargetId: string | null;
@@ -17,14 +16,11 @@ interface CutModalProps {
 }
 
 export default function CutModal({
-  isOpen,
   onClose,
   bodies,
   initialTargetId,
   onApplyCut,
 }: CutModalProps) {
-  if (!isOpen) return null;
-
   // Default target is the selected body or the first body
   const availableBodies = bodies.filter((b) => b.visible);
   const defaultTargetId = initialTargetId || (availableBodies[0] ? availableBodies[0].id : '');
@@ -65,10 +61,10 @@ export default function CutModal({
               <Scissors size={18} />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white tracking-wide">
+              <h2 className="text-sm font-semibold text-white tracking-wide">
                 Cut Shape Out Of Another
               </h2>
-              <p className="text-[11px] text-white/50 font-mono">
+              <p className="text-[11px] text-white/50 ">
                 Boolean Subtraction &amp; Interior Cutouts
               </p>
             </div>
@@ -91,16 +87,16 @@ export default function CutModal({
           ) : (
             <>
               <div className="text-xs text-white/70 leading-relaxed">
-                Select the <span className="text-cyan-300 font-semibold">base shape to keep</span>, and the <span className="text-rose-400 font-semibold">cutter shape to subtract</span> from it.
+                Select the <span className="text-accent-300 font-semibold">base shape to keep</span>, and the <span className="text-rose-400 font-semibold">cutter shape to subtract</span> from it.
               </div>
 
               {/* Target & Cutter Selector Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center relative">
                 
                 {/* Target Box (To Keep) */}
-                <div className="bg-white/5 border border-cyan-500/40 rounded-xl p-3 flex flex-col gap-2 relative">
+                <div className="bg-white/5 border border-accent-500/40 rounded-xl p-3 flex flex-col gap-2 relative">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-400 font-bold">
+                    <span className="text-[11px] text-accent-400 font-semibold">
                       1. Base Shape (Keep)
                     </span>
                     {targetBody && (
@@ -114,16 +110,16 @@ export default function CutModal({
                   <select
                     value={targetId}
                     onChange={(e) => setTargetId(e.target.value)}
-                    className="bg-slate-800 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400 font-medium cursor-pointer"
+                    className="bg-slate-800 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-accent-400 font-medium cursor-pointer"
                   >
                     {availableBodies.map((b) => (
                       <option key={b.id} value={b.id} disabled={b.id === cutterId}>
-                        {b.name} ({b.extrusionHeight}u)
+                        {b.name} ({b.extrusionHeight} mm)
                       </option>
                     ))}
                   </select>
 
-                  <div className="text-[10px] text-white/40 font-mono truncate">
+                  <div className="text-[11px] text-white/40  truncate">
                     {targetBody ? `${targetBody.points.length} vertices • Height: ${targetBody.extrusionHeight}u` : 'None selected'}
                   </div>
                 </div>
@@ -140,7 +136,7 @@ export default function CutModal({
                 {/* Cutter Box (To Subtract) */}
                 <div className="bg-white/5 border border-rose-500/40 rounded-xl p-3 flex flex-col gap-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono uppercase tracking-widest text-rose-400 font-bold">
+                    <span className="text-[11px] text-rose-400 font-semibold">
                       2. Cutter (Subtract)
                     </span>
                     {cutterBody && (
@@ -158,12 +154,12 @@ export default function CutModal({
                   >
                     {availableBodies.map((b) => (
                       <option key={b.id} value={b.id} disabled={b.id === targetId}>
-                        {b.name} ({b.extrusionHeight}u)
+                        {b.name} ({b.extrusionHeight} mm)
                       </option>
                     ))}
                   </select>
 
-                  <div className="text-[10px] text-white/40 font-mono truncate">
+                  <div className="text-[11px] text-white/40  truncate">
                     {cutterBody ? `${cutterBody.points.length} vertices • Will be carved out` : 'None selected'}
                   </div>
                 </div>
@@ -176,17 +172,17 @@ export default function CutModal({
                   type="checkbox"
                   checked={keepCutter}
                   onChange={(e) => setKeepCutter(e.target.checked)}
-                  className="rounded border-white/20 text-cyan-500 focus:ring-0 w-4 h-4 cursor-pointer accent-cyan-400"
+                  className="rounded border-white/20 text-accent-500 focus:ring-0 w-4 h-4 cursor-pointer accent-accent-400"
                 />
                 <span>Keep a copy of cutter shape in workspace after cutting</span>
               </label>
 
               {/* Dynamic Action Explanation */}
               {targetBody && cutterBody && (
-                <div className="bg-slate-950/60 border border-white/10 rounded-xl p-3 text-[11px] font-mono text-white/60">
+                <div className="bg-slate-950/60 border border-white/10 rounded-xl p-3 text-[11px]  text-white/60">
                   <strong className="text-white">Operation:</strong> Will carve{' '}
                   <span className="text-rose-400 font-semibold">{cutterBody.name}</span> out of{' '}
-                  <span className="text-cyan-300 font-semibold">{targetBody.name}</span>.
+                  <span className="text-accent-300 font-semibold">{targetBody.name}</span>.
                 </div>
               )}
             </>
@@ -204,7 +200,7 @@ export default function CutModal({
           <button
             onClick={handlePerformCut}
             disabled={!targetId || !cutterId || targetId === cutterId}
-            className="px-5 py-2.5 bg-rose-500 hover:bg-rose-400 disabled:opacity-30 disabled:pointer-events-none text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-rose-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
+            className="px-5 py-2.5 bg-rose-500 hover:bg-rose-400 disabled:opacity-30 disabled:pointer-events-none text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-rose-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
           >
             <Scissors size={14} />
             <span>Cut Shape Out</span>

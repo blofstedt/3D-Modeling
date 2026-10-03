@@ -9,9 +9,8 @@ import { Repeat, X, PenTool, Check, ArrowRight, CornerUpRight, RotateCw, Compass
 import { motion } from 'motion/react';
 
 interface RepeatPatternModalProps {
-  isOpen: boolean;
   onClose: () => void;
-  selectedBody: Body3D | null;
+  selectedBody: Body3D;
   repeatConfig: RepeatConfig;
   setRepeatConfig: React.Dispatch<React.SetStateAction<RepeatConfig>>;
   onStartDrawingLine: () => void;
@@ -19,7 +18,6 @@ interface RepeatPatternModalProps {
 }
 
 export default function RepeatPatternModal({
-  isOpen,
   onClose,
   selectedBody,
   repeatConfig,
@@ -27,8 +25,6 @@ export default function RepeatPatternModal({
   onStartDrawingLine,
   onApplyPattern,
 }: RepeatPatternModalProps) {
-  if (!isOpen || !selectedBody) return null;
-
   // Compute default start/end if not already set by drawing
   const ensureDefaultPoints = () => {
     if (!repeatConfig.startPoint || !repeatConfig.endPoint) {
@@ -73,15 +69,15 @@ export default function RepeatPatternModal({
         {/* Header */}
         <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-white/5 shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-xl">
+            <div className="p-2 bg-accent-500/20 text-accent-400 border border-accent-500/30 rounded-xl">
               <Repeat size={18} />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white tracking-wide">
+              <h2 className="text-sm font-semibold text-white tracking-wide">
                 Repeat Pattern Along Line or Curve
               </h2>
-              <p className="text-[11px] text-white/50 font-mono">
-                Target: <span className="text-cyan-300 font-semibold">{selectedBody.name}</span>
+              <p className="text-[11px] text-white/50 ">
+                Target: <span className="text-accent-300 font-semibold">{selectedBody.name}</span>
               </p>
             </div>
           </div>
@@ -98,7 +94,7 @@ export default function RepeatPatternModal({
           
           {/* Pattern Type Selector */}
           <div className="flex flex-col gap-2">
-            <label className="text-[10px] font-mono uppercase tracking-wider text-white/40">
+            <label className="text-[11px] text-white/40">
               Trajectory Geometry
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -106,14 +102,14 @@ export default function RepeatPatternModal({
                 onClick={() => setRepeatConfig((prev) => ({ ...prev, type: 'linear' }))}
                 className={`py-2.5 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
                   repeatConfig.type === 'linear'
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 font-bold'
+                    ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                     : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <ArrowRight size={16} className="text-cyan-400" />
+                <ArrowRight size={16} className="text-accent-400" />
                 <div className="flex flex-col">
                   <span>Straight Line</span>
-                  <span className="text-[9px] font-mono text-white/40 font-normal">
+                  <span className="text-[11px]  text-white/40 font-normal">
                     Equally spaced linear array
                   </span>
                 </div>
@@ -123,14 +119,14 @@ export default function RepeatPatternModal({
                 onClick={() => setRepeatConfig((prev) => ({ ...prev, type: 'curved' }))}
                 className={`py-2.5 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
                   repeatConfig.type === 'curved'
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 font-bold'
+                    ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                     : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
                 }`}
               >
-                <CornerUpRight size={16} className="text-cyan-400" />
+                <CornerUpRight size={16} className="text-accent-400" />
                 <div className="flex flex-col">
                   <span>Curved Line / Arc</span>
-                  <span className="text-[9px] font-mono text-white/40 font-normal">
+                  <span className="text-[11px]  text-white/40 font-normal">
                     Follows contour curvature
                   </span>
                 </div>
@@ -139,11 +135,11 @@ export default function RepeatPatternModal({
           </div>
 
           {/* Draw Line Against Object Button */}
-          <div className="bg-gradient-to-r from-cyan-500/10 via-indigo-500/10 to-transparent p-4 rounded-2xl border border-cyan-400/20 flex flex-col gap-3">
+          <div className="bg-gradient-to-r from-accent-500/10 via-indigo-500/10 to-transparent p-4 rounded-2xl border border-accent-400/20 flex flex-col gap-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <PenTool size={14} className="text-cyan-400" />
+                <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <PenTool size={14} className="text-accent-400" />
                   Draw Guideline Against Object
                 </h4>
                 <p className="text-[11px] text-white/60 mt-1 leading-relaxed">
@@ -156,7 +152,7 @@ export default function RepeatPatternModal({
                   onClose();
                   onStartDrawingLine();
                 }}
-                className="shrink-0 px-3 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold transition-all shadow-md shadow-cyan-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
+                className="shrink-0 px-3 py-2 bg-accent-500 hover:bg-accent-400 text-white rounded-xl text-xs font-semibold transition-all shadow-md shadow-accent-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
               >
                 <Compass size={13} />
                 <span>Draw Path Now</span>
@@ -164,18 +160,18 @@ export default function RepeatPatternModal({
             </div>
 
             {repeatConfig.startPoint && repeatConfig.endPoint && (
-              <div className="bg-slate-950/60 p-2.5 rounded-xl border border-white/10 flex items-center justify-between text-[10px] font-mono text-white/60">
+              <div className="bg-slate-950/60 p-2.5 rounded-xl border border-white/10 flex items-center justify-between text-[11px]  text-white/60">
                 <span>Drawn Path: ({repeatConfig.startPoint.x}, {repeatConfig.startPoint.y}) → ({repeatConfig.endPoint.x}, {repeatConfig.endPoint.y})</span>
-                <span className="text-cyan-300 font-bold">{lineLength} units length</span>
+                <span className="text-accent-300 font-semibold">{lineLength} mm long</span>
               </div>
             )}
           </div>
 
           {/* Repeat Count Slider */}
           <div className="flex flex-col gap-2">
-            <div className="flex justify-between text-xs font-mono">
-              <span className="text-white/60 uppercase tracking-wider">Number of Copies</span>
-              <span className="text-cyan-300 font-bold">{repeatConfig.count} items</span>
+            <div className="flex justify-between text-xs ">
+              <span className="text-white/60">Total items (including the original)</span>
+              <span className="text-accent-300 font-semibold">{repeatConfig.count} total</span>
             </div>
             <input
               type="range"
@@ -184,12 +180,12 @@ export default function RepeatPatternModal({
               step="1"
               value={repeatConfig.count}
               onChange={(e) => setRepeatConfig((prev) => ({ ...prev, count: parseInt(e.target.value) }))}
-              className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
+              className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-400 focus:outline-none"
             />
-            <div className="flex justify-between text-[9px] font-mono text-white/30">
-              <span>2 copies</span>
-              <span>10 copies</span>
-              <span>20 copies</span>
+            <div className="flex justify-between text-[11px]  text-white/30">
+              <span>2</span>
+              <span>10</span>
+              <span>20</span>
             </div>
           </div>
 
@@ -200,13 +196,13 @@ export default function RepeatPatternModal({
                 type="checkbox"
                 checked={repeatConfig.followCurve}
                 onChange={(e) => setRepeatConfig((prev) => ({ ...prev, followCurve: e.target.checked }))}
-                className="rounded border-white/20 text-cyan-500 focus:ring-0 w-4 h-4 cursor-pointer accent-cyan-400"
+                className="rounded border-white/20 text-accent-500 focus:ring-0 w-4 h-4 cursor-pointer accent-accent-400"
               />
               <div className="flex flex-col">
                 <span className="font-semibold flex items-center gap-1.5">
-                  <RotateCw size={13} className="text-cyan-400" /> Rotate copies with curve tangent
+                  <RotateCw size={13} className="text-accent-400" /> Rotate copies with curve tangent
                 </span>
-                <span className="text-[10px] text-white/40">
+                <span className="text-[11px] text-white/40">
                   Each copy will orient itself naturally along the curve slope (like gear teeth or fence pickets)
                 </span>
               </div>
@@ -214,19 +210,19 @@ export default function RepeatPatternModal({
           )}
 
           {/* Real-time Math Summary */}
-          <div className="bg-white/5 p-3 rounded-xl border border-white/10 text-[11px] font-mono text-white/60 flex flex-col gap-1">
-            <div className="text-white font-bold text-xs mb-0.5">Summary:</div>
+          <div className="bg-white/5 p-3 rounded-xl border border-white/10 text-[11px]  text-white/60 flex flex-col gap-1">
+            <div className="text-white font-semibold text-xs mb-0.5">Summary:</div>
             <div className="flex justify-between">
               <span>Total Array Span:</span>
-              <span className="text-white/90">{lineLength} units</span>
+              <span className="text-white/90">{lineLength} mm</span>
             </div>
             <div className="flex justify-between">
               <span>Equally Spaced Interval:</span>
-              <span className="text-cyan-300 font-bold">{spacing} units between each</span>
+              <span className="text-accent-300 font-semibold">{spacing} mm between each</span>
             </div>
             <div className="flex justify-between">
-              <span>New Solids Created:</span>
-              <span className="text-white/90">{repeatConfig.count - 1} duplicates</span>
+              <span>New bodies:</span>
+              <span className="text-white/90">{repeatConfig.count - 1} copies</span>
             </div>
           </div>
 
@@ -242,10 +238,10 @@ export default function RepeatPatternModal({
           </button>
           <button
             onClick={handleApply}
-            className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-xs font-bold transition-all shadow-lg shadow-cyan-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
+            className="px-5 py-2.5 bg-accent-500 hover:bg-accent-400 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-accent-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
           >
             <Repeat size={14} />
-            <span>Create {repeatConfig.count} Repeated Objects</span>
+            <span>Create {repeatConfig.count - 1} {repeatConfig.count - 1 === 1 ? 'copy' : 'copies'}</span>
           </button>
         </div>
       </motion.div>

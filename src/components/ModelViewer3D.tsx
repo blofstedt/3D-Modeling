@@ -3,84 +3,150 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Body3D, MATERIAL_PRESETS, Point2D, RepeatConfig, CadTool } from '../types';
-import { calculateLinearPattern, calculateCurvedPattern, cleanPolygonPoints, ensureWinding } from '../utils/geometry';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { Body3D, CadTool, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
+import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
 import ViewCube, { CubeFace } from './ViewCube';
-import ShaprDimensionBadge from './ShaprDimensionBadge';
-import { 
-  Rotate3d, 
-  Compass, 
-  Layers, 
-  RotateCcw, 
-  Move3d, 
-  ArrowUpDown,
-  Scissors,
-  Sparkles,
-  PenTool,
-  Check,
-  X
-} from 'lucide-react';
+import DimensionBadge from './DimensionBadge';
 
 export interface EditPart {
   bodyId: string;
   type: 'corner' | 'edge' | 'face' | 'gizmo';
-  index?: number; // corner index
-  startIndex?: number; // edge start index
-  endIndex?: number; // edge end index
+  index?: number;
+  startIndex?: number;
+  endIndex?: number;
   faceType?: 'top' | 'bottom' | 'side';
 }
 
-interface DraggingState {
-  type: 'face-height' | 'wall-offset' | 'fillet' | 'vertex' | 'body-move';
+type GizmoKind = 'extrude-height' | 'offset-wall' | 'fillet' | 'vertex';
+
+type Hit =
+  | { type: 'gizmo'; gizmo: GizmoKind; bodyId: string; index?: number; startIndex?: number; endIndex?: number }
+  | { type: 'face'; faceType: 'top' | 'bottom'; bodyId: string }
+  | { type: 'edge'; bodyId: string; startIndex: number; endIndex: number };
+
+interface DragState {
+  kind: 'face-height' | 'wall-offset' | 'fillet' | 'vertex';
   bodyId: string;
-  pointerId: number;
-  startClientX: number;
   startClientY: number;
-  startPlaneIntersection: THREE.Vector3;
   initialPoints: Point2D[];
+  initialBasePoints?: Point2D[];
   initialHeight: number;
   initialBevelSize: number;
-  partCornerIndex?: number;
-  partEdgeStartIndex?: number;
-  partEdgeEndIndex?: number;
-  normal2D?: Point2D;
-}
-
-function getDistanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  if (dx === 0 && dy === 0) return { distance: Math.hypot(px - ax, py - ay), t: 0 };
-  
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  const closestX = ax + t * dx;
-  const closestY = ay + t * dy;
-  return {
-    distance: Math.hypot(px - closestX, py - closestY),
-    t: t
-  };
+  mmPerPixel: number;
+  planeY: number;
+  startPlanePoint?: THREE.Vector3;
+  cornerIndex?: number;
+  edgeStart?: number;
+  edgeEnd?: number;
+  normal?: Point2D;
 }
 
 export interface ModelViewer3DProps {
   bodies: Body3D[];
   selectedBodyId: string | null;
-  selectedBodyIds?: string[];
+  selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
-  triggerIntroAnimation: boolean;
-  onIntroAnimationComplete: () => void;
-  repeatConfig?: RepeatConfig;
-  onUpdateRepeatConfig?: React.Dispatch<React.SetStateAction<RepeatConfig>>;
-  activeCadTool?: CadTool;
-  activeEditPart?: EditPart | null;
-  setActiveEditPart?: (part: EditPart | null) => void;
-  onOpenCut?: () => void;
-  onOpenBevel?: () => void;
-  onOpenMoveFace?: () => void;
-  onDeleteBody?: (id: string) => void;
-  onSwitchToSketchOnFace?: () => void;
+  repeatConfig: RepeatConfig;
+  onUpdateRepeatConfig: React.Dispatch<React.SetStateAction<RepeatConfig>>;
+  activeCadTool: CadTool;
+  activeEditPart: EditPart | null;
+  setActiveEditPart: (part: EditPart | null) => void;
+  onOpenCut: () => void;
+  onOpenBevel: () => void;
+  onDeleteBody: (id: string) => void;
+  onSwitchToSketchOnFace: () => void;
+  /** Fired when a handle drag starts/ends so the app can treat it as a single undo step. */
+  onDragStateChange?: (dragging: boolean) => void;
+}
+
+const ACCENT = '#5f93fb';
+const BACKGROUND = '#1a1c21';
+const CLICK_SLOP_PX = 5;
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
+  const t = clamp(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0, 1);
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((obj) => {
+    const o = obj as THREE.Mesh;
+    o.geometry?.dispose();
+    const m = o.material;
+    if (Array.isArray(m)) m.forEach((mat) => mat.dispose());
+    else m?.dispose();
+  });
+}
+
+function clearGroup(group: THREE.Group) {
+  while (group.children.length) {
+    const child = group.children[0];
+    group.remove(child);
+    disposeObject(child);
+  }
+}
+
+function createMaterial(body: Body3D): THREE.Material {
+  const preset = MATERIAL_PRESETS.find((p) => p.id === body.materialType) || MATERIAL_PRESETS[0];
+  const color = body.color || preset.color;
+  const common = {
+    color,
+    roughness: preset.roughness,
+    metalness: preset.metalness,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  };
+
+  switch (body.materialType) {
+    case 'glossy':
+      return new THREE.MeshPhysicalMaterial({ ...common, clearcoat: 1, clearcoatRoughness: 0.08 });
+    case 'glass':
+      return new THREE.MeshPhysicalMaterial({
+        ...common,
+        transmission: preset.transmission ?? 0.8,
+        ior: preset.ior ?? 1.5,
+        thickness: 8,
+        transparent: true,
+        opacity: 0.92,
+      });
+    case 'neon':
+      return new THREE.MeshStandardMaterial({
+        ...common,
+        emissive: color,
+        emissiveIntensity: preset.emissiveIntensity ?? 1.2,
+      });
+    default:
+      return new THREE.MeshStandardMaterial(common);
+  }
+}
+
+const bodySignature = (b: Body3D) =>
+  JSON.stringify([
+    b.points,
+    b.holes,
+    b.extrusionHeight,
+    b.bevelEnabled,
+    b.bevelSize,
+    b.bevelSegments,
+    b.materialType,
+    b.color,
+  ]);
+
+interface BodyEntry {
+  group: THREE.Group;
+  outline: THREE.LineSegments;
+  signature: string;
 }
 
 export default function ModelViewer3D({
@@ -89,293 +155,67 @@ export default function ModelViewer3D({
   selectedBodyIds,
   onSelectBody,
   onUpdateBody,
-  triggerIntroAnimation,
-  onIntroAnimationComplete,
   repeatConfig,
   onUpdateRepeatConfig,
   activeCadTool,
-  activeEditPart: externalActiveEditPart,
-  setActiveEditPart: externalSetActiveEditPart,
+  activeEditPart,
+  setActiveEditPart,
   onOpenCut,
   onOpenBevel,
-  onOpenMoveFace,
   onDeleteBody,
   onSwitchToSketchOnFace,
+  onDragStateChange,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  
-  // Active edit state for part highlighting
-  const [internalActiveEditPart, setInternalActiveEditPart] = useState<EditPart | null>(null);
-  const activeEditPart = externalActiveEditPart !== undefined ? externalActiveEditPart : internalActiveEditPart;
-  const setActiveEditPart = (part: EditPart | null) => {
-    setInternalActiveEditPart(part);
-    if (externalSetActiveEditPart) externalSetActiveEditPart(part);
-  };
 
-  // Dragging & live delta state for Shapr3D dimension callout
   const [isDragging, setIsDragging] = useState(false);
   const [dragDelta, setDragDelta] = useState(0);
-
-  // Refs to share across Three.js animation and event listeners
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
-  const meshGroupRef = useRef<THREE.Group | null>(null);
-  const gizmoGroupRef = useRef<THREE.Group | null>(null);
-  const helperGroupRef = useRef<THREE.Group | null>(null);
-  const meshesMapRef = useRef<Map<string, { mesh: THREE.Mesh; outline: THREE.LineSegments }>>(new Map());
-  const dragSessionRef = useRef<DraggingState | null>(null);
-  
-  // Smooth Camera glide transition state (for Shapr3D ViewCube)
-  const cameraTweenRef = useRef<{
-    active: boolean;
-    startPos: THREE.Vector3;
-    targetPos: THREE.Vector3;
-    startTarget: THREE.Vector3;
-    targetLookAt: THREE.Vector3;
-    progress: number;
-  } | null>(null);
-
-  const [activeCameraAngle, setActiveCameraAngle] = useState<'iso' | 'top' | 'front'>('iso');
   const [isSceneReady, setIsSceneReady] = useState(false);
 
-  // Sync references to prevent stale closures in event listeners
-  const bodiesRef = useRef(bodies);
-  const selectedBodyIdRef = useRef(selectedBodyId);
-  const onUpdateBodyRef = useRef(onUpdateBody);
-  const onSelectBodyRef = useRef(onSelectBody);
-  const activeEditPartRef = useRef(activeEditPart);
-  const repeatConfigRef = useRef(repeatConfig);
-  const onUpdateRepeatConfigRef = useRef(onUpdateRepeatConfig);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const bodyGroupRef = useRef<THREE.Group | null>(null);
+  const gizmoGroupRef = useRef<THREE.Group | null>(null);
+  const helperGroupRef = useRef<THREE.Group | null>(null);
+  const previewGroupRef = useRef<THREE.Group | null>(null);
+  const entriesRef = useRef<Map<string, BodyEntry>>(new Map());
+  const dragRef = useRef<DragState | null>(null);
+  const tweenRef = useRef<{
+    start: number;
+    fromPos: THREE.Vector3;
+    toPos: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    toTarget: THREE.Vector3;
+  } | null>(null);
+  const frameViewRef = useRef<(face: CubeFace, instant?: boolean) => void>(() => {});
 
-  useEffect(() => {
-    bodiesRef.current = bodies;
-    selectedBodyIdRef.current = selectedBodyId;
-    onUpdateBodyRef.current = onUpdateBody;
-    onSelectBodyRef.current = onSelectBody;
-    activeEditPartRef.current = activeEditPart;
-    repeatConfigRef.current = repeatConfig;
-    onUpdateRepeatConfigRef.current = onUpdateRepeatConfig;
-  }, [bodies, selectedBodyId, onUpdateBody, onSelectBody, activeEditPart, repeatConfig, onUpdateRepeatConfig]);
-
-  // Material builder helper
-  const createThreeMaterial = (body: Body3D): THREE.Material => {
-    const preset = MATERIAL_PRESETS.find((p) => p.id === body.materialType) || MATERIAL_PRESETS[0];
-    const colorVal = body.color || preset.color;
-
-    switch (body.materialType) {
-      case 'metal':
-        return new THREE.MeshStandardMaterial({
-          color: colorVal,
-          roughness: preset.roughness,
-          metalness: preset.metalness,
-          side: THREE.DoubleSide,
-        });
-      case 'glossy':
-        return new THREE.MeshPhysicalMaterial({
-          color: colorVal,
-          roughness: preset.roughness,
-          metalness: preset.metalness,
-          clearcoat: 1.0,
-          clearcoatRoughness: 0.1,
-          side: THREE.DoubleSide,
-        });
-      case 'glass':
-        return new THREE.MeshPhysicalMaterial({
-          color: colorVal,
-          roughness: preset.roughness,
-          metalness: preset.metalness,
-          transmission: preset.transmission || 0.8,
-          ior: preset.ior || 1.5,
-          transparent: true,
-          opacity: 0.9,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        });
-      case 'neon':
-        return new THREE.MeshStandardMaterial({
-          color: colorVal,
-          emissive: colorVal,
-          emissiveIntensity: preset.emissiveIntensity || 1.2,
-          roughness: preset.roughness,
-          metalness: preset.metalness,
-          side: THREE.DoubleSide,
-        });
-      case 'matte':
-      default:
-        return new THREE.MeshStandardMaterial({
-          color: colorVal,
-          roughness: preset.roughness,
-          metalness: preset.metalness,
-          side: THREE.DoubleSide,
-        });
-    }
+  // Latest props for long-lived event handlers
+  const live = useRef({
+    bodies,
+    selectedBodyId,
+    activeCadTool,
+    activeEditPart,
+    repeatConfig,
+    onSelectBody,
+    onUpdateBody,
+    onUpdateRepeatConfig,
+    setActiveEditPart,
+    onDragStateChange,
+  });
+  live.current = {
+    bodies,
+    selectedBodyId,
+    activeCadTool,
+    activeEditPart,
+    repeatConfig,
+    onSelectBody,
+    onUpdateBody,
+    onUpdateRepeatConfig,
+    setActiveEditPart,
+    onDragStateChange,
   };
 
-  // Robust Extruded Mesh Builder
-  const buildExtrudedMesh = (body: Body3D) => {
-    if (!body.points || body.points.length < 3) return null;
-
-    // 1. Sanitize polygon points and enforce counter-clockwise winding
-    const cleanedPts = cleanPolygonPoints(body.points);
-    if (cleanedPts.length < 3) return null;
-    const outerPts = ensureWinding(cleanedPts, false);
-
-    const shape = new THREE.Shape();
-    shape.moveTo(outerPts[0].x, outerPts[0].y);
-    for (let i = 1; i < outerPts.length; i++) {
-      shape.lineTo(outerPts[i].x, outerPts[i].y);
-    }
-    shape.closePath();
-
-    // 2. Interior cutout holes
-    if (body.holes && body.holes.length > 0) {
-      body.holes.forEach((rawHolePts) => {
-        const cleanedHole = cleanPolygonPoints(rawHolePts);
-        if (cleanedHole.length >= 3) {
-          const holePts = ensureWinding(cleanedHole, true);
-          const holePath = new THREE.Path();
-          holePath.moveTo(holePts[0].x, holePts[0].y);
-          for (let h = 1; h < holePts.length; h++) {
-            holePath.lineTo(holePts[h].x, holePts[h].y);
-          }
-          holePath.closePath();
-          shape.holes.push(holePath);
-        }
-      });
-    }
-
-    const depth = Math.max(1, body.extrusionHeight || 20);
-    const wantsBevel = body.bevelEnabled !== false;
-    const bevelSize = Math.max(0.2, Math.min(10, body.bevelSize ?? 1));
-    const bevelThickness = wantsBevel ? Math.max(0.5, bevelSize) : 0;
-    const bevelSegments = body.bevelSegments ?? 3;
-
-    let geometry: THREE.BufferGeometry;
-    let actualBevelEnabled = wantsBevel;
-    let actualBevelThickness = bevelThickness;
-
-    try {
-      if (wantsBevel) {
-        geometry = new THREE.ExtrudeGeometry(shape, {
-          steps: 1,
-          depth,
-          bevelEnabled: true,
-          bevelThickness,
-          bevelSize,
-          bevelOffset: 0,
-          bevelSegments,
-        });
-      } else {
-        geometry = new THREE.ExtrudeGeometry(shape, {
-          steps: 1,
-          depth,
-          bevelEnabled: false,
-        });
-      }
-    } catch (err) {
-      try {
-        geometry = new THREE.ExtrudeGeometry(shape, {
-          steps: 1,
-          depth,
-          bevelEnabled: false,
-        });
-        actualBevelEnabled = false;
-        actualBevelThickness = 0;
-      } catch (err2) {
-        console.error(`Extrude fallback failed for body ${body.name}:`, err2);
-        return null;
-      }
-    }
-
-    geometry.computeBoundingBox();
-
-    const material = createThreeMaterial(body);
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData = { bodyId: body.id, isSolidBody: true };
-    mesh.rotation.x = -Math.PI / 2;
-
-    // Dedicated Top Face Mesh for reliable hit-testing
-    try {
-      const topShapeGeo = new THREE.ShapeGeometry(shape);
-      const topFaceMat = new THREE.MeshBasicMaterial({
-        transparent: true,
-        opacity: 0.0,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      const topFaceMesh = new THREE.Mesh(topShapeGeo, topFaceMat);
-      topFaceMesh.name = `topFace_${body.id}`;
-      topFaceMesh.userData = {
-        bodyId: body.id,
-        isTopFace: true,
-        faceType: 'top',
-      };
-      const topZ = depth + (actualBevelEnabled ? actualBevelThickness : 0) + 0.05;
-      topFaceMesh.position.set(0, 0, topZ);
-      mesh.add(topFaceMesh);
-    } catch (err) {
-      // ignore
-    }
-
-    mesh.updateMatrixWorld(true);
-
-    // Selected edge contour outline
-    const edgesGeo = new THREE.EdgesGeometry(geometry);
-    const edgesMat = new THREE.LineBasicMaterial({
-      color: '#00e5ff', // Luminous Electric Cyan
-      linewidth: 2,
-      depthTest: false,
-      transparent: true,
-      opacity: 0.95,
-    });
-    const outlineHelper = new THREE.LineSegments(edgesGeo, edgesMat);
-    outlineHelper.rotation.x = -Math.PI / 2;
-    outlineHelper.visible = body.id === selectedBodyId || Boolean(selectedBodyIds && selectedBodyIds.includes(body.id));
-    outlineHelper.renderOrder = 1000;
-
-    return { mesh, outline: outlineHelper };
-  };
-
-  // Re-sync all meshes whenever bodies change
-  useEffect(() => {
-    if (!isSceneReady) return;
-    const group = meshGroupRef.current;
-    if (!group) return;
-
-    meshesMapRef.current.forEach(({ mesh, outline }) => {
-      group.remove(mesh);
-      group.remove(outline);
-      mesh.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          if (Array.isArray(child.material)) child.material.forEach((m) => m.dispose());
-          else child.material.dispose();
-        }
-      });
-      outline.geometry.dispose();
-      (outline.material as THREE.Material).dispose();
-    });
-    meshesMapRef.current.clear();
-
-    bodies.forEach((body) => {
-      if (!body.visible) return;
-      const result = buildExtrudedMesh(body);
-      if (result) {
-        const { mesh, outline } = result;
-        group.add(mesh);
-        group.add(outline);
-        mesh.updateMatrixWorld(true);
-        outline.updateMatrixWorld(true);
-        meshesMapRef.current.set(body.id, { mesh, outline });
-      }
-    });
-  }, [bodies, selectedBodyId, selectedBodyIds, isSceneReady]);
-
-  // Main Three.js Scene Setup
+  // ---- Scene setup (once) -------------------------------------------------
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -384,886 +224,714 @@ export default function ModelViewer3D({
     const height = container.clientHeight || 500;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#0a0f1d');
-    scene.fog = new THREE.Fog('#0a0f1d', 800, 2600);
-    sceneRef.current = scene;
+    scene.background = new THREE.Color(BACKGROUND);
+    scene.fog = new THREE.Fog(BACKGROUND, 900, 2800);
 
-    const isMobile = width < 640;
-    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 3000);
-    if (isMobile) {
-      camera.position.set(220, 260, 290);
-    } else {
-      camera.position.set(160, 200, 240);
-    }
+    const camera = new THREE.PerspectiveCamera(40, width / height, 1, 4000);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    rendererRef.current = renderer;
-
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.domElement.style.touchAction = 'none';
+    renderer.domElement.style.display = 'block';
     container.appendChild(renderer.domElement);
 
-    // OrbitControls
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.screenSpacePanning = true;
-    controls.maxDistance = 1800;
-    controls.minDistance = 30;
-    controls.target.set(0, 15, 0);
-    controlsRef.current = controls;
+    // Image-based lighting: without an environment map, metals render near-black.
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = envTexture;
+    scene.environmentIntensity = 0.9;
 
-    // Professional Studio Lighting
-    const hemiLight = new THREE.HemisphereLight('#f8fafc', '#0f172a', 0.85);
-    hemiLight.position.set(0, 300, 0);
-    scene.add(hemiLight);
+    const key = new THREE.DirectionalLight('#ffffff', 1.6);
+    key.position.set(240, 420, 260);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.camera.near = 50;
+    key.shadow.camera.far = 1400;
+    key.shadow.camera.left = -420;
+    key.shadow.camera.right = 420;
+    key.shadow.camera.top = 420;
+    key.shadow.camera.bottom = -420;
+    key.shadow.bias = -0.0005;
+    key.shadow.normalBias = 0.6;
+    scene.add(key);
 
-    const dirLight1 = new THREE.DirectionalLight('#ffffff', 1.25);
-    dirLight1.position.set(200, 400, 250);
-    dirLight1.castShadow = true;
-    dirLight1.shadow.mapSize.width = 2048;
-    dirLight1.shadow.mapSize.height = 2048;
-    dirLight1.shadow.camera.near = 50;
-    dirLight1.shadow.camera.far = 1200;
-    dirLight1.shadow.camera.left = -350;
-    dirLight1.shadow.camera.right = 350;
-    dirLight1.shadow.camera.top = 350;
-    dirLight1.shadow.camera.bottom = -350;
-    dirLight1.shadow.bias = -0.0004;
-    scene.add(dirLight1);
+    // Ground: soft shadow catcher + grid + axes
+    const shadowCatcher = new THREE.Mesh(
+      new THREE.PlaneGeometry(2400, 2400).rotateX(-Math.PI / 2),
+      new THREE.ShadowMaterial({ opacity: 0.35 })
+    );
+    shadowCatcher.position.y = -0.05;
+    shadowCatcher.receiveShadow = true;
+    scene.add(shadowCatcher);
 
-    const dirLight2 = new THREE.DirectionalLight('#38bdf8', 0.45);
-    dirLight2.position.set(-250, 150, -200);
-    scene.add(dirLight2);
+    const grid = new THREE.GridHelper(1200, 60, '#4b515d', '#2b2f37');
+    grid.position.y = -0.1;
+    scene.add(grid);
 
-    // Ground Grid & Workplane
-    const workplaneGroup = new THREE.Group();
-    scene.add(workplaneGroup);
+    const axis = (to: THREE.Vector3, color: string) =>
+      new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.05, 0), to]),
+        new THREE.LineBasicMaterial({ color })
+      );
+    const axisX = axis(new THREE.Vector3(140, 0.05, 0), '#e5484d');
+    const axisY = axis(new THREE.Vector3(0, 0.05, -140), '#46c37b');
+    scene.add(axisX, axisY);
 
-    const gridHelper = new THREE.GridHelper(800, 40, '#0284c7', '#1e293b');
-    gridHelper.position.y = -0.1;
-    workplaneGroup.add(gridHelper);
-
-    const fineGrid = new THREE.GridHelper(800, 200, '#0369a1', '#0f172a');
-    fineGrid.position.y = -0.12;
-    workplaneGroup.add(fineGrid);
-
-    // Coordinate axis arrows
-    const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0.05, 0), 80, 0xef4444, 12, 6);
-    workplaneGroup.add(xArrow);
-    const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0.05, 0), 80, 0x38bdf8, 12, 6);
-    workplaneGroup.add(zArrow);
-
-    // Mesh group & Dedicated Interactive Gizmo Group
-    const meshGroup = new THREE.Group();
-    scene.add(meshGroup);
-    meshGroupRef.current = meshGroup;
-
+    const bodyGroup = new THREE.Group();
     const gizmoGroup = new THREE.Group();
-    scene.add(gizmoGroup);
-    gizmoGroupRef.current = gizmoGroup;
-
     const helperGroup = new THREE.Group();
-    scene.add(helperGroup);
+    const previewGroup = new THREE.Group();
+    scene.add(bodyGroup, gizmoGroup, helperGroup, previewGroup);
+    bodyGroupRef.current = bodyGroup;
+    gizmoGroupRef.current = gizmoGroup;
     helperGroupRef.current = helperGroup;
+    previewGroupRef.current = previewGroup;
 
-    // Raycaster
     const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
+    const ndc = new THREE.Vector2();
+    const setRay = (clientX: number, clientY: number) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+    };
+    const intersectPlane = (clientX: number, clientY: number, planeY: number): THREE.Vector3 | null => {
+      setRay(clientX, clientY);
+      const point = new THREE.Vector3();
+      return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), point) ? point : null;
+    };
 
-    let startX = 0;
-    let startY = 0;
+    // ---- Hit testing: gizmo handles first, then solids --------------------
+    const resolveHit = (clientX: number, clientY: number): Hit | null => {
+      setRay(clientX, clientY);
 
-    // Shapr3D Hit Target Resolution (Priority: Gizmo Handle > Top Face Mesh > Solid Mesh > Edge)
-    const resolveHitTarget = (clientX: number, clientY: number) => {
-      if (!mountRef.current || !cameraRef.current) return null;
-      const rect = mountRef.current.getBoundingClientRect();
-      const px = clientX - rect.left;
-      const py = clientY - rect.top;
-
-      mouse.x = (px / rect.width) * 2 - 1;
-      mouse.y = -(py / rect.height) * 2 + 1;
-      raycaster.setFromCamera(mouse, cameraRef.current);
-
-      // 1. HIGHEST PRIORITY: Interactive Shapr3D Gizmo Objects (Push-Pull arrow, handles, vertex balls)
-      if (gizmoGroup.children.length > 0) {
-        const gizmoHits = raycaster.intersectObjects(gizmoGroup.children, true);
-        if (gizmoHits.length > 0) {
-          const hit = gizmoHits[0];
-          let obj: THREE.Object3D | null = hit.object;
-          while (obj && !obj.userData?.isGizmo && obj.parent) {
-            obj = obj.parent;
-          }
-          if (obj && obj.userData?.isGizmo) {
+      if (gizmoGroup.children.length) {
+        const gizmoHit = raycaster.intersectObjects(gizmoGroup.children, true)[0];
+        if (gizmoHit) {
+          let obj: THREE.Object3D | null = gizmoHit.object;
+          while (obj && !obj.userData.gizmo) obj = obj.parent;
+          if (obj) {
+            const d = obj.userData;
             return {
-              type: 'gizmo' as const,
-              gizmoType: obj.userData.gizmoType,
-              bodyId: obj.userData.bodyId,
-              index: obj.userData.index,
-              startIndex: obj.userData.startIndex,
-              endIndex: obj.userData.endIndex,
-              faceType: obj.userData.faceType || 'top',
-              hitPoint: hit.point.clone(),
+              type: 'gizmo',
+              gizmo: d.gizmo,
+              bodyId: d.bodyId,
+              index: d.index,
+              startIndex: d.startIndex,
+              endIndex: d.endIndex,
             };
           }
         }
       }
 
-      // 2. Solid Body Meshes & Dedicated Top Faces
-      const intersects = raycaster.intersectObjects(meshGroup.children, true);
-      if (intersects.length > 0) {
-        // Priority 2A: Check top face hit
-        for (const hit of intersects) {
-          if (hit.object.userData?.isTopFace || hit.object.userData?.faceType === 'top') {
-            const bodyId = hit.object.userData.bodyId;
-            const body = bodiesRef.current.find((b) => b.id === bodyId);
-            if (body) {
-              return {
-                type: 'face' as const,
-                faceType: 'top' as const,
-                bodyId,
-                index: -1,
-                startIndex: -1,
-                endIndex: -1,
-                hitPoint: hit.point.clone(),
-              };
-            }
-          }
-        }
+      const hit = raycaster.intersectObjects(bodyGroup.children, true)[0];
+      if (!hit) return null;
+      let obj: THREE.Object3D | null = hit.object;
+      while (obj && !obj.userData.bodyId) obj = obj.parent;
+      if (!obj) return null;
+      const bodyId: string = obj.userData.bodyId;
+      const body = live.current.bodies.find((b) => b.id === bodyId);
+      if (!body) return null;
 
-        // Priority 2B: Inspect nearest hit on solid body
-        const firstHit = intersects[0];
-        let obj: THREE.Object3D | null = firstHit.object;
-        while (obj && !obj.userData?.bodyId) {
-          obj = obj.parent;
-        }
+      const normalY = hit.face ? hit.face.normal.y : 1;
+      if (normalY > 0.5) return { type: 'face', faceType: 'top', bodyId };
+      if (normalY < -0.5) return { type: 'face', faceType: 'bottom', bodyId };
 
-        if (obj && obj.userData?.bodyId) {
-          const bodyId = obj.userData.bodyId;
-          const body = bodiesRef.current.find((b) => b.id === bodyId);
-          if (body) {
-            const worldNormal = firstHit.face
-              ? firstHit.face.normal.clone().transformDirection(obj.matrixWorld)
-              : new THREE.Vector3(0, 1, 0);
-
-            const isTop = worldNormal.y > 0.35 || firstHit.point.y >= (body.extrusionHeight - 2);
-            if (isTop) {
-              return {
-                type: 'face' as const,
-                faceType: 'top' as const,
-                bodyId,
-                index: -1,
-                startIndex: -1,
-                endIndex: -1,
-                hitPoint: firstHit.point.clone(),
-              };
-            }
-
-            // Side wall hit -> find corresponding edge segment
-            const hx = firstHit.point.x;
-            const hy = -firstHit.point.z;
-            let bestSideIdx = 0;
-            let minSideDist = Infinity;
-            const pts = body.points;
-            const n = pts.length;
-
-            for (let i = 0; i < n; i++) {
-              const p1 = pts[i];
-              const p2 = pts[(i + 1) % n];
-              const d = getDistanceToSegment(hx, hy, p1.x, p1.y, p2.x, p2.y).distance;
-              if (d < minSideDist) {
-                minSideDist = d;
-                bestSideIdx = i;
-              }
-            }
-
-            return {
-              type: 'edge' as const,
-              faceType: 'side' as const,
-              bodyId,
-              index: -1,
-              startIndex: bestSideIdx,
-              endIndex: (bestSideIdx + 1) % n,
-              hitPoint: firstHit.point.clone(),
-            };
-          }
+      const hx = hit.point.x;
+      const hy = -hit.point.z;
+      const pts = body.points;
+      let best = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const p1 = pts[i];
+        const p2 = pts[(i + 1) % pts.length];
+        const d = distanceToSegment(hx, hy, p1.x, p1.y, p2.x, p2.y);
+        if (d < bestDist) {
+          bestDist = d;
+          best = i;
         }
       }
+      return { type: 'edge', bodyId, startIndex: best, endIndex: (best + 1) % pts.length };
+    };
 
+    // ---- Drag sessions ----------------------------------------------------
+    const mmPerPixel = () => {
+      const dist = camera.position.distanceTo(controls.target);
+      return (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / (renderer.domElement.clientHeight || 1);
+    };
+
+    const startDrag = (hit: Hit, clientX: number, clientY: number): DragState | null => {
+      const body = live.current.bodies.find((b) => b.id === hit.bodyId);
+      if (!body) return null;
+      const base = {
+        bodyId: body.id,
+        startClientY: clientY,
+        initialPoints: body.points.map((p) => ({ ...p })),
+        initialBasePoints: body.basePoints?.map((p) => ({ ...p })),
+        initialHeight: body.extrusionHeight,
+        initialBevelSize: body.bevelSize ?? 1,
+        mmPerPixel: mmPerPixel(),
+        planeY: body.extrusionHeight,
+      };
+
+      const isHeightDrag =
+        (hit.type === 'gizmo' && hit.gizmo === 'extrude-height') ||
+        (hit.type === 'face' && hit.faceType === 'top');
+      if (isHeightDrag) return { ...base, kind: 'face-height' };
+
+      if (hit.type !== 'gizmo') return null;
+
+      if (hit.gizmo === 'vertex') {
+        return { ...base, kind: 'vertex', cornerIndex: hit.index };
+      }
+      if (hit.gizmo === 'fillet') {
+        return { ...base, kind: 'fillet', initialBevelSize: body.bevelSize ?? 2 };
+      }
+      if (hit.gizmo === 'offset-wall' && hit.startIndex !== undefined && hit.endIndex !== undefined) {
+        const p1 = body.points[hit.startIndex];
+        const p2 = body.points[hit.endIndex];
+        const len = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+        const planeY = body.extrusionHeight / 2;
+        return {
+          ...base,
+          kind: 'wall-offset',
+          planeY,
+          startPlanePoint: intersectPlane(clientX, clientY, planeY) ?? undefined,
+          edgeStart: hit.startIndex,
+          edgeEnd: hit.endIndex,
+          normal: { x: -(p2.y - p1.y) / len, y: (p2.x - p1.x) / len },
+        };
+      }
       return null;
     };
 
-    // Shapr3D Pointer Interaction Pipeline
-    const handlePointerDown = (clientX: number, clientY: number, pointerId: number) => {
-      startX = clientX;
-      startY = clientY;
+    /** Writes edited outline points, keeping the un-rounded base outline consistent. */
+    const commitPoints = (drag: DragState, edit: (pts: Point2D[]) => Point2D[]) => {
+      const points = edit(drag.initialPoints.map((p) => ({ ...p })));
+      const base = drag.initialBasePoints;
+      if (base && base.length === drag.initialPoints.length) {
+        live.current.onUpdateBody(drag.bodyId, { points, basePoints: edit(base.map((p) => ({ ...p }))) });
+      } else {
+        // Corner rounding has added vertices; bake the edit into the outline.
+        live.current.onUpdateBody(drag.bodyId, { points, basePoints: points, cornerRadius: 0 });
+      }
+    };
 
-      // Handle Repeat Pattern Guideline Drawing
-      if (repeatConfigRef.current?.isDrawingLine) {
-        if (!mountRef.current || !cameraRef.current) return;
-        const rect = mountRef.current.getBoundingClientRect();
-        mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(mouse, cameraRef.current);
-
-        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-        const intersectPt = new THREE.Vector3();
-        raycaster.ray.intersectPlane(groundPlane, intersectPt);
-
-        let snapPt: Point2D = { x: Math.round(intersectPt.x), y: Math.round(-intersectPt.z) };
-        bodiesRef.current.forEach((b) => {
-          b.points.forEach((pt) => {
-            if (Math.hypot(pt.x - snapPt.x, pt.y - snapPt.y) < 25) {
-              snapPt = { x: pt.x, y: pt.y };
-            }
+    const applyDrag = (drag: DragState, clientX: number, clientY: number) => {
+      if (drag.kind === 'face-height') {
+        const raw = drag.initialHeight + (drag.startClientY - clientY) * drag.mmPerPixel;
+        const next = clamp(Math.round(raw), 2, 600);
+        setDragDelta(next - drag.initialHeight);
+        live.current.onUpdateBody(drag.bodyId, { extrusionHeight: next });
+      } else if (drag.kind === 'fillet') {
+        const raw = drag.initialBevelSize + (drag.startClientY - clientY) * 0.1;
+        const next = clamp(Math.round(raw * 2) / 2, 0, 20);
+        setDragDelta(Math.round((next - drag.initialBevelSize) * 10) / 10);
+        live.current.onUpdateBody(drag.bodyId, { bevelSize: next, bevelEnabled: next > 0 });
+      } else if (drag.kind === 'wall-offset' && drag.normal && drag.startPlanePoint) {
+        const current = intersectPlane(clientX, clientY, drag.planeY);
+        if (!current) return;
+        const dist = Math.round(
+          (current.x - drag.startPlanePoint.x) * drag.normal.x - (current.z - drag.startPlanePoint.z) * drag.normal.y
+        );
+        setDragDelta(dist);
+        const { edgeStart, edgeEnd, normal } = drag;
+        commitPoints(drag, (pts) => {
+          [edgeStart!, edgeEnd!].forEach((i) => {
+            pts[i] = { x: Math.round(pts[i].x + normal.x * dist), y: Math.round(pts[i].y + normal.y * dist) };
           });
+          return pts;
         });
-
-        if (onUpdateRepeatConfigRef.current) {
-          const cfg = repeatConfigRef.current;
-          if (cfg.drawingStep === 'start') {
-            onUpdateRepeatConfigRef.current((prev) => ({ ...prev, startPoint: snapPt, drawingStep: 'end' }));
-          } else if (cfg.drawingStep === 'end') {
-            if (cfg.type === 'curved') {
-              onUpdateRepeatConfigRef.current((prev) => ({ ...prev, endPoint: snapPt, drawingStep: 'curve' }));
-            } else {
-              onUpdateRepeatConfigRef.current((prev) => ({ ...prev, endPoint: snapPt, isDrawingLine: false, drawingStep: 'done' }));
-            }
-          } else if (cfg.drawingStep === 'curve') {
-            onUpdateRepeatConfigRef.current((prev) => ({ ...prev, controlPoint: snapPt, isDrawingLine: false, drawingStep: 'done' }));
-          }
-        }
-        return;
-      }
-
-      const target = resolveHitTarget(clientX, clientY);
-      if (target) {
-        const bodyId = target.bodyId;
-        const body = bodiesRef.current.find((b) => b.id === bodyId);
-        if (!body) return;
-
-        // Select the body immediately
-        onSelectBodyRef.current(bodyId);
-
-        // Lock camera rotation so OrbitControls never fights with push/pull or gizmo dragging
-        if (controlsRef.current) {
-          controlsRef.current.enabled = false;
-        }
-
-        // Configure active edit part
-        if (target.type === 'gizmo') {
-          if (target.gizmoType === 'extrude-height') {
-            setActiveEditPart({ bodyId, type: 'face', faceType: 'top' });
-            dragSessionRef.current = {
-              type: 'face-height',
-              bodyId,
-              pointerId,
-              startClientX: clientX,
-              startClientY: clientY,
-              startPlaneIntersection: target.hitPoint || new THREE.Vector3(),
-              initialPoints: body.points.map((p) => ({ ...p })),
-              initialHeight: body.extrusionHeight,
-              initialBevelSize: body.bevelSize ?? 1,
-            };
-          } else if (target.gizmoType === 'offset-wall') {
-            setActiveEditPart({ bodyId, type: 'edge', startIndex: target.startIndex, endIndex: target.endIndex });
-            const pts = body.points;
-            const p1 = pts[target.startIndex!];
-            const p2 = pts[target.endIndex!];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const len = Math.hypot(dx, dy) || 1;
-            dragSessionRef.current = {
-              type: 'wall-offset',
-              bodyId,
-              pointerId,
-              startClientX: clientX,
-              startClientY: clientY,
-              startPlaneIntersection: target.hitPoint || new THREE.Vector3(),
-              initialPoints: body.points.map((p) => ({ ...p })),
-              initialHeight: body.extrusionHeight,
-              initialBevelSize: body.bevelSize ?? 1,
-              partEdgeStartIndex: target.startIndex,
-              partEdgeEndIndex: target.endIndex,
-              normal2D: { x: -dy / len, y: dx / len },
-            };
-          } else if (target.gizmoType === 'fillet') {
-            setActiveEditPart({ bodyId, type: 'edge', startIndex: target.startIndex, endIndex: target.endIndex });
-            dragSessionRef.current = {
-              type: 'fillet',
-              bodyId,
-              pointerId,
-              startClientX: clientX,
-              startClientY: clientY,
-              startPlaneIntersection: target.hitPoint || new THREE.Vector3(),
-              initialPoints: body.points.map((p) => ({ ...p })),
-              initialHeight: body.extrusionHeight,
-              initialBevelSize: body.bevelSize ?? 2,
-              partEdgeStartIndex: target.startIndex,
-              partEdgeEndIndex: target.endIndex,
-            };
-          } else if (target.gizmoType === 'vertex') {
-            setActiveEditPart({ bodyId, type: 'corner', index: target.index });
-            dragSessionRef.current = {
-              type: 'vertex',
-              bodyId,
-              pointerId,
-              startClientX: clientX,
-              startClientY: clientY,
-              startPlaneIntersection: target.hitPoint || new THREE.Vector3(),
-              initialPoints: body.points.map((p) => ({ ...p })),
-              initialHeight: body.extrusionHeight,
-              initialBevelSize: body.bevelSize ?? 1,
-              partCornerIndex: target.index,
-            };
-          }
-        } else if (target.type === 'face' && target.faceType === 'top') {
-          setActiveEditPart({ bodyId, type: 'face', faceType: 'top' });
-          dragSessionRef.current = {
-            type: 'face-height',
-            bodyId,
-            pointerId,
-            startClientX: clientX,
-            startClientY: clientY,
-            startPlaneIntersection: target.hitPoint || new THREE.Vector3(),
-            initialPoints: body.points.map((p) => ({ ...p })),
-            initialHeight: body.extrusionHeight,
-            initialBevelSize: body.bevelSize ?? 1,
-          };
-        } else if (target.type === 'edge') {
-          setActiveEditPart({ bodyId, type: 'edge', startIndex: target.startIndex, endIndex: target.endIndex });
-        }
-
-        setIsDragging(true);
-        setDragDelta(0);
+      } else if (drag.kind === 'vertex' && drag.cornerIndex !== undefined) {
+        const current = intersectPlane(clientX, clientY, drag.planeY);
+        if (!current) return;
+        const snapped = { x: Math.round(current.x / 5) * 5, y: Math.round(-current.z / 5) * 5 };
+        commitPoints(drag, (pts) => {
+          pts[drag.cornerIndex!] = snapped;
+          return pts;
+        });
       }
     };
 
-    const handlePointerMove = (clientX: number, clientY: number) => {
-      const session = dragSessionRef.current;
-      if (!session) {
-        // Hover cursor styling
-        const target = resolveHitTarget(clientX, clientY);
-        if (renderer.domElement) {
-          if (target?.type === 'gizmo') {
-            renderer.domElement.style.cursor = 'ns-resize';
-          } else if (target?.type === 'face') {
-            renderer.domElement.style.cursor = 'ns-resize';
-          } else if (target?.type === 'edge') {
-            renderer.domElement.style.cursor = 'pointer';
-          } else {
-            renderer.domElement.style.cursor = 'default';
-          }
-        }
-        return;
-      }
+    // ---- Pointer pipeline -------------------------------------------------
+    let pressed: { x: number; y: number; pointerId: number } | null = null;
 
-      // Live Shapr3D Direct Modeling Actions
-      if (session.type === 'face-height') {
-        const deltaScreenY = (session.startClientY - clientY) * 0.75;
-        // Snap to whole millimeter intervals
-        const rawHeight = session.initialHeight + deltaScreenY;
-        const snappedHeight = Math.max(2, Math.min(600, Math.round(rawHeight)));
-        const delta = Math.round(snappedHeight - session.initialHeight);
-
-        setDragDelta(delta);
-        onUpdateBodyRef.current(session.bodyId, { extrusionHeight: snappedHeight });
-      } else if (session.type === 'wall-offset' && session.normal2D && session.partEdgeStartIndex !== undefined && session.partEdgeEndIndex !== undefined) {
-        const deltaDist = (session.startClientY - clientY) * 0.5;
-        const snapDist = Math.round(deltaDist);
-        setDragDelta(snapDist);
-
-        const pts = [...session.initialPoints];
-        const p1 = pts[session.partEdgeStartIndex];
-        const p2 = pts[session.partEdgeEndIndex];
-        const nx = session.normal2D.x;
-        const ny = session.normal2D.y;
-
-        pts[session.partEdgeStartIndex] = {
-          x: Math.round(p1.x + nx * snapDist),
-          y: Math.round(p1.y + ny * snapDist),
-        };
-        pts[session.partEdgeEndIndex] = {
-          x: Math.round(p2.x + nx * snapDist),
-          y: Math.round(p2.y + ny * snapDist),
-        };
-        onUpdateBodyRef.current(session.bodyId, { points: pts });
-      } else if (session.type === 'fillet') {
-        const deltaR = (session.startClientY - clientY) * 0.1;
-        const newRadius = Math.max(0, Math.min(20, Math.round((session.initialBevelSize + deltaR) * 2) / 2));
-        setDragDelta(Math.round((newRadius - session.initialBevelSize) * 10) / 10);
-        onUpdateBodyRef.current(session.bodyId, { 
-          bevelSize: newRadius, 
-          bevelEnabled: newRadius > 0 
-        });
-      } else if (session.type === 'vertex' && session.partCornerIndex !== undefined && mountRef.current && cameraRef.current) {
-        const rect = mountRef.current.getBoundingClientRect();
-        mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-        mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(mouse, cameraRef.current);
-
-        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-        const intersectPt = new THREE.Vector3();
-        raycaster.ray.intersectPlane(groundPlane, intersectPt);
-
-        const snapX = Math.round(intersectPt.x / 5) * 5;
-        const snapY = Math.round(-intersectPt.z / 5) * 5;
-
-        const pts = session.initialPoints.map((p, idx) => {
-          if (idx === session.partCornerIndex) {
-            return { x: snapX, y: snapY };
-          }
-          return p;
-        });
-        onUpdateBodyRef.current(session.bodyId, { points: pts });
+    const handleRepeatClick = (clientX: number, clientY: number) => {
+      const point = intersectPlane(clientX, clientY, 0);
+      if (!point) return;
+      let snap: Point2D = { x: Math.round(point.x), y: Math.round(-point.z) };
+      live.current.bodies.forEach((b) =>
+        b.points.forEach((pt) => {
+          if (Math.hypot(pt.x - snap.x, pt.y - snap.y) < 25) snap = { x: pt.x, y: pt.y };
+        })
+      );
+      const cfg = live.current.repeatConfig;
+      const update = live.current.onUpdateRepeatConfig;
+      if (cfg.drawingStep === 'start') {
+        update((p) => ({ ...p, startPoint: snap, drawingStep: 'end' }));
+      } else if (cfg.drawingStep === 'end') {
+        update((p) =>
+          cfg.type === 'curved'
+            ? { ...p, endPoint: snap, drawingStep: 'curve' }
+            : { ...p, endPoint: snap, isDrawingLine: false, drawingStep: 'done' }
+        );
+      } else if (cfg.drawingStep === 'curve') {
+        update((p) => ({ ...p, controlPoint: snap, isDrawingLine: false, drawingStep: 'done' }));
       }
     };
 
-    const handlePointerUp = (clientX: number, clientY: number) => {
-      const wasDragging = Boolean(dragSessionRef.current);
-      dragSessionRef.current = null;
-      setIsDragging(false);
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.isPrimary || e.button !== 0) return;
+      pressed = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+      if (live.current.repeatConfig.isDrawingLine) return;
+
+      const hit = resolveHit(e.clientX, e.clientY);
+      if (!hit) return;
+
+      const toolDragsFaces = live.current.activeCadTool === 'extrude' || live.current.activeCadTool === 'moveFace';
+      if (hit.type !== 'gizmo' && !(hit.type === 'face' && hit.faceType === 'top' && toolDragsFaces)) return;
+
+      const drag = startDrag(hit, e.clientX, e.clientY);
+      if (!drag) return;
+
+      // Take the gesture away from OrbitControls before it starts.
+      controls.enabled = false;
+      dragRef.current = drag;
+      renderer.domElement.setPointerCapture(e.pointerId);
+      live.current.onSelectBody(drag.bodyId);
+      if (hit.type === 'gizmo' && hit.gizmo === 'vertex') {
+        live.current.setActiveEditPart({ bodyId: drag.bodyId, type: 'corner', index: hit.index });
+      } else if (drag.kind === 'wall-offset' || drag.kind === 'fillet') {
+        live.current.setActiveEditPart({
+          bodyId: drag.bodyId,
+          type: 'edge',
+          startIndex: hit.type === 'gizmo' ? hit.startIndex : undefined,
+          endIndex: hit.type === 'gizmo' ? hit.endIndex : undefined,
+        });
+      } else {
+        live.current.setActiveEditPart({ bodyId: drag.bodyId, type: 'face', faceType: 'top' });
+      }
+      live.current.onDragStateChange?.(true);
+      setIsDragging(true);
       setDragDelta(0);
+    };
 
-      if (controlsRef.current) {
-        controlsRef.current.enabled = true;
+    const onPointerMove = (e: PointerEvent) => {
+      const drag = dragRef.current;
+      if (drag) {
+        applyDrag(drag, e.clientX, e.clientY);
+        return;
+      }
+      if (e.pointerType !== 'mouse' || e.buttons !== 0) return;
+      const hit = resolveHit(e.clientX, e.clientY);
+      renderer.domElement.style.cursor =
+        hit?.type === 'gizmo' ? 'grab' : hit ? 'pointer' : live.current.repeatConfig.isDrawingLine ? 'crosshair' : 'default';
+    };
+
+    const finishPointer = (e: PointerEvent, cancelled: boolean) => {
+      if (dragRef.current) {
+        dragRef.current = null;
+        controls.enabled = true;
+        live.current.onDragStateChange?.(false);
+        setIsDragging(false);
+        setDragDelta(0);
+        if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId);
+        pressed = null;
+        return;
+      }
+      const down = pressed;
+      pressed = null;
+      if (cancelled || !down || down.pointerId !== e.pointerId) return;
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX) return; // it was an orbit/pan
+
+      if (live.current.repeatConfig.isDrawingLine) {
+        handleRepeatClick(e.clientX, e.clientY);
+        return;
       }
 
-      const diff = Math.hypot(clientX - startX, clientY - startY);
-      // Quick tap / click without drag (< 6px movement)
-      if (diff < 6 && !wasDragging) {
-        const target = resolveHitTarget(clientX, clientY);
-        if (target) {
-          onSelectBodyRef.current(target.bodyId);
-          if (target.type === 'face') {
-            setActiveEditPart({ bodyId: target.bodyId, type: 'face', faceType: 'top' });
-          } else if (target.type === 'edge') {
-            setActiveEditPart({ bodyId: target.bodyId, type: 'edge', startIndex: target.startIndex, endIndex: target.endIndex });
-          } else if (target.type === 'gizmo' && target.gizmoType === 'vertex') {
-            setActiveEditPart({ bodyId: target.bodyId, type: 'corner', index: target.index });
-          }
-        } else {
-          // Clicked empty background
-          onSelectBodyRef.current(null);
-          setActiveEditPart(null);
-        }
+      const hit = resolveHit(e.clientX, e.clientY);
+      if (!hit) {
+        live.current.onSelectBody(null);
+        live.current.setActiveEditPart(null);
+        return;
+      }
+      const multi = e.shiftKey || e.metaKey || e.ctrlKey;
+      live.current.onSelectBody(hit.bodyId, multi);
+      if (multi) return;
+      if (hit.type === 'face') {
+        live.current.setActiveEditPart({ bodyId: hit.bodyId, type: 'face', faceType: hit.faceType });
+      } else if (hit.type === 'edge') {
+        live.current.setActiveEditPart({
+          bodyId: hit.bodyId,
+          type: 'edge',
+          startIndex: hit.startIndex,
+          endIndex: hit.endIndex,
+        });
       }
     };
+    const onPointerUp = (e: PointerEvent) => finishPointer(e, false);
+    const onPointerCancel = (e: PointerEvent) => finishPointer(e, true);
 
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      handlePointerDown(e.clientX, e.clientY, 0);
-    };
+    // Registered in the capture phase, ahead of OrbitControls, so a gizmo grab can disable it.
+    renderer.domElement.addEventListener('pointerdown', onPointerDown, { capture: true });
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('pointercancel', onPointerCancel);
 
-    const onMouseMove = (e: MouseEvent) => {
-      handlePointerMove(e.clientX, e.clientY);
-    };
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.screenSpacePanning = true;
+    controls.zoomToCursor = true;
+    controls.minDistance = 20;
+    controls.maxDistance = 2500;
+    controlsRef.current = controls;
 
-    const onMouseUp = (e: MouseEvent) => {
-      handlePointerUp(e.clientX, e.clientY);
-    };
+    // ---- Camera framing ---------------------------------------------------
+    const frameView = (face: CubeFace, instant = false) => {
+      const box = new THREE.Box3();
+      let any = false;
+      live.current.bodies.forEach((b) => {
+        if (!b.visible) return;
+        any = true;
+        b.points.forEach((p) => {
+          box.expandByPoint(new THREE.Vector3(p.x, 0, -p.y));
+          box.expandByPoint(new THREE.Vector3(p.x, b.extrusionHeight, -p.y));
+        });
+      });
+      if (!any) box.set(new THREE.Vector3(-100, 0, -100), new THREE.Vector3(100, 50, 100));
 
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 1) {
-        const t = e.touches[0];
-        handlePointerDown(t.clientX, t.clientY, 0);
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 40);
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const fitFov = camera.aspect < 1 ? 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect) : vFov;
+      const distance = (radius / Math.sin(fitFov / 2)) * 1.2;
+
+      const directions: Record<CubeFace, THREE.Vector3> = {
+        iso: new THREE.Vector3(0.62, 0.55, 0.72),
+        top: new THREE.Vector3(0, 1, 0.0001),
+        bottom: new THREE.Vector3(0, -1, 0.0001),
+        front: new THREE.Vector3(0, 0.08, 1),
+        back: new THREE.Vector3(0, 0.08, -1),
+        right: new THREE.Vector3(1, 0.08, 0),
+        left: new THREE.Vector3(-1, 0.08, 0),
+      };
+      const toPos = center.clone().add(directions[face].normalize().multiplyScalar(distance));
+
+      if (instant) {
+        camera.position.copy(toPos);
+        controls.target.copy(center);
+        controls.update();
+        tweenRef.current = null;
+      } else {
+        tweenRef.current = {
+          start: performance.now(),
+          fromPos: camera.position.clone(),
+          toPos,
+          fromTarget: controls.target.clone(),
+          toTarget: center,
+        };
       }
     };
+    frameViewRef.current = frameView;
+    frameView('iso', true);
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 1) {
-        if (dragSessionRef.current) {
-          if (e.cancelable) e.preventDefault();
-          e.stopPropagation();
-        }
-        const t = e.touches[0];
-        handlePointerMove(t.clientX, t.clientY);
-      }
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      if (e.changedTouches.length === 1) {
-        const t = e.changedTouches[0];
-        handlePointerUp(t.clientX, t.clientY);
-      }
-    };
-
-    renderer.domElement.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-
-    renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: false });
-    window.addEventListener('touchend', onTouchEnd);
-    window.addEventListener('touchcancel', onTouchEnd);
-
-    // Resize Handler
-    const handleResize = () => {
-      if (!container || !cameraRef.current || !rendererRef.current) return;
+    // ---- Resize + render loop ---------------------------------------------
+    const resizeObserver = new ResizeObserver(() => {
       const w = container.clientWidth;
       const h = container.clientHeight;
-      cameraRef.current.aspect = w / h;
-      cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(w, h);
-    };
-
-    const resizeObserver = new ResizeObserver(handleResize);
+      if (!w || !h) return;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    });
     resizeObserver.observe(container);
 
-    // Render Animation Loop
-    let reqId: number;
+    let raf = 0;
     const animate = () => {
-      reqId = requestAnimationFrame(animate);
-
-      // Smooth Camera Glide Tween (for Shapr3D ViewCube & Preset Clicks)
-      if (cameraTweenRef.current?.active && cameraRef.current && controlsRef.current) {
-        const tween = cameraTweenRef.current;
-        tween.progress += 0.055;
-        const t = Math.min(1, tween.progress);
-        const ease = 1 - Math.pow(1 - t, 3); // Cubic ease-out
-
-        cameraRef.current.position.lerpVectors(tween.startPos, tween.targetPos, ease);
-        controlsRef.current.target.lerpVectors(tween.startTarget, tween.targetLookAt, ease);
-        controlsRef.current.update();
-
-        if (t >= 1) {
-          tween.active = false;
-        }
-      } else if (controlsRef.current) {
-        controlsRef.current.update();
+      raf = requestAnimationFrame(animate);
+      const tween = tweenRef.current;
+      if (tween) {
+        const t = clamp((performance.now() - tween.start) / 450, 0, 1);
+        const ease = 1 - Math.pow(1 - t, 3);
+        camera.position.lerpVectors(tween.fromPos, tween.toPos, ease);
+        controls.target.lerpVectors(tween.fromTarget, tween.toTarget, ease);
+        if (t >= 1) tweenRef.current = null;
       }
-
-      if (rendererRef.current && sceneRef.current && cameraRef.current) {
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
-      }
+      controls.update();
+      renderer.render(scene, camera);
     };
-
     animate();
     setIsSceneReady(true);
 
     return () => {
       setIsSceneReady(false);
-      cancelAnimationFrame(reqId);
+      cancelAnimationFrame(raf);
       resizeObserver.disconnect();
-      if (rendererRef.current && container) {
-        renderer.domElement.removeEventListener('mousedown', onMouseDown);
-        window.removeEventListener('mousemove', onMouseMove);
-        window.removeEventListener('mouseup', onMouseUp);
-        renderer.domElement.removeEventListener('touchstart', onTouchStart);
-        window.removeEventListener('touchmove', onTouchMove);
-        window.removeEventListener('touchend', onTouchEnd);
-        window.removeEventListener('touchcancel', onTouchEnd);
-        try {
-          container.removeChild(renderer.domElement);
-        } catch (_) {}
-      }
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown, { capture: true });
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
+      controls.dispose();
+      entriesRef.current.clear();
+      [bodyGroup, gizmoGroup, helperGroup, previewGroup].forEach(clearGroup);
+      [shadowCatcher, grid, axisX, axisY].forEach(disposeObject);
+      envTexture.dispose();
+      pmrem.dispose();
+      renderer.dispose();
+      renderer.domElement.remove();
+      cameraRef.current = null;
+      controlsRef.current = null;
     };
   }, []);
 
-  // Update Dynamic Shapr3D Interactive 3D Gizmos & Helpers
+  // ---- Sync solids with the document (only rebuilt when their shape changes) ----
+  useEffect(() => {
+    const group = bodyGroupRef.current;
+    if (!isSceneReady || !group) return;
+    const entries = entriesRef.current;
+    const visible = new Map(bodies.filter((b) => b.visible).map((b) => [b.id, b]));
+
+    entries.forEach((entry, id) => {
+      if (!visible.has(id)) {
+        group.remove(entry.group);
+        disposeObject(entry.group);
+        entries.delete(id);
+      }
+    });
+
+    visible.forEach((body, id) => {
+      const signature = bodySignature(body);
+      const existing = entries.get(id);
+      if (existing?.signature === signature) return;
+      if (existing) {
+        group.remove(existing.group);
+        disposeObject(existing.group);
+        entries.delete(id);
+      }
+
+      const geometry = buildBodyGeometry(body);
+      if (!geometry) return;
+      const mesh = new THREE.Mesh(geometry, createMaterial(body));
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      const outline = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geometry, 28),
+        new THREE.LineBasicMaterial({ color: ACCENT })
+      );
+      outline.visible = false;
+
+      const bodyGroup = new THREE.Group();
+      bodyGroup.userData.bodyId = id;
+      bodyGroup.add(mesh, outline);
+      group.add(bodyGroup);
+      entries.set(id, { group: bodyGroup, outline, signature });
+    });
+  }, [bodies, isSceneReady]);
+
+  // ---- Selection outlines -------------------------------------------------
+  useEffect(() => {
+    entriesRef.current.forEach((entry, id) => {
+      entry.outline.visible = id === selectedBodyId || selectedBodyIds.includes(id);
+    });
+  }, [selectedBodyId, selectedBodyIds, bodies, isSceneReady]);
+
+  // ---- Gizmos & face/edge highlights for the primary selection ------------
   useEffect(() => {
     const gizmoGroup = gizmoGroupRef.current;
     const helperGroup = helperGroupRef.current;
-    if (!gizmoGroup || !helperGroup) return;
+    if (!isSceneReady || !gizmoGroup || !helperGroup) return;
+    clearGroup(gizmoGroup);
+    clearGroup(helperGroup);
 
-    // Clear previous gizmos & helpers
-    while (gizmoGroup.children.length > 0) {
-      const obj = gizmoGroup.children[0];
-      gizmoGroup.remove(obj);
-      if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+    const body = bodies.find((b) => b.id === selectedBodyId);
+    if (!body || !body.visible || body.points.length < 3) return;
+    if (selectedBodyIds.length > 1) return;
+
+    const { points, extrusionHeight: height } = body;
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const extent = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const s = clamp(extent / 170, 0.7, 2.4);
+    const topY = height + 0.2;
+
+    const overlayMaterial = (opacity: number) =>
+      new THREE.MeshBasicMaterial({
+        color: ACCENT,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+    const handleMaterial = (color = '#ffffff') =>
+      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true });
+
+    const part = activeEditPart?.bodyId === body.id ? activeEditPart : null;
+    const edgeActive = part?.type === 'edge' && part.startIndex !== undefined && part.endIndex !== undefined;
+    const faceActive = !edgeActive;
+    const showVertices = activeCadTool === 'moveFace' || part?.type === 'corner' || edgeActive;
+
+    // Top-face highlight
+    if (faceActive) {
+      const shape = buildBodyShape(body);
+      if (shape) {
+        const overlay = new THREE.Mesh(new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2), overlayMaterial(0.2));
+        overlay.position.y = topY;
+        overlay.renderOrder = 10;
+        helperGroup.add(overlay);
+      }
     }
-    while (helperGroup.children.length > 0) {
-      const obj = helperGroup.children[0];
-      helperGroup.remove(obj);
-      if (obj instanceof THREE.Mesh) obj.geometry.dispose();
+
+    // Vertex handles (top corners)
+    if (showVertices) {
+      const sphere = new THREE.SphereGeometry(2.4 * s, 16, 12);
+      points.forEach((pt, i) => {
+        const active = part?.type === 'corner' && part.index === i;
+        const node = new THREE.Mesh(sphere, handleMaterial(active ? ACCENT : '#ffffff'));
+        node.position.set(pt.x, topY, -pt.y);
+        node.renderOrder = 30;
+        node.userData = { gizmo: 'vertex', bodyId: body.id, index: i };
+        gizmoGroup.add(node);
+      });
     }
 
-    const selectedBody = bodies.find((b) => b.id === selectedBodyId);
-    if (!selectedBody || !selectedBody.visible) return;
+    // Push-pull arrow on the top face
+    if (faceActive) {
+      const anchor = getInteriorAnchor(body);
+      const arrow = new THREE.Group();
+      arrow.position.set(anchor.x, topY, -anchor.y);
+      arrow.scale.setScalar(s);
+      arrow.userData = { gizmo: 'extrude-height', bodyId: body.id };
 
-    const height = selectedBody.extrusionHeight;
-    const points = selectedBody.points;
-    const n = points.length;
-    if (n < 3) return;
+      const ringMat = handleMaterial(ACCENT);
+      const ring = new THREE.Mesh(new THREE.RingGeometry(4.5, 6.5, 40).rotateX(-Math.PI / 2), ringMat);
+      ring.renderOrder = 30;
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 18, 12), ringMat);
+      shaft.position.y = 9;
+      shaft.renderOrder = 31;
+      const head = new THREE.Mesh(new THREE.ConeGeometry(4.2, 9, 20), ringMat);
+      head.position.y = 22.5;
+      head.renderOrder = 31;
+      const hitbox = new THREE.Mesh(
+        new THREE.CylinderGeometry(11, 11, 40, 12),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      hitbox.position.y = 16;
+      arrow.add(ring, shaft, head, hitbox);
+      gizmoGroup.add(arrow);
+    }
 
-    const cx = points.reduce((acc, p) => acc + p.x, 0) / n;
-    const cy = points.reduce((acc, p) => acc + p.y, 0) / n;
-    const topY = height + 0.3;
+    // Wall highlight + offset arrow + fillet handle for a selected edge
+    if (edgeActive) {
+      const i1 = part!.startIndex!;
+      const i2 = part!.endIndex!;
+      const p1 = points[i1];
+      const p2 = points[i2];
+      if (p1 && p2) {
+        const wall = new THREE.BufferGeometry();
+        wall.setAttribute(
+          'position',
+          new THREE.BufferAttribute(
+            new Float32Array([
+              p1.x, 0, -p1.y, p2.x, 0, -p2.y, p2.x, height, -p2.y,
+              p1.x, 0, -p1.y, p2.x, height, -p2.y, p1.x, height, -p1.y,
+            ]),
+            3
+          )
+        );
+        const wallMesh = new THREE.Mesh(wall, overlayMaterial(0.28));
+        wallMesh.renderOrder = 10;
+        helperGroup.add(wallMesh);
 
-    // 1. Interactive Vertex Spheres at all corners of selected body
-    const vertexMat = new THREE.MeshBasicMaterial({ color: '#38bdf8', depthTest: false, transparent: true, opacity: 0.85 });
-    const vertexActiveMat = new THREE.MeshBasicMaterial({ color: '#f59e0b', depthTest: false, transparent: true, opacity: 0.95 });
-    const sphereGeo = new THREE.SphereGeometry(3.2, 14, 14);
+        const midX = (p1.x + p2.x) / 2;
+        const midY = (p1.y + p2.y) / 2;
+        const len = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+        // World-space outward normal of the wall (2D normal is (-dy, dx); world z is -y)
+        const dir = new THREE.Vector3(-(p2.y - p1.y) / len, 0, -(p2.x - p1.x) / len);
 
-    points.forEach((pt, i) => {
-      const isCornerActive = activeEditPart?.type === 'corner' && activeEditPart.index === i;
-      
-      // Bottom corner node
-      const bNode = new THREE.Mesh(sphereGeo, isCornerActive ? vertexActiveMat : vertexMat);
-      bNode.position.set(pt.x, 0, -pt.y);
-      bNode.renderOrder = 2000;
-      bNode.userData = { isGizmo: true, gizmoType: 'vertex', bodyId: selectedBody.id, index: i };
-      gizmoGroup.add(bNode);
+        const offset = new THREE.Group();
+        offset.position.set(midX, height / 2, -midY);
+        offset.userData = { gizmo: 'offset-wall', bodyId: body.id, startIndex: i1, endIndex: i2 };
+        const helper = new THREE.ArrowHelper(dir, new THREE.Vector3(), 26 * s, ACCENT, 9 * s, 5 * s);
+        (helper.line.material as THREE.Material).depthTest = false;
+        (helper.cone.material as THREE.Material).depthTest = false;
+        helper.line.renderOrder = helper.cone.renderOrder = 31;
+        const hit = new THREE.Mesh(new THREE.SphereGeometry(12 * s, 12, 8), new THREE.MeshBasicMaterial({ visible: false }));
+        hit.position.copy(dir.clone().multiplyScalar(14 * s));
+        offset.add(helper, hit);
+        gizmoGroup.add(offset);
 
-      // Top corner node
-      const tNode = new THREE.Mesh(sphereGeo, isCornerActive ? vertexActiveMat : vertexMat);
-      tNode.position.set(pt.x, topY, -pt.y);
-      tNode.renderOrder = 2000;
-      tNode.userData = { isGizmo: true, gizmoType: 'vertex', bodyId: selectedBody.id, index: i };
-      gizmoGroup.add(tNode);
+        const fillet = new THREE.Group();
+        fillet.position.set(midX, height + 1, -midY);
+        fillet.userData = { gizmo: 'fillet', bodyId: body.id, startIndex: i1, endIndex: i2 };
+        const arc = new THREE.Mesh(new THREE.TorusGeometry(5 * s, 1.3 * s, 8, 20, Math.PI), handleMaterial('#ffffff'));
+        arc.rotation.x = -Math.PI / 2;
+        arc.renderOrder = 31;
+        const arcHit = new THREE.Mesh(new THREE.SphereGeometry(10 * s, 10, 8), new THREE.MeshBasicMaterial({ visible: false }));
+        fillet.add(arc, arcHit);
+        gizmoGroup.add(fillet);
+      }
+    }
+  }, [activeEditPart, activeCadTool, bodies, selectedBodyId, selectedBodyIds, isSceneReady]);
+
+  // ---- Pattern path preview ----------------------------------------------
+  useEffect(() => {
+    const group = previewGroupRef.current;
+    if (!isSceneReady || !group) return;
+    clearGroup(group);
+
+    const { startPoint, endPoint, controlPoint, type, isDrawingLine, drawingStep } = repeatConfig;
+    if (!isDrawingLine && drawingStep !== 'done') return;
+
+    const toWorld = (p: Point2D) => new THREE.Vector3(p.x, 0.6, -p.y);
+    const marker = new THREE.SphereGeometry(3.2, 14, 10);
+    const markerMat = new THREE.MeshBasicMaterial({ color: ACCENT, depthTest: false });
+    [startPoint, controlPoint, endPoint].forEach((p) => {
+      if (!p) return;
+      const m = new THREE.Mesh(marker, markerMat);
+      m.position.copy(toWorld(p));
+      m.renderOrder = 40;
+      group.add(m);
     });
 
-    const isTopFaceActive = !activeEditPart || activeEditPart.type === 'face' || activeEditPart.faceType === 'top';
-    const isEdgeActive = activeEditPart?.type === 'edge' && activeEditPart.startIndex !== undefined;
-
-    // 2. SHAPR3D SIGNATURE PUSH-PULL ARROW GIZMO (on Top Face)
-    if (isTopFaceActive) {
-      // Glow face overlay
-      try {
-        const shape = new THREE.Shape();
-        shape.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < n; i++) shape.lineTo(points[i].x, points[i].y);
-        shape.closePath();
-
-        const topGeo = new THREE.ShapeGeometry(shape);
-        const topMat = new THREE.MeshBasicMaterial({
-          color: '#00e5ff',
-          transparent: true,
-          opacity: 0.35,
-          side: THREE.DoubleSide,
-          depthTest: false,
-        });
-        const topMesh = new THREE.Mesh(topGeo, topMat);
-        topMesh.rotation.x = -Math.PI / 2;
-        topMesh.position.y = topY + 0.1;
-        topMesh.renderOrder = 1990;
-        helperGroup.add(topMesh);
-
-        // Highlight border
-        const borderPts = points.map((p) => new THREE.Vector3(p.x, topY + 0.15, -p.y));
-        borderPts.push(borderPts[0]);
-        const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPts);
-        const borderMat = new THREE.LineBasicMaterial({ color: '#38bdf8', linewidth: 3, depthTest: false });
-        const borderLine = new THREE.Line(borderGeo, borderMat);
-        borderLine.renderOrder = 1995;
-        helperGroup.add(borderLine);
-      } catch (_) {}
-
-      // Interactive 3D Arrow Gizmo Object
-      const arrowGroup = new THREE.Group();
-      arrowGroup.position.set(cx, topY, -cy);
-      arrowGroup.userData = { isGizmo: true, gizmoType: 'extrude-height', bodyId: selectedBody.id };
-
-      // Base Pull Ring
-      const ringGeo = new THREE.RingGeometry(4.5, 7.5, 32);
-      const ringMat = new THREE.MeshBasicMaterial({ color: '#00e5ff', side: THREE.DoubleSide, depthTest: false });
-      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-      ringMesh.rotation.x = -Math.PI / 2;
-      ringMesh.position.y = 0.5;
-      ringMesh.renderOrder = 2002;
-      arrowGroup.add(ringMesh);
-
-      // Arrow Shaft (Vertical Cylinder)
-      const shaftGeo = new THREE.CylinderGeometry(1.6, 1.6, 26, 16);
-      const arrowMat = new THREE.MeshBasicMaterial({ color: '#00e5ff', depthTest: false });
-      const shaftMesh = new THREE.Mesh(shaftGeo, arrowMat);
-      shaftMesh.position.y = 14;
-      shaftMesh.renderOrder = 2005;
-      arrowGroup.add(shaftMesh);
-
-      // Primary Cone Arrowhead (Pointing Up)
-      const coneGeo = new THREE.ConeGeometry(5, 10, 20);
-      const coneMesh = new THREE.Mesh(coneGeo, arrowMat);
-      coneMesh.position.y = 30;
-      coneMesh.renderOrder = 2006;
-      arrowGroup.add(coneMesh);
-
-      // Secondary Downward Arrowhead (Bidirectional push-pull visual)
-      const downConeGeo = new THREE.ConeGeometry(3.5, 6, 16);
-      const downConeMesh = new THREE.Mesh(downConeGeo, arrowMat);
-      downConeMesh.rotation.x = Math.PI;
-      downConeMesh.position.y = 4;
-      downConeMesh.renderOrder = 2006;
-      arrowGroup.add(downConeMesh);
-
-      // Invisible Thick Hitbox for super reliable grab
-      const hitProxyGeo = new THREE.CylinderGeometry(14, 14, 42, 12);
-      const hitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
-      const hitProxyMesh = new THREE.Mesh(hitProxyGeo, hitProxyMat);
-      hitProxyMesh.position.y = 16;
-      hitProxyMesh.userData = { isGizmo: true, gizmoType: 'extrude-height', bodyId: selectedBody.id };
-      arrowGroup.add(hitProxyMesh);
-
-      gizmoGroup.add(arrowGroup);
+    if (startPoint && endPoint) {
+      const curve =
+        type === 'curved' && controlPoint
+          ? new THREE.QuadraticBezierCurve3(toWorld(startPoint), toWorld(controlPoint), toWorld(endPoint))
+          : new THREE.LineCurve3(toWorld(startPoint), toWorld(endPoint));
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)),
+        new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false })
+      );
+      line.renderOrder = 39;
+      group.add(line);
     }
+  }, [repeatConfig, isSceneReady]);
 
-    // 3. SHAPR3D WALL OFFSET & FILLET/CHAMFER GIZMO (on Active Edge)
-    if (isEdgeActive) {
-      const idx1 = activeEditPart.startIndex!;
-      const idx2 = activeEditPart.endIndex!;
-      const pt1 = points[idx1];
-      const pt2 = points[idx2];
+  const handleSelectCameraAngle = useCallback((face: CubeFace) => frameViewRef.current(face), []);
 
-      const midX = (pt1.x + pt2.x) / 2;
-      const midY = (pt1.y + pt2.y) / 2;
-      const edx = pt2.x - pt1.x;
-      const edy = pt2.y - pt1.y;
-      const elen = Math.hypot(edx, edy) || 1;
-      const nx = -edy / elen;
-      const ny = edx / elen;
-
-      // Glow wall mesh
-      const wallGeo = new THREE.BufferGeometry();
-      const wallVerts = new Float32Array([
-        pt1.x, 0, -pt1.y,
-        pt2.x, 0, -pt2.y,
-        pt2.x, height, -pt2.y,
-        pt1.x, 0, -pt1.y,
-        pt2.x, height, -pt2.y,
-        pt1.x, height, -pt1.y,
-      ]);
-      wallGeo.setAttribute('position', new THREE.BufferAttribute(wallVerts, 3));
-      const wallMat = new THREE.MeshBasicMaterial({ color: '#f59e0b', transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthTest: false });
-      const wallMesh = new THREE.Mesh(wallGeo, wallMat);
-      wallMesh.renderOrder = 1990;
-      helperGroup.add(wallMesh);
-
-      // Edge line highlight
-      const edgeLineGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(pt1.x, height, -pt1.y),
-        new THREE.Vector3(pt2.x, height, -pt2.y),
-      ]);
-      const edgeLineMat = new THREE.LineBasicMaterial({ color: '#fbbf24', linewidth: 4, depthTest: false });
-      const edgeLine = new THREE.Line(edgeLineGeo, edgeLineMat);
-      edgeLine.renderOrder = 2000;
-      helperGroup.add(edgeLine);
-
-      // Normal Push-Pull Arrow pointing perpendicular outward
-      const wallArrowGroup = new THREE.Group();
-      wallArrowGroup.position.set(midX, height / 2, -midY);
-      wallArrowGroup.userData = { isGizmo: true, gizmoType: 'offset-wall', bodyId: selectedBody.id, startIndex: idx1, endIndex: idx2 };
-
-      const dir = new THREE.Vector3(nx, 0, -ny).normalize();
-      const arrowHelper = new THREE.ArrowHelper(dir, new THREE.Vector3(0, 0, 0), 28, 0xf59e0b, 8, 4.5);
-      arrowHelper.renderOrder = 2005;
-      wallArrowGroup.add(arrowHelper);
-
-      // Hitbox
-      const wallHitbox = new THREE.Mesh(new THREE.SphereGeometry(12, 12, 12), new THREE.MeshBasicMaterial({ visible: false }));
-      wallHitbox.position.copy(dir.clone().multiplyScalar(14));
-      wallHitbox.userData = { isGizmo: true, gizmoType: 'offset-wall', bodyId: selectedBody.id, startIndex: idx1, endIndex: idx2 };
-      wallArrowGroup.add(wallHitbox);
-
-      gizmoGroup.add(wallArrowGroup);
-
-      // Fillet Curved Handle at top edge
-      const filletHandleGroup = new THREE.Group();
-      filletHandleGroup.position.set(midX, height + 1, -midY);
-      filletHandleGroup.userData = { isGizmo: true, gizmoType: 'fillet', bodyId: selectedBody.id, startIndex: idx1, endIndex: idx2 };
-
-      const filletTorusGeo = new THREE.TorusGeometry(5, 1.4, 8, 16, Math.PI);
-      const filletMat = new THREE.MeshBasicMaterial({ color: '#fbbf24', depthTest: false });
-      const filletMesh = new THREE.Mesh(filletTorusGeo, filletMat);
-      filletMesh.rotation.x = -Math.PI / 2;
-      filletMesh.renderOrder = 2006;
-      filletHandleGroup.add(filletMesh);
-
-      const filletHitbox = new THREE.Mesh(new THREE.SphereGeometry(10, 10, 10), new THREE.MeshBasicMaterial({ visible: false }));
-      filletHitbox.userData = { isGizmo: true, gizmoType: 'fillet', bodyId: selectedBody.id, startIndex: idx1, endIndex: idx2 };
-      filletHandleGroup.add(filletHitbox);
-
-      gizmoGroup.add(filletHandleGroup);
-    }
-
-  }, [activeEditPart, bodies, selectedBodyId]);
-
-  // Shapr3D Smooth Camera Navigation to preset angles & ViewCube faces
-  const handleSelectCameraAngle = useCallback((face: CubeFace) => {
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    const mount = mountRef.current;
-    if (!camera || !controls || !mount) return;
-
-    const isSmall = mount.clientWidth < 640;
-    const startPos = camera.position.clone();
-    const startTarget = controls.target.clone();
-    let targetPos = new THREE.Vector3();
-    let targetLookAt = new THREE.Vector3(0, 15, 0);
-
-    switch (face) {
-      case 'top':
-        targetPos.set(0, isSmall ? 520 : 420, 0.1);
-        targetLookAt.set(0, 0, 0);
-        setActiveCameraAngle('top');
-        break;
-      case 'bottom':
-        targetPos.set(0, -(isSmall ? 520 : 420), 0.1);
-        targetLookAt.set(0, 0, 0);
-        break;
-      case 'front':
-        targetPos.set(0, 60, isSmall ? 480 : 380);
-        targetLookAt.set(0, 60, 0);
-        setActiveCameraAngle('front');
-        break;
-      case 'back':
-        targetPos.set(0, 60, -(isSmall ? 480 : 380));
-        targetLookAt.set(0, 60, 0);
-        break;
-      case 'right':
-        targetPos.set(isSmall ? 480 : 380, 60, 0);
-        targetLookAt.set(0, 60, 0);
-        break;
-      case 'left':
-        targetPos.set(-(isSmall ? 480 : 380), 60, 0);
-        targetLookAt.set(0, 60, 0);
-        break;
-      case 'iso':
-      default:
-        if (isSmall) targetPos.set(220, 260, 290);
-        else targetPos.set(160, 200, 240);
-        targetLookAt.set(0, 15, 0);
-        setActiveCameraAngle('iso');
-        break;
-    }
-
-    // Activate smooth slerp tween
-    cameraTweenRef.current = {
-      active: true,
-      startPos,
-      targetPos,
-      startTarget,
-      targetLookAt,
-      progress: 0,
-    };
-  }, []);
-
-  const handleResetCamera = useCallback(() => {
-    handleSelectCameraAngle('iso');
-  }, [handleSelectCameraAngle]);
-
-  const selectedBody = bodies.find((b) => b.id === selectedBodyId);
+  const selectedBody = bodies.find((b) => b.id === selectedBodyId) || null;
 
   return (
-    <div className="relative w-full flex-1 min-h-[300px] h-full bg-[#0a0f1d] rounded-2xl overflow-hidden border border-slate-800 shadow-2xl select-none flex flex-col touch-none">
-      {/* Three canvas target mounting point */}
-      <div ref={mountRef} className="w-full h-full flex-1 min-h-0 touch-none" id="three-model-mount" />
+    <div className="absolute inset-0 select-none touch-none overflow-hidden">
+      <div ref={mountRef} className="absolute inset-0" />
 
-      {/* Shapr3D Interactive 3D ViewCube in Top Right */}
       <ViewCube
-        camera={cameraRef.current}
+        camera={isSceneReady ? cameraRef.current : null}
         onSelectFace={handleSelectCameraAngle}
-        onResetCamera={handleResetCamera}
+        onResetCamera={() => handleSelectCameraAngle('iso')}
       />
 
-      {/* Shapr3D Floating Dimension Badge & Direct Input at Top Center */}
-      {selectedBody && (
-        <ShaprDimensionBadge
+      {selectedBody && selectedBodyIds.length <= 1 && (
+        <DimensionBadge
           body={selectedBody}
           activeEditPart={activeEditPart}
           isDragging={isDragging}
@@ -1276,16 +944,8 @@ export default function ModelViewer3D({
         />
       )}
 
-      {/* Floating 3D Navigation Tips bottom left */}
-      <div className="absolute bottom-3 left-3 flex flex-col gap-1 items-start bg-slate-900/85 backdrop-blur-md px-3 py-2 rounded-xl border border-slate-700/60 font-mono text-xs text-slate-300 pointer-events-none z-10 max-w-[280px] sm:max-w-none shadow-xl">
-        <div className="text-cyan-400 font-semibold uppercase text-[10px] tracking-wider mb-0.5 flex items-center gap-1.5">
-          <Layers size={11} /> Shapr3D Direct Modeling
-        </div>
-        <div className="text-slate-400 text-[10px] flex flex-col gap-0.5 leading-tight">
-          <span>• <b className="text-white">Pull 3D Arrow:</b> Push-Pull face extrusion</span>
-          <span>• <b className="text-white">Click Badge:</b> Type exact millimeter dimension</span>
-          <span>• <b className="text-slate-200">Orbit:</b> 1 finger / Left drag • <b className="text-slate-200">Pan:</b> 2 fingers / Right drag</span>
-        </div>
+      <div className="hidden md:block absolute bottom-3 left-3 text-xs text-slate-500 pointer-events-none">
+        Drag to orbit · Right-drag to pan · Scroll to zoom
       </div>
     </div>
   );
