@@ -54,6 +54,13 @@ export interface Body3D {
 }
 
 /** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
+/** A tapped face of a shape: its top or bottom, or one of its walls (`index` = base side). */
+export interface FaceSel {
+  bodyId: string;
+  kind: 'top' | 'bottom' | 'wall';
+  index?: number;
+}
+
 export interface EdgeSel {
   bodyId: string;
   kind: 'top' | 'bottom' | 'corner';

@@ -20,13 +20,16 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { BevelStyle, Body3D, EdgeSel } from '../types';
+import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
 import { edgeSize, edgeStyle } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
 
 interface ContextBarProps {
   selected: Body3D[];
   edges: EdgeSel[];
+  face: FaceSel | null;
+  onExtrudeFace: (face: FaceSel, delta: number) => void;
+  onClearFace: () => void;
   bodyCount: number;
   isolated: boolean;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
@@ -163,7 +166,7 @@ function Title({ label, sub }: { label: string; sub?: string }) {
 
 /** Appears for whatever is selected and shows exactly what can be typed or done with it. */
 export default function ContextBar(props: ContextBarProps) {
-  const { selected, edges, onUpdateBody } = props;
+  const { selected, edges, face, onUpdateBody } = props;
   if (!selected.length) return null;
 
   const body = selected.length === 1 ? selected[0] : null;
@@ -213,6 +216,35 @@ export default function ContextBar(props: ContextBarProps) {
         <div className="flex items-center gap-0.5 self-end">
           <IconButton icon={Trash2} label="Remove bevel (Del)" onClick={() => props.onEdgeChange(edges, { size: 0 })} danger />
           <IconButton icon={X} label="Done with edges (Esc)" onClick={props.onClearEdges} />
+        </div>
+      </Shell>
+    );
+  }
+
+  // ---- A face is selected: pull it out or push it in ----------------------
+  if (face && body && face.bodyId === body.id) {
+    const elev = body.elevation ?? 0;
+    const title = face.kind === 'top' ? 'Top face' : face.kind === 'bottom' ? 'Bottom face' : `Wall ${(face.index ?? 0) + 1}`;
+    const nudges = [-10, -1, 1, 10];
+    return (
+      <Shell>
+        <Title label={title} sub={`${body.name} · drag it to extrude`} />
+        {face.kind === 'top' && (
+          <NumberBox label="Height" value={body.extrusionHeight} min={2} max={600} onCommit={(v) => props.onExtrudeFace(face, v - body.extrusionHeight)} />
+        )}
+        {face.kind === 'bottom' && (
+          <NumberBox label="Bottom at" value={elev} min={0} onCommit={(v) => props.onExtrudeFace(face, elev - Math.max(0, v))} />
+        )}
+        <div className="flex items-center gap-1 self-end h-7" role="group" aria-label="Extrude by">
+          {nudges.map((n) => (
+            <button key={n} type="button" onClick={() => props.onExtrudeFace(face, n)} className={stepClass} title={`${n > 0 ? 'Pull out' : 'Push in'} ${Math.abs(n)} mm`}>
+              {signed(n)}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-0.5 self-end">
+          {face.kind === 'top' && <IconButton icon={PenLine} label="Sketch on this face (N)" onClick={props.onSketchOnTop} />}
+          <IconButton icon={X} label="Back to the whole shape (Esc)" onClick={props.onClearFace} />
         </div>
       </Shell>
     );

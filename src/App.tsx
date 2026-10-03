@@ -10,6 +10,7 @@ import {
   Body3D,
   EdgeSel,
   EditorMode,
+  FaceSel,
   Point2D,
   RepeatConfig,
   ShapeGroup,
@@ -25,6 +26,7 @@ import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
+import { extrudeFace } from './utils/faces';
 import { applyEdgeChange, edgeKey } from './utils/edges';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
@@ -125,6 +127,7 @@ export default function App() {
   const [selectedBodyId, setSelectedBodyId] = useState<string | null>(null);
   const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>([]);
   const [selectedEdges, setSelectedEdges] = useState<EdgeSel[]>([]);
+  const [selectedFace, setSelectedFace] = useState<FaceSel | null>(null);
   /** When set, only these bodies are shown, in both 2D and 3D. */
   const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
   const [editorMode, setEditorMode] = useState<EditorMode>('view3d');
@@ -178,6 +181,7 @@ export default function App() {
     setSelectedBodyIds((prev) => (prev.every((id) => ids.has(id)) ? prev : prev.filter((id) => ids.has(id))));
     setSelectedBodyId((prev) => (prev && !ids.has(prev) ? null : prev));
     setSelectedEdges((prev) => (prev.every((e) => ids.has(e.bodyId)) ? prev : prev.filter((e) => ids.has(e.bodyId))));
+    setSelectedFace((prev) => (prev && !ids.has(prev.bodyId) ? null : prev));
     setIsolatedIds((prev) => {
       if (!prev) return prev;
       const alive = prev.filter((id) => ids.has(id));
@@ -192,6 +196,7 @@ export default function App() {
     setSelectedBodyId(id);
     setSelectedBodyIds(id ? [id] : []);
     setSelectedEdges([]);
+    setSelectedFace(null);
   };
 
   // ---- Selection ----------------------------------------------------------
@@ -208,9 +213,11 @@ export default function App() {
       setSelectedBodyId(id);
       setSelectedBodyIds(members);
       setSelectedEdges((prev) => (prev.length && prev[0].bodyId !== id ? [] : prev));
+      setSelectedFace((prev) => (prev && prev.bodyId !== id ? null : prev));
       return;
     }
     setSelectedEdges([]);
+    setSelectedFace(null);
     if (selectedBodyIds.includes(id)) {
       const next = selectedBodyIds.filter((item) => !members.includes(item));
       setSelectedBodyIds(next);
@@ -222,6 +229,12 @@ export default function App() {
   };
 
   // ---- Body operations ----------------------------------------------------
+  const handleExtrudeFace = (face: FaceSel, delta: number) => {
+    const body = bodies.find((b) => b.id === face.bodyId);
+    const updates = body && extrudeFace(body, face, delta);
+    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
+  };
+
   const handleUpdateBody = useCallback(
     (id: string, updates: Partial<Body3D>) => {
       setBodies((prev) => prev.map((body) => (body.id === id ? { ...body, ...updates } : body)));
@@ -586,6 +599,7 @@ export default function App() {
       } else if (repeatConfig.isDrawingLine) {
         setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
       } else if (selectedEdges.length) setSelectedEdges([]);
+      else if (selectedFace) setSelectedFace(null);
       else if (selectedBodyIds.length) selectOnly(null);
       else if (isolatedIds) isolate(null);
       return;
@@ -787,6 +801,8 @@ export default function App() {
                   onTransformBodies={transformBodies}
                   selectedEdges={selectedEdges}
                   onSelectEdges={setSelectedEdges}
+                  selectedFace={selectedFace}
+                  onSelectFace={setSelectedFace}
                   onEdgeChange={handleEdgeChange}
                   repeatConfig={repeatConfig}
                   onUpdateRepeatConfig={setRepeatConfig}
@@ -797,6 +813,9 @@ export default function App() {
                 <ContextBar
                   selected={selectedBodies}
                   edges={selectedEdges}
+                  face={selectedFace}
+                  onExtrudeFace={handleExtrudeFace}
+                  onClearFace={() => setSelectedFace(null)}
                   bodyCount={displayBodies.length}
                   isolated={!!isolatedIds}
                   onUpdateBody={handleUpdateBody}

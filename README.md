@@ -22,7 +22,8 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | --- | --- |
 | Select a shape | Click it. `Shift`-click to add more |
 | Move it | Drag the shape itself (`Shift` locks to one axis). Or type X / Y / Lift in the bar |
-| Change its height | Drag the arrow on top, or type Height |
+| Extrude a face | Tap a face (top, bottom or a wall): it lights up with an arrow. Drag the face or its arrow to pull it out or push it in, or type/nudge in the bar |
+| Change its height | Tap the top face and drag it (or drag the arrow), or type Height |
 | Push or pull a wall | Drag the white dot on that wall |
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°), or use the rotate buttons |
 | Resize it | Type Width / Depth / Height in the bar |
@@ -34,7 +35,7 @@ The bar at the top always belongs to the selection and shows exactly what can be
 
 **Isolating.** Select a shape (or a group) and press `I`, or use the focus button on its row in the Bodies
 list. Everything else disappears from both the 3D view and the sketch view until you press `I` or *Show all*.
-Escape steps back one level at a time: edge, selection, isolation.
+Escape steps back one level at a time: edge, face, selection, isolation.
 
 **Editing a shape in 2D.** With a shape selected, *Edit this shape's outline* opens the sketch view on it.
 Drag its corners to reshape it, or drag the shape to move it. With it isolated, nothing else gets in the way.
@@ -75,6 +76,7 @@ src/
     geometry.ts           polygon booleans, corner rounding, patterns
     outline.ts            corner rounding, edge runs (a body = base outline + radii)
     edges.ts              pickable edges, per-edge bevel edits
+    faces.ts              face extrusion (top, bottom, walls)
     bodyGeometry.ts       extrusion + CSG bevels, shared by viewer and exporters
     transform.ts          move / rotate bodies
     exporters.ts          STL / OBJ / JSON
