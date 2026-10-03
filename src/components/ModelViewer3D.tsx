@@ -13,7 +13,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
 import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, moveBottom, sameFace } from '../utils/faces';
-import { EdgePath, edgeKey, edgeSize, listEdges, outlineSegments } from '../utils/edges';
+import { EdgePath, edgeKey, edgeSize, listEdges } from '../utils/edges';
 import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -148,6 +148,35 @@ function disposeObject(root: THREE.Object3D) {
     if (Array.isArray(m)) m.forEach(dispose);
     else if (m) dispose(m);
   });
+}
+
+/** Copies the triangles of `source` that pass `test` (flat-shaded normal + centroid), nudged along `lift`. */
+function pickTriangles(
+  source: THREE.BufferGeometry,
+  test: (n: THREE.Vector3, c: THREE.Vector3) => boolean,
+  lift: THREE.Vector3
+): THREE.BufferGeometry {
+  const pos = source.getAttribute('position');
+  const idx = source.getIndex();
+  const count = idx ? idx.count : pos.count;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const centroid = new THREE.Vector3();
+  const out: number[] = [];
+  for (let i = 0; i + 2 < count; i += 3) {
+    a.fromBufferAttribute(pos, idx ? idx.getX(i) : i);
+    b.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1);
+    c.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2);
+    n.subVectors(c, b).cross(centroid.subVectors(a, b));
+    if (n.lengthSq() < 1e-12) continue;
+    n.normalize();
+    centroid.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    if (!test(n, centroid)) continue;
+    [a, b, c].forEach((v) => out.push(v.x + lift.x, v.y + lift.y, v.z + lift.z));
+  }
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
 }
 
 function clearGroup(group: THREE.Group) {
@@ -1167,7 +1196,7 @@ export default function ModelViewer3D({
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const outline = new THREE.LineSegments(
-        new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(outlineSegments(body), 3)),
+        new THREE.EdgesGeometry(geometry, 30),
         new THREE.LineBasicMaterial({ color: ACCENT, transparent: true })
       );
       outline.visible = false;
@@ -1256,19 +1285,17 @@ export default function ModelViewer3D({
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
       });
-      const flatFace = (y: number) => {
-        const shape = buildBodyShape(body);
-        if (!shape) return;
-        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2), faceTint);
-        mesh.position.y = y;
+      // The tint is cut from the real mesh, so it follows bevels and rounded corners exactly.
+      const bodyMesh = entriesRef.current.get(body.id)?.group.children[0] as THREE.Mesh | undefined;
+      const tint = (test: (n: THREE.Vector3, c: THREE.Vector3) => boolean, lift: THREE.Vector3) => {
+        if (!bodyMesh) return;
+        const mesh = new THREE.Mesh(pickTriangles(bodyMesh.geometry, test, lift), faceTint);
         mesh.renderOrder = 18;
         helperGroup.add(mesh);
-        const loop = body.points.map((p) => ({ x: p.x, y, z: -p.y }));
-        helperGroup.add(makeFatLine([...loop, loop[0]], ACCENT_LIGHT, 3));
       };
 
       if (face?.kind === 'bottom') {
-        flatFace(elev - 0.15);
+        tint((n, c) => n.y < -0.98 && Math.abs(c.y - elev) < 0.05, new THREE.Vector3(0, -0.15, 0));
         heightArrowRef.current = makeArrow(new THREE.Vector3(anchor.x, elev - 0.2, -anchor.y), new THREE.Vector3(0, -1, 0), {
           gizmo: 'extrude-bottom',
           bodyId: body.id,
@@ -1277,14 +1304,17 @@ export default function ModelViewer3D({
         const ends = wallEnds(body, face.index)!;
         const n = outwardNormal(ends.a, ends.b, ends.winding);
         const o = 0.25;
-        const corner = (p: Point2D, y: number) => ({ x: p.x + n.x * o, y, z: -(p.y + n.y * o) });
-        const quad = [corner(ends.a, elev), corner(ends.b, elev), corner(ends.b, top), corner(ends.a, top)];
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(quad.flatMap((p) => [p.x, p.y, p.z]), 3));
-        geo.setIndex([0, 1, 2, 0, 2, 3]);
-        const wallMesh = new THREE.Mesh(geo, faceTint);
-        wallMesh.renderOrder = 18;
-        helperGroup.add(wallMesh, makeFatLine([...quad, quad[0]], ACCENT_LIGHT, 3));
+        const dir = new THREE.Vector3(n.x, 0, -n.y);
+        const from = new THREE.Vector3(ends.a.x, 0, -ends.a.y);
+        const along = new THREE.Vector3(ends.b.x - ends.a.x, 0, -(ends.b.y - ends.a.y));
+        const len = along.length();
+        along.normalize();
+        tint((tn, c) => {
+          if (tn.dot(dir) < 0.98) return false;
+          const rel = c.clone().sub(from);
+          const t = rel.dot(along);
+          return Math.abs(rel.dot(dir)) < 0.1 && t > -0.1 && t < len + 0.1;
+        }, dir.clone().multiplyScalar(o));
         const mid = new THREE.Vector3((ends.a.x + ends.b.x) / 2 + n.x * o, (elev + top) / 2, -((ends.a.y + ends.b.y) / 2 + n.y * o));
         heightArrowRef.current = makeArrow(mid, new THREE.Vector3(n.x, 0, -n.y), {
           gizmo: 'offset-wall',
@@ -1292,7 +1322,7 @@ export default function ModelViewer3D({
           index: face.index,
         });
       } else {
-        if (face?.kind === 'top') flatFace(topY);
+        if (face?.kind === 'top') tint((n, c) => n.y > 0.98 && Math.abs(c.y - top) < 0.05, new THREE.Vector3(0, 0.2, 0));
         // Arrow on the top face: height.
         heightArrowRef.current = makeArrow(new THREE.Vector3(anchor.x, topY, -anchor.y), up, {
           gizmo: 'extrude-height',

@@ -157,33 +157,3 @@ export function listFeatures(body: Body3D): FeatureRow[] {
 }
 
 export const edgeKey = (s: EdgeSel) => `${s.bodyId}:${s.kind}:${s.index}`;
-
-/** Line segments (x, y, z triples) tracing a body's silhouette edges, for the selection outline. */
-export function outlineSegments(body: Body3D): number[] {
-  const outline = getOutline(body);
-  const base = getBase(body);
-  const bottom = body.elevation ?? 0;
-  const top = bottom + body.extrusionHeight;
-  const out: number[] = [];
-
-  const loop = (pts: { x: number; y: number }[], y: number) => {
-    pts.forEach((p, i) => {
-      const q = pts[(i + 1) % pts.length];
-      out.push(p.x, y, -p.y, q.x, y, -q.y);
-    });
-  };
-  const post = (p: { x: number; y: number }) => out.push(p.x, bottom, -p.y, p.x, top, -p.y);
-
-  loop(outline.points, top);
-  loop(outline.points, bottom);
-  base.forEach((p, v) => {
-    if (!outline.arcMid.has(v)) post(p);
-  });
-  for (const hole of body.holes ?? []) {
-    if (hole.length < 3) continue;
-    loop(hole, top);
-    loop(hole, bottom);
-    hole.forEach(post);
-  }
-  return out;
-}
