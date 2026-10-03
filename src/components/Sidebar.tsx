@@ -18,7 +18,8 @@ import {
   Trash2,
   Ungroup,
 } from 'lucide-react';
-import { Body3D, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
+import { Body3D, EdgeSel, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
+import { listFeatures } from '../utils/edges';
 import { getPolygonSignedArea } from '../utils/geometry';
 import { exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
 
@@ -37,6 +38,8 @@ interface SidebarProps {
   onUngroup: (groupId: string) => void;
   onMergeSelected: () => void;
   onApplyCornerRadius: (id: string, radius: number) => void;
+  onEditEdge: (sel: EdgeSel) => void;
+  onRemoveEdge: (sel: EdgeSel) => void;
 }
 
 type Tab = 'properties' | 'material' | 'bodies' | 'export';
@@ -152,11 +155,14 @@ export default function Sidebar({
   onUngroup,
   onMergeSelected,
   onApplyCornerRadius,
+  onEditEdge,
+  onRemoveEdge,
 }: SidebarProps) {
   const [tab, setTab] = useState<Tab>('properties');
   const [exportNote, setExportNote] = useState<string | null>(null);
   const body = bodies.find((b) => b.id === selectedBodyId) || null;
   const stats = body ? bodyStats(body) : null;
+  const features = body ? listFeatures(body) : [];
 
   const runExport = (fn: (b: Body3D[]) => boolean | void) => {
     const ok = fn(bodies);
@@ -215,51 +221,47 @@ export default function Sidebar({
               />
 
               <NumberSlider
-                label="Corner radius"
-                value={body.cornerRadius || 0}
+                label="Elevation"
+                value={body.elevation ?? 0}
+                min={0}
+                max={200}
+                hardMax={1000}
+                onChange={(v) => onUpdateBody(body.id, { elevation: v })}
+              />
+
+              <NumberSlider
+                label="All corners"
+                value={Math.round(Math.max(0, ...(body.cornerRadii ?? [0])))}
                 min={0}
                 max={30}
                 onChange={(v) => onApplyCornerRadius(body.id, v)}
               />
 
-              <div className="flex flex-col gap-3">
-                <label className="flex items-center justify-between cursor-pointer">
-                  <span className="text-xs font-medium text-slate-400">Edge bevel</span>
-                  <input
-                    type="checkbox"
-                    checked={body.bevelEnabled !== false}
-                    onChange={(e) => onUpdateBody(body.id, { bevelEnabled: e.target.checked })}
-                    className="w-4 h-4 accent-accent-400"
-                  />
-                </label>
-                {body.bevelEnabled !== false && (
-                  <>
-                    <NumberSlider
-                      label="Bevel size"
-                      value={body.bevelSize ?? 1}
-                      min={0.5}
-                      max={10}
-                      step={0.5}
-                      onChange={(v) => onUpdateBody(body.id, { bevelSize: v })}
-                    />
-                    <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-white/6">
-                      {[
-                        { label: 'Chamfer', active: (body.bevelSegments ?? 3) <= 1, segments: 1 },
-                        { label: 'Round', active: (body.bevelSegments ?? 3) > 1, segments: 4 },
-                      ].map((opt) => (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          onClick={() => onUpdateBody(body.id, { bevelSegments: opt.segments })}
-                          className={`h-7 rounded-md text-xs font-medium transition-colors ${
-                            opt.active ? 'bg-white/12 text-white' : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {opt.label}
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium text-slate-400">Beveled edges</span>
+                {features.length === 0 ? (
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Nothing is beveled. Use Fillet &amp; bevel (B) to pick the edges you want.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {features.map((f) => (
+                      <li key={`${f.sel.kind}:${f.sel.index}`} className="h-9 pl-3 pr-1 rounded-lg bg-white/4 flex items-center justify-between text-sm">
+                        <button type="button" onClick={() => onEditEdge(f.sel)} className="flex-1 min-w-0 text-left flex items-baseline gap-2 hover:text-white" title="Show and edit this edge">
+                          <span className="truncate">{f.label}</span>
+                          <span className="text-xs text-slate-500 shrink-0">{f.detail}</span>
                         </button>
-                      ))}
-                    </div>
-                  </>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveEdge(f.sel)}
+                          aria-label={`Remove ${f.label}`}
+                          className="w-7 h-7 rounded-md text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
 

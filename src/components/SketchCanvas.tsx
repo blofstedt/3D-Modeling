@@ -18,13 +18,19 @@ import {
   Undo2,
   type LucideIcon,
 } from 'lucide-react';
-import { GRID_SPACING, Point2D } from '../types';
+import { Body3D, GRID_SPACING, Point2D } from '../types';
 import { createClosedCurveRibbon } from '../utils/geometry';
 
 interface SketchCanvasProps {
   onShapeComplete: (points: Point2D[]) => void;
   existingPoints: Point2D[];
   setExistingPoints: React.Dispatch<React.SetStateAction<Point2D[]>>;
+  /** Existing bodies are drawn as reference outlines you can snap to. */
+  bodies: Body3D[];
+  selectedBodyIds: string[];
+  /** Height of the plane being sketched on (0 = ground). */
+  planeElevation: number;
+  onPlaneChange: (elevation: number) => void;
 }
 
 type SketchTool = 'polygon' | 'box' | 'circle' | 'triangle' | 'curve';
@@ -80,7 +86,15 @@ const curveHandles = (start: Point2D, end: Point2D, center: Point2D, width: numb
   c2: { x: center.x + (end.x - center.x) * width, y: center.y + (end.y - center.y) * width },
 });
 
-export default function SketchCanvas({ onShapeComplete, existingPoints, setExistingPoints }: SketchCanvasProps) {
+export default function SketchCanvas({
+  onShapeComplete,
+  existingPoints,
+  setExistingPoints,
+  bodies,
+  selectedBodyIds,
+  planeElevation,
+  onPlaneChange,
+}: SketchCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -115,12 +129,28 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
   const screenToGrid = useCallback(
     (sx: number, sy: number): Point2D => {
       const o = origin();
+      const rawX = (sx - o.x) / zoom;
+      const rawY = (o.y - sy) / zoom;
+      // Corners of existing bodies win over the grid when the pointer is close.
+      let nearest: Point2D | null = null;
+      let nearestDist = 10 / zoom;
+      for (const body of bodies) {
+        if (!body.visible) continue;
+        for (const p of body.points) {
+          const d = Math.hypot(rawX - p.x, rawY - p.y);
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearest = p;
+          }
+        }
+      }
+      if (nearest) return { x: nearest.x, y: nearest.y };
       return {
-        x: Math.round((sx - o.x) / zoom / GRID_SPACING) * GRID_SPACING,
-        y: Math.round((o.y - sy) / zoom / GRID_SPACING) * GRID_SPACING,
+        x: Math.round(rawX / GRID_SPACING) * GRID_SPACING,
+        y: Math.round(rawY / GRID_SPACING) * GRID_SPACING,
       };
     },
-    [origin, zoom]
+    [origin, zoom, bodies]
   );
 
   const gridToScreen = useCallback(
@@ -506,6 +536,40 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
     ctx.fillText('X', dimensions.width - 18, clamp(o.y - 8, 14, dimensions.height - 8));
     ctx.fillText('Y', clamp(o.x + 8, 8, dimensions.width - 14), 20);
 
+    // Existing bodies, as reference outlines. Those whose top is on the sketch plane read as solid.
+    bodies.forEach((body) => {
+      if (!body.visible || body.points.length < 3) return;
+      const onPlane = Math.abs((body.elevation ?? 0) + body.extrusionHeight - planeElevation) < 0.5;
+      const selected = selectedBodyIds.includes(body.id);
+      ctx.beginPath();
+      [body.points, ...(body.holes ?? [])].forEach((ring) => {
+        ring.forEach((p, i) => {
+          const sp = gridToScreen(p.x, p.y);
+          if (i === 0) ctx.moveTo(sp.x, sp.y);
+          else ctx.lineTo(sp.x, sp.y);
+        });
+        ctx.closePath();
+      });
+      ctx.fillStyle = onPlane ? 'rgba(237, 239, 245, 0.07)' : 'rgba(237, 239, 245, 0.025)';
+      ctx.fill('evenodd');
+      ctx.setLineDash(onPlane ? [] : [5, 5]);
+      ctx.strokeStyle = selected ? COLORS.accent : onPlane ? '#98a1b6' : '#4a5168';
+      ctx.lineWidth = selected || onPlane ? 1.75 : 1.25;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      if (onPlane || selected) {
+        const cx = body.points.reduce((a, p) => a + p.x, 0) / body.points.length;
+        const cy = body.points.reduce((a, p) => a + p.y, 0) / body.points.length;
+        const sp = gridToScreen(cx, cy);
+        ctx.font = FONT;
+        ctx.fillStyle = COLORS.label;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(body.name, sp.x, sp.y);
+      }
+    });
+
     const pill = (text: string, x: number, y: number, color: string) => {
       ctx.font = FONT;
       const w = ctx.measureText(text).width + 14;
@@ -678,6 +742,9 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
     snappedGridPos,
     isPanning,
     isHoveringStartNode,
+    bodies,
+    selectedBodyIds,
+    planeElevation,
     activeTool,
     shapeStart,
     curveStart,
@@ -701,6 +768,19 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
       return 'Drag the amber handles to bend, then Extrude curve';
     }
     return 'Click and drag on the grid';
+  })();
+
+  const planeOptions = (() => {
+    const seen = new Set<number>([0]);
+    const options = [{ value: 0, label: 'Ground · 0 mm' }];
+    bodies.forEach((b) => {
+      if (!b.visible) return;
+      const top = Math.round(((b.elevation ?? 0) + b.extrusionHeight) * 100) / 100;
+      if (seen.has(top)) return;
+      seen.add(top);
+      options.push({ value: top, label: `Top of ${b.name} · ${top} mm` });
+    });
+    return options;
   })();
 
   const cursor = isPanning ? 'grabbing' : spaceHeld ? 'grab' : 'crosshair';
@@ -740,9 +820,26 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
         ))}
       </div>
 
+      {/* Sketch plane */}
+      <div className="absolute top-16 left-3 right-3 flex flex-wrap items-center gap-x-3 gap-y-2 pointer-events-none">
+      <label className="pointer-events-auto flex items-center gap-2 min-w-0">
+        <span className="text-xs text-slate-400 shrink-0">Sketching on</span>
+        <select
+          value={planeOptions.some((o) => o.value === planeElevation) ? planeElevation : 'custom'}
+          onChange={(e) => e.target.value !== 'custom' && onPlaneChange(parseFloat(e.target.value))}
+          aria-label="Sketch plane"
+          className="h-9 pl-3 pr-8 rounded-xl bg-slate-800/95 border border-white/10 text-[13px] font-medium text-slate-100 focus:outline-none focus:border-accent-400 shadow-xl truncate"
+        >
+          {planeOptions.map((o) => (
+            <option key={`${o.value}-${o.label}`} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+          {!planeOptions.some((o) => o.value === planeElevation) && <option value="custom">{`Custom · ${planeElevation} mm`}</option>}
+        </select>
+      </label>
       {/* Hint */}
-      <div className="absolute top-16 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-slate-900/70 text-xs text-slate-300 pointer-events-none whitespace-nowrap max-w-[calc(100%-1.5rem)] truncate">
-        {hint}
+      <span className="px-3 py-1 rounded-full bg-slate-900/70 text-xs text-slate-300 min-w-0 truncate">{hint}</span>
       </div>
 
       {/* Coordinates */}

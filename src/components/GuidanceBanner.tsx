@@ -4,12 +4,13 @@
  */
 
 import React from 'react';
-import { Boxes, Move3d, Repeat, Scissors, Sparkles, X, type LucideIcon } from 'lucide-react';
+import { ArrowUpDown, Boxes, Merge, MousePointer2, Move3d, Repeat, Scissors, Sparkles, type LucideIcon } from 'lucide-react';
 import { motion } from 'motion/react';
 import { CadTool } from '../types';
 
 interface GuidanceBannerProps {
   activeTool: CadTool;
+  hasSelection: boolean;
   isDrawingLine?: boolean;
   drawingStep?: 'start' | 'end' | 'curve' | 'done';
   onCancel: () => void;
@@ -21,40 +22,62 @@ const PATH_HINTS: Record<string, string> = {
   curve: 'Click to set how far the path bends.',
 };
 
-export default function GuidanceBanner({ activeTool, isDrawingLine, drawingStep, onCancel }: GuidanceBannerProps) {
-  let Icon: LucideIcon | null = null;
-  let title = '';
-  let hint = '';
+/** One line that says what the active tool does and what to do next. */
+export default function GuidanceBanner({ activeTool, hasSelection, isDrawingLine, drawingStep, onCancel }: GuidanceBannerProps) {
+  let Icon: LucideIcon;
+  let title: string;
+  let hint: string;
 
   if (isDrawingLine) {
     Icon = Repeat;
     title = 'Draw pattern path';
     hint = PATH_HINTS[drawingStep ?? 'start'] ?? '';
-  } else if (activeTool === 'moveFace') {
-    Icon = Move3d;
-    title = 'Move face';
-    hint = 'Click a top face or wall, then drag its handle. Drag corner dots to reshape.';
-  } else if (activeTool === 'extrude') {
-    return null;
-  } else if (activeTool === 'bevel') {
-    Icon = Sparkles;
-    title = 'Fillet & bevel';
-    hint = 'Adjust corner rounding and edge bevel for the selected body.';
-  } else if (activeTool === 'cut') {
-    Icon = Scissors;
-    title = 'Cut';
-    hint = 'Choose the body to keep and the body to subtract.';
-  } else if (activeTool === 'group') {
-    Icon = Boxes;
-    title = 'Group';
-    hint = 'Shift-click to select two or more bodies.';
-  } else if (activeTool === 'repeat') {
-    Icon = Repeat;
-    title = 'Pattern';
-    hint = 'Set a count and draw a path to repeat the body along.';
+  } else {
+    switch (activeTool) {
+      case 'move':
+        Icon = Move3d;
+        title = 'Move & rotate';
+        hint = hasSelection
+          ? 'Drag an arrow to slide along an axis, the square to slide on the ground, the ring to rotate.'
+          : 'Click a body, then drag its handles.';
+        break;
+      case 'extrude':
+        Icon = ArrowUpDown;
+        title = 'Push / pull';
+        hint = 'Drag a top face or a wall. Click a wall first to choose it.';
+        break;
+      case 'bevel':
+        Icon = Sparkles;
+        title = 'Fillet & bevel';
+        hint = 'Hover an edge to preview it, click to select, then set its size. Only selected edges change.';
+        break;
+      case 'cut':
+        Icon = Scissors;
+        title = 'Cut';
+        hint = 'Choose the body to keep and the body to subtract.';
+        break;
+      case 'group':
+        Icon = Boxes;
+        title = 'Group';
+        hint = 'Shift-click to select two or more bodies.';
+        break;
+      case 'merge':
+        Icon = Merge;
+        title = 'Union';
+        hint = 'Shift-click to select overlapping bodies.';
+        break;
+      case 'repeat':
+        Icon = Repeat;
+        title = 'Pattern';
+        hint = 'Set a count and draw a path to repeat the body along.';
+        break;
+      default:
+        if (hasSelection) return null;
+        Icon = MousePointer2;
+        title = 'Select';
+        hint = 'Click a body to select it. Drag empty space to orbit.';
+    }
   }
-
-  if (!Icon) return null;
 
   return (
     <motion.div
@@ -70,15 +93,17 @@ export default function GuidanceBanner({ activeTool, isDrawingLine, drawingStep,
         <span className="font-semibold text-white">{title}</span>
         <span className="text-slate-400"> · {hint}</span>
       </div>
-      <button
-        type="button"
-        onClick={onCancel}
-        aria-label="Exit tool"
-        title="Exit tool (Esc)"
-        className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 shrink-0"
-      >
-        <X size={15} />
-      </button>
+      {(activeTool !== 'select' || isDrawingLine) && (
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Done"
+          title="Done (Esc)"
+          className="h-7 px-2.5 rounded-lg text-xs font-medium text-slate-200 bg-white/8 hover:bg-white/14 shrink-0"
+        >
+          Done
+        </button>
+      )}
     </motion.div>
   );
 }

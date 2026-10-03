@@ -26,7 +26,7 @@ interface ToolRailProps {
   onExtrude: () => void;
   onCut: () => void;
   onBevel: () => void;
-  onMoveFace: () => void;
+  onMove: () => void;
   onRepeat: () => void;
   onGroup: () => void;
   onMerge: () => void;
@@ -49,11 +49,11 @@ export default function ToolRail(props: ToolRailProps) {
   const groups: ToolDef[][] = [
     [
       { id: 'select', label: 'Select', shortcut: 'V', icon: MousePointer2, onClick: props.onSelect },
-      { id: 'sketch', label: 'New sketch', shortcut: 'N', icon: PenLine, onClick: props.onNewSketch },
+      { id: 'sketch', label: 'Sketch', shortcut: 'N', icon: PenLine, onClick: props.onNewSketch },
     ],
     [
-      { id: 'extrude', label: 'Extrude', shortcut: 'E', icon: ArrowUpDown, onClick: props.onExtrude },
-      { id: 'moveFace', label: 'Move face', shortcut: 'M', icon: Move3d, onClick: props.onMoveFace },
+      { id: 'move', label: 'Move & rotate', shortcut: 'M', icon: Move3d, onClick: props.onMove },
+      { id: 'extrude', label: 'Push / pull', shortcut: 'E', icon: ArrowUpDown, onClick: props.onExtrude },
       { id: 'bevel', label: 'Fillet & bevel', shortcut: 'B', icon: Sparkles, onClick: props.onBevel },
       { id: 'cut', label: 'Cut', shortcut: 'C', icon: Scissors, onClick: props.onCut },
     ],

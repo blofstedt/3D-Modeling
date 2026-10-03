@@ -21,24 +21,44 @@ export interface MaterialPreset {
   ior?: number;
 }
 
+export type BevelStyle = 'chamfer' | 'round';
+
+/** A bevel on one top or bottom edge loop of a body. `edge` is a side index of the body's base outline. */
+export interface EdgeBevel {
+  side: 'top' | 'bottom';
+  edge: number;
+  size: number;
+  style: BevelStyle;
+}
+
 export interface Body3D {
   id: string;
   name: string;
+  /** Final outline as drawn (base outline with corner radii applied). Always derived; edit via withOutline(). */
   points: Point2D[];
-  basePoints?: Point2D[]; // original unrounded vertices for dynamic corner radius edits
-  holes?: Point2D[][]; // cutouts or inner loops
+  /** Sharp outline the user edits. Defaults to `points` when absent. */
+  basePoints?: Point2D[];
+  /** Radius of the vertical edge at each base vertex, in mm (0 = sharp). */
+  cornerRadii?: number[];
+  holes?: Point2D[][];
   extrusionHeight: number;
+  /** Height of the body's underside above the ground plane. */
+  elevation?: number;
+  /** Bevels on individual top/bottom edges. Nothing is beveled by default. */
+  edgeBevels?: EdgeBevel[];
   color: string;
   materialType: MaterialType;
   visible: boolean;
   createdAt: string;
-  // Edge & Corner controls
-  bevelEnabled?: boolean;
-  bevelSize?: number; // 0 to 15
-  bevelSegments?: number; // 1 (chamfer) to 5 (round fillet)
-  cornerRadius?: number; // 0 to 30 (2D corner rounding)
-  // Grouping
   groupId?: string;
+}
+
+/** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
+export interface EdgeSel {
+  bodyId: string;
+  kind: 'top' | 'bottom' | 'corner';
+  /** Canonical side index for top/bottom, base vertex index for corner. */
+  index: number;
 }
 
 export interface ShapeGroup {
@@ -47,7 +67,7 @@ export interface ShapeGroup {
   bodyIds: string[];
 }
 
-export type CadTool = 'select' | 'extrude' | 'cut' | 'bevel' | 'moveFace' | 'group' | 'repeat' | 'merge';
+export type CadTool = 'select' | 'move' | 'extrude' | 'bevel' | 'cut' | 'group' | 'repeat' | 'merge';
 
 export interface RepeatConfig {
   type: 'linear' | 'curved';
