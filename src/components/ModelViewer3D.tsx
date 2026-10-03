@@ -1134,7 +1134,7 @@ export default function ModelViewer3D({
       arrow.position.set(anchor.x, topY, -anchor.y);
       arrow.scale.setScalar(s);
       arrow.userData = { gizmo: 'extrude-height', bodyId: body.id };
-      const mat = handleMaterial(ACCENT);
+      const mat = handleMaterial('#ffffff');
       const arrowRing = new THREE.Mesh(shared(new THREE.RingGeometry(4.5, 6.5, 40).rotateX(-Math.PI / 2)), mat);
       const shaft = new THREE.Mesh(HANDLE.shaft, mat);
       shaft.position.y = 9;
