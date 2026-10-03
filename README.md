@@ -27,7 +27,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | Push or pull a wall | Drag the white dot on that wall |
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°), or use the rotate buttons |
 | Resize it | Type Width / Depth / Height in the bar |
-| Bevel an edge | Hover an edge (it lights up), click it, then drag its handle or type a size. Round or chamfer. Only that edge changes |
+| Bevel an edge | Hover an edge (it lights up) and click it. A panel appears right beside the edge: drag the slider or type a size, switch Curved or Flat. Only that edge changes. Faces get the same treatment: tap one and its controls appear next to it |
 | Round one corner | Click the vertical corner line the same way |
 | Look around | Drag empty space to orbit, right-drag to pan, scroll to zoom |
 

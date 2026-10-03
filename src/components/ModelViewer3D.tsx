@@ -72,6 +72,8 @@ export interface ModelViewer3DProps {
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
   onHint?: (text: string) => void;
+  /** Controls for the current selection; the viewer pins them next to it and follows the camera. */
+  floating?: React.ReactNode;
 }
 
 const ACCENT = '#8b7cf6';
@@ -257,6 +259,7 @@ export default function ModelViewer3D({
   onUpdateRepeatConfig,
   onDragStateChange,
   onHint,
+  floating,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
@@ -271,6 +274,10 @@ export default function ModelViewer3D({
   const previewGroupRef = useRef<THREE.Group | null>(null);
   const entriesRef = useRef<Map<string, BodyEntry>>(new Map());
   const heightArrowRef = useRef<THREE.Object3D | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
+  const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
+  const placePanelRef = useRef<() => void>(() => {});
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
@@ -1099,6 +1106,28 @@ export default function ModelViewer3D({
     });
     resizeObserver.observe(container);
 
+    const placePanel = () => {
+      const el = panelRef.current;
+      const anchor = anchorRef.current;
+      if (!el) return;
+      if (!anchor || drag) {
+        el.style.visibility = 'hidden';
+        return;
+      }
+      const v = anchor.pos.clone().project(camera);
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      const pw = el.offsetWidth;
+      const ph = el.offsetHeight;
+      const x = clamp((v.x * 0.5 + 0.5) * w - pw / 2, 8, Math.max(8, w - pw - 8));
+      let y = (-v.y * 0.5 + 0.5) * h - anchor.lift - ph;
+      if (y < 8) y = (-v.y * 0.5 + 0.5) * h + anchor.lift * 0.5; // no room above: sit below
+      y = clamp(y, 8, Math.max(8, h - ph - 8));
+      el.style.transform = `translate(${x}px, ${y}px)`;
+      el.style.visibility = v.z > 1 ? 'hidden' : 'visible';
+    };
+    placePanelRef.current = placePanel;
+
     let raf = 0;
     const animate = () => {
       raf = requestAnimationFrame(animate);
@@ -1133,6 +1162,7 @@ export default function ModelViewer3D({
       }
       needsRender = false;
       renderer.render(scene, camera);
+      placePanel();
     };
     animate();
     setIsSceneReady(true);
@@ -1223,6 +1253,7 @@ export default function ModelViewer3D({
     clearGroup(gizmoGroup);
     clearGroup(helperGroup);
     heightArrowRef.current = null;
+    anchorRef.current = null;
 
     const ids = selectedBodyIds.length ? selectedBodyIds : selectedBodyId ? [selectedBodyId] : [];
     const picked = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
@@ -1330,6 +1361,8 @@ export default function ModelViewer3D({
         });
       }
 
+      if (face && heightArrowRef.current) anchorRef.current = { pos: heightArrowRef.current.position.clone(), lift: 72 };
+
       // A dot at the middle of each wall: push or pull it.
       const base = getBase(body);
       if (base.length <= MAX_WALL_HANDLES) {
@@ -1389,6 +1422,7 @@ export default function ModelViewer3D({
         knobHit.scale.setScalar(9 * s);
         handle.add(knob, knobHit);
         gizmoGroup.add(handle);
+        anchorRef.current = { pos: handle.position.clone(), lift: 36 };
       }
     }
     invalidateRef.current();
@@ -1428,6 +1462,12 @@ export default function ModelViewer3D({
     invalidateRef.current();
   }, [repeatConfig, isSceneReady]);
 
+  // A new panel (or new contents) needs placing even if the camera is still.
+  useLayoutEffect(() => {
+    invalidateRef.current();
+    placePanelRef.current();
+  }, [floating, isSceneReady]);
+
   // The idle hint depends on selection; hover text takes over while the pointer is over something.
   useEffect(() => {
     clearHoverRef.current();
@@ -1447,6 +1487,12 @@ export default function ModelViewer3D({
   return (
     <div className="absolute inset-0 select-none touch-none overflow-hidden">
       <div ref={mountRef} className="absolute inset-0" />
+
+      {floating && (
+        <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
+          {floating}
+        </div>
+      )}
 
       <ViewCube
         camera={isSceneReady ? cameraRef.current : null}
