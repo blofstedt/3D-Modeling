@@ -97,7 +97,7 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
         onClick={onResetCamera}
         aria-label="Fit model in view"
         title="Fit model in view"
-        className="h-7 px-2.5 rounded-lg bg-slate-900/90 border border-white/10 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 text-xs transition-colors"
+        className="h-7 px-2.5 rounded-lg bg-slate-800/90 border border-white/10 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 text-xs transition-colors"
       >
         <House size={13} />
         Home

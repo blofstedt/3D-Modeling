@@ -80,7 +80,7 @@ export default function DimensionBadge({
 
   return (
     <div className="absolute z-20 top-3 left-3 right-28 flex justify-center pointer-events-none">
-      <div className="pointer-events-auto max-w-full flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 px-3 py-2 rounded-2xl bg-slate-900/90 backdrop-blur-xl border border-white/10 shadow-xl">
+      <div className="pointer-events-auto max-w-full flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 px-3 py-2 rounded-2xl bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-xl">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-8 h-8 rounded-lg bg-accent-500/15 text-accent-300 flex items-center justify-center shrink-0">
             {isEdge ? <Sparkles size={16} /> : <ArrowUpDown size={16} />}

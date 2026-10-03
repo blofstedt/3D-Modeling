@@ -63,7 +63,7 @@ export default function MoveFaceControls({ activeEditPart, body, onUpdateBody, o
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 8 }}
-      className="flex items-center gap-3 px-3 py-2 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-white/10 shadow-xl max-w-full flex-wrap justify-center"
+      className="flex items-center gap-3 px-3 py-2 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl max-w-full flex-wrap justify-center"
     >
       <div className="flex items-center gap-2 text-[13px]">
         <ArrowUpDown size={15} className="text-accent-300" />

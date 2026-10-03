@@ -61,7 +61,7 @@ export default function GuidanceBanner({ activeTool, isDrawingLine, drawingStep,
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 8 }}
-      className="flex items-center gap-3 pl-3 pr-2 py-2 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-white/10 shadow-xl max-w-full"
+      className="flex items-center gap-3 pl-3 pr-2 py-2 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl max-w-full"
     >
       <div className="w-7 h-7 rounded-lg bg-accent-500/15 text-accent-300 flex items-center justify-center shrink-0">
         <Icon size={15} />

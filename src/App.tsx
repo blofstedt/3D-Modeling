@@ -730,7 +730,7 @@ export default function App() {
 
       <div className="flex-1 min-h-0 flex">
         {/* Viewport */}
-        <main className="relative flex-1 min-w-0 min-h-0 bg-slate-900">
+        <main className="relative flex-1 min-w-0 min-h-0 bg-slate-950">
           <AnimatePresence mode="wait" initial={false}>
             {editorMode === 'sketch' ? (
               <motion.div

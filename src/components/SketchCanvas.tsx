@@ -39,17 +39,17 @@ const TOOLS: { id: SketchTool; label: string; icon: LucideIcon; title: string }[
 ];
 
 const COLORS = {
-  background: '#1a1c21',
-  gridMinor: '#23262d',
-  gridMajor: '#2c3038',
-  axisX: 'rgba(229, 72, 77, 0.7)',
-  axisY: 'rgba(70, 195, 123, 0.7)',
-  accent: '#5f93fb',
-  accentFill: 'rgba(95, 147, 251, 0.14)',
-  close: '#46c37b',
-  handle: '#f5a524',
-  label: '#8a909c',
-  pillBg: '#23262c',
+  background: '#08090d',
+  gridMinor: '#12151e',
+  gridMajor: '#1d2130',
+  axisX: 'rgba(251, 113, 133, 0.65)',
+  axisY: 'rgba(52, 211, 153, 0.65)',
+  accent: '#8b7cf6',
+  accentFill: 'rgba(110, 91, 255, 0.16)',
+  close: '#34d399',
+  handle: '#fbbf24',
+  label: '#7a8297',
+  pillBg: '#151824',
 };
 
 const MIN_ZOOM = 0.3;
@@ -664,7 +664,7 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
       ctx.beginPath();
       ctx.arc(hoverScreen.x, hoverScreen.y, isHoveringStartNode ? 9 : 5, 0, Math.PI * 2);
       ctx.strokeStyle = isHoveringStartNode ? COLORS.close : COLORS.accent;
-      ctx.fillStyle = isHoveringStartNode ? 'rgba(70,195,123,0.2)' : 'rgba(95,147,251,0.3)';
+      ctx.fillStyle = isHoveringStartNode ? 'rgba(52,211,153,0.2)' : 'rgba(110,91,255,0.3)';
       ctx.lineWidth = 2;
       ctx.fill();
       ctx.stroke();
@@ -722,7 +722,7 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
       />
 
       {/* Tool picker */}
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 max-w-[calc(100%-1.5rem)] flex items-center gap-0.5 p-1 rounded-2xl bg-slate-900/90 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto no-scrollbar">
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 max-w-[calc(100%-1.5rem)] flex items-center gap-0.5 p-1 rounded-2xl bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto no-scrollbar">
         {TOOLS.map(({ id, label, icon: Icon, title }) => (
           <button
             key={id}
@@ -770,7 +770,7 @@ export default function SketchCanvas({ onShapeComplete, existingPoints, setExist
             <Check size={15} strokeWidth={2.5} /> Close &amp; extrude
           </button>
         )}
-        <div className="flex items-center gap-0.5 p-1 rounded-xl bg-slate-900/90 backdrop-blur-xl border border-white/10 shadow-xl">
+        <div className="flex items-center gap-0.5 p-1 rounded-xl bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-xl">
           <button type="button" onClick={handleUndo} disabled={!hasDraft} className={iconBtn} title="Undo last point (⌘Z)" aria-label="Undo last point">
             <Undo2 size={16} />
           </button>

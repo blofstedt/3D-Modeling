@@ -1,6 +1,6 @@
 # Craft3D
 
-A browser-based CAD modeler in the spirit of Shapr3D: sketch a 2D profile, pull it into a solid,
+A browser-based CAD modeler: sketch a 2D profile, pull it into a solid,
 then refine it with direct-manipulation tools. No backend — everything runs client-side and
 autosaves to `localStorage`.
 

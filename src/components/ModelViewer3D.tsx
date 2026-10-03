@@ -64,8 +64,8 @@ export interface ModelViewer3DProps {
   onDragStateChange?: (dragging: boolean) => void;
 }
 
-const ACCENT = '#5f93fb';
-const BACKGROUND = '#1a1c21';
+const ACCENT = '#8b7cf6';
+const BACKGROUND = '#08090d';
 const CLICK_SLOP_PX = 5;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -270,7 +270,7 @@ export default function ModelViewer3D({
     shadowCatcher.receiveShadow = true;
     scene.add(shadowCatcher);
 
-    const grid = new THREE.GridHelper(1200, 60, '#4b515d', '#2b2f37');
+    const grid = new THREE.GridHelper(1200, 60, '#252a3b', '#151824');
     grid.position.y = -0.1;
     scene.add(grid);
 
@@ -279,8 +279,8 @@ export default function ModelViewer3D({
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.05, 0), to]),
         new THREE.LineBasicMaterial({ color })
       );
-    const axisX = axis(new THREE.Vector3(140, 0.05, 0), '#e5484d');
-    const axisY = axis(new THREE.Vector3(0, 0.05, -140), '#46c37b');
+    const axisX = axis(new THREE.Vector3(140, 0.05, 0), '#fb7185');
+    const axisY = axis(new THREE.Vector3(0, 0.05, -140), '#34d399');
     scene.add(axisX, axisY);
 
     const bodyGroup = new THREE.Group();
