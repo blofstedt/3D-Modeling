@@ -1,0 +1,6 @@
+{
+  "name": "3D Sketch Modeler",
+  "description": "An intuitive, snappy CAD sketching and 3D extrusion modeler with automatic isometric projection transitions and height customizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
