@@ -16,30 +16,47 @@ npm test         # headless geometry checks (rounding, bevels, moves)
 
 ## Using it
 
-Pick a tool from the rail (or press its key). A bar at the top always shows what the active tool is
-doing and the exact values you can type.
+There are no tools to pick. Point at something and drag it; the cursor and a hint line say what will happen.
 
-| Tool | Key | What it does |
-| --- | --- | --- |
-| Select | `V` | Click a body to select it. `Shift`-click for several. Drag empty space to orbit |
-| Sketch | `N` | Draw a profile on a plane; existing bodies show as outlines you can snap to |
-| Move & rotate | `M` | Drag an arrow to slide along an axis, the square to slide on the ground, the ring to rotate. Or type X / Y / height |
-| Push / pull | `E` | Drag a top face or a wall directly. Click a wall first to choose it |
-| Fillet & bevel | `B` | Hover an edge to preview it, click to select (`Shift` for more), set size and Round / Chamfer. Only selected edges change. Click a vertical corner line to round just that corner |
-| Cut | `C` | Boolean-subtract one body from another |
-| Pattern | `R` | Repeat a body along a line or curve |
-| Group / Union | `G` / `U` | Group bodies so they select and move together, or merge overlapping ones |
+| You want to | Do this |
+| --- | --- |
+| Select a shape | Click it. `Shift`-click to add more |
+| Move it | Drag the shape itself (`Shift` locks to one axis). Or type X / Y / Lift in the bar |
+| Change its height | Drag the arrow on top, or type Height |
+| Push or pull a wall | Drag the white dot on that wall |
+| Rotate it | Drag the ring around it (`Shift` snaps to 15°), or use the rotate buttons |
+| Resize it | Type Width / Depth / Height in the bar |
+| Bevel an edge | Hover an edge (it lights up), click it, then drag its handle or type a size. Round or chamfer. Only that edge changes |
+| Round one corner | Click the vertical corner line the same way |
+| Look around | Drag empty space to orbit, right-drag to pan, scroll to zoom |
 
-**Sketch planes.** The *Sketching on* menu in the sketch view picks the ground or the top of any body.
-New shapes are created at that height, so you can build up parts. *Sketch on top* in the selection bar
-jumps straight there.
+The bar at the top always belongs to the selection and shows exactly what can be typed or done with it.
 
-Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels in the
-bevel tool), `1`/`2` switch Sketch/Model, `Space`-drag or two-finger drag to pan the sketch, scroll or pinch
-to zoom.
+**Isolating.** Select a shape (or a group) and press `I`, or use the focus button on its row in the Bodies
+list. Everything else disappears from both the 3D view and the sketch view until you press `I` or *Show all*.
+Escape steps back one level at a time: edge, selection, isolation.
+
+**Editing a shape in 2D.** With a shape selected, *Edit this shape's outline* opens the sketch view on it.
+Drag its corners to reshape it, or drag the shape to move it. With it isolated, nothing else gets in the way.
+
+**Sketching.** `N` starts a new sketch. Existing shapes show as outlines you can snap to. *Sketching on* picks
+the ground or the top of any shape, and new shapes are created at that height so parts can be stacked.
+
+Commands (left rail, also in the bar): New sketch `N`, Isolate `I`, Group `G`, Union `U`, Cut `C`,
+Repeat `R`. Grouped shapes select and move together.
+
+Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels), `1`/`2`
+switch Sketch/Model, `Space`-drag or two-finger drag to pan the sketch, scroll or pinch to zoom.
 
 Export STL (Z-up, slicer-ready), OBJ or JSON from the Inspector's **Export** tab. Exports use the
 same geometry you see in the viewport, including cutouts and bevels.
+
+### Performance notes
+
+Dragging is built to stay cheap: moves and rotations are applied as transforms to the existing meshes and
+committed once on release, height drags stretch the mesh and rebuild it on release, wall drags skip the bevel
+cut until you let go, input is applied once per frame, the scene only renders when something changed, and
+resolution drops briefly while you orbit or drag on high-DPI screens.
 
 ## Layout
 
@@ -47,10 +64,10 @@ same geometry you see in the viewport, including cutouts and bevels.
 src/
   App.tsx                 document state, history, shortcuts, layout
   components/
-    ModelViewer3D.tsx     three.js scene, tool handles, hit-testing, edge picking, camera
+    ModelViewer3D.tsx     three.js scene, direct-manipulation handles, hit-testing, edge picking, camera
     SketchCanvas.tsx      2D sketch canvas (pan / zoom / snapping, reference outlines)
-    ToolRail.tsx          left tool palette
-    ContextBar.tsx        per-tool bar: actions and exact values
+    ToolRail.tsx          left command rail (sketch, isolate, group, union, cut, repeat)
+    ContextBar.tsx        bar for the selection: exact values and actions
     Sidebar.tsx           inspector: properties, material, bodies, export
     ViewCube.tsx          orientation cube
     *Modal.tsx            cut and pattern dialogs

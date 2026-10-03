@@ -39,11 +39,13 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
     const m = new THREE.Matrix4();
     const e = new Array<number>(16);
     let raf = 0;
+    const last = new THREE.Quaternion(0, 0, 0, 0);
 
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const el = cubeRef.current;
-      if (!el) return;
+      if (!el || last.equals(camera.quaternion)) return; // camera is still: leave the DOM alone
+      last.copy(camera.quaternion);
       // World -> view rotation is the inverse of the camera orientation.
       q.copy(camera.quaternion).invert();
       m.makeRotationFromQuaternion(q);

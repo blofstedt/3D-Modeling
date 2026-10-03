@@ -7,7 +7,7 @@ import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, withOutline } from '../src/utils/outline';
 import { applyEdgeChange, findBevel, listEdges } from '../src/utils/edges';
-import { transformBody } from '../src/utils/transform';
+import { resizeBody, transformBody } from '../src/utils/transform';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -78,6 +78,16 @@ check('bevel wraps the whole rounded loop', near(volume(loop), 5912 * 40 - 0.214
 const edited = { ...pill, ...applyEdgeChange(pill, [{ bodyId: 't', kind: 'top', index: 2 }], { size: 3 }) } as Body3D;
 check('editing any side of a run bevels the run', !!findBevel(edited, 'top', 0) && edited.edgeBevels!.length === 1);
 check('size 0 removes the bevel', !(applyEdgeChange(edited, [{ bodyId: 't', kind: 'top', index: 0 }], { size: 0 }).edgeBevels?.length));
+
+// Live previews skip the bevel cut but keep the body's exact size.
+const withBevel = body({ edgeBevels: [{ side: 'top', edge: 0, size: 5, style: 'chamfer' }] });
+check('fast preview skips bevels', near(volume(buildBodyGeometry(withBevel, { fast: true })!), 240000, 1));
+
+// Resizing a footprint scales it about its centre and keeps corner radii.
+const resized = { ...pill, ...resizeBody(pill, 200, 120) } as Body3D;
+const rb = buildOutline(resized.basePoints!, resized.cornerRadii);
+check('resize scales the footprint', near(Math.max(...resized.points.map((p) => p.x)) - Math.min(...resized.points.map((p) => p.x)), 200, 0.5));
+check('resize keeps corner radii', rb.radii.every((r) => near(r, 10, 0.5)));
 
 // Every body exposes its pickable edges: top + bottom loops per run, plus a line per corner.
 check('edge list for a box', listEdges(body({})).length === 4 * 2 + 4);

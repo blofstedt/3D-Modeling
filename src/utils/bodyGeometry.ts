@@ -222,9 +222,9 @@ function resolveBevels(body: Body3D, outline: Outline): ResolvedBevel[] {
 
 /**
  * Solid geometry for a body, Y-up, underside at `elevation`, top at elevation + height.
- * Only edges listed in `edgeBevels` are beveled.
+ * Only edges listed in `edgeBevels` are beveled. `fast` skips the bevel cuts, for live previews while dragging.
  */
-export function buildBodyGeometry(body: Body3D): THREE.BufferGeometry | null {
+export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}): THREE.BufferGeometry | null {
   const shape = buildBodyShape(body);
   if (!shape) return null;
 
@@ -238,7 +238,7 @@ export function buildBodyGeometry(body: Body3D): THREE.BufferGeometry | null {
   }
   geometry.rotateX(-Math.PI / 2);
 
-  const bevels = body.edgeBevels?.length ? resolveBevels(body, getOutline(body)) : [];
+  const bevels = !options.fast && body.edgeBevels?.length ? resolveBevels(body, getOutline(body)) : [];
   if (bevels.length) {
     try {
       const evaluator = new Evaluator();

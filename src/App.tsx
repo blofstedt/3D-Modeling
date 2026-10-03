@@ -3,12 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   BevelStyle,
   Body3D,
-  CadTool,
   EdgeSel,
   EditorMode,
   Point2D,
@@ -16,21 +15,21 @@ import {
   ShapeGroup,
   SWATCHES,
 } from './types';
-import SketchCanvas from './components/SketchCanvas';
-import ModelViewer3D, { EditPart } from './components/ModelViewer3D';
+import SketchCanvas, { SketchTool } from './components/SketchCanvas';
+import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
 import ContextBar from './components/ContextBar';
 import CutModal from './components/CutModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
-import GuidanceBanner from './components/GuidanceBanner';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
 import { applyEdgeChange, edgeKey } from './utils/edges';
-import { selectionBounds, transformBody } from './utils/transform';
+import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
   Box,
+  Focus,
   Info,
   PanelRightClose,
   PanelRightOpen,
@@ -47,53 +46,26 @@ interface Doc {
   groups: ShapeGroup[];
 }
 
-const STORAGE_KEY = 'craft3d:document:v2';
+const STORAGE_KEY = 'craft3d:document:v3';
 
-const rect = (x1: number, y1: number, x2: number, y2: number): Point2D[] => [
-  { x: x1, y: y1 },
-  { x: x2, y: y1 },
-  { x: x2, y: y2 },
-  { x: x1, y: y2 },
-];
-
-// Starter solids so the workspace is never an empty void on first load.
+// The starter scene is one plain block.
 const createStarterBodies = (): Body3D[] => {
-  const bracket: Point2D[] = [
-    { x: -140, y: -90 },
-    { x: 140, y: -90 },
-    { x: 140, y: 90 },
-    { x: 50, y: 90 },
-    { x: 50, y: 40 },
-    { x: -50, y: 40 },
-    { x: -50, y: 90 },
-    { x: -140, y: 90 },
+  const outline: Point2D[] = [
+    { x: -60, y: -40 },
+    { x: 60, y: -40 },
+    { x: 60, y: 40 },
+    { x: -60, y: 40 },
   ];
-  const now = new Date().toISOString();
-  const mounting: Body3D = {
-    id: 'body_bracket_main',
-    name: 'Mounting bracket',
-    points: bracket,
-    holes: [rect(-95, -60, -65, -30), rect(65, -60, 95, -30)],
-    extrusionHeight: 45,
-    // Two rounded front corners, and only the front top edge is beveled.
-    ...withOutline({ points: bracket }, { cornerRadii: [14, 14, 0, 0, 0, 0, 0, 0] }),
-    edgeBevels: [{ side: 'top', edge: 0, size: 4, style: 'round' }],
-    color: '#94a3b8',
-    materialType: 'metal',
-    visible: true,
-    createdAt: now,
-  };
   return [
-    mounting,
     {
-      id: 'body_cutter_pin',
-      name: 'Boss pin',
-      points: rect(-25, -25, 25, 25),
-      extrusionHeight: 65,
-      color: '#ef4444',
-      materialType: 'glossy',
+      id: 'body_block',
+      name: 'Block',
+      points: outline,
+      extrusionHeight: 50,
+      color: '#6f7a93',
+      materialType: 'matte',
       visible: true,
-      createdAt: now,
+      createdAt: new Date().toISOString(),
     },
   ];
 };
@@ -150,16 +122,18 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [doc]);
 
-  const [selectedBodyId, setSelectedBodyId] = useState<string | null>(() => doc.bodies[0]?.id ?? null);
-  const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>(() => (doc.bodies[0] ? [doc.bodies[0].id] : []));
+  const [selectedBodyId, setSelectedBodyId] = useState<string | null>(null);
+  const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>([]);
   const [selectedEdges, setSelectedEdges] = useState<EdgeSel[]>([]);
+  /** When set, only these bodies are shown, in both 2D and 3D. */
+  const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
   const [editorMode, setEditorMode] = useState<EditorMode>('view3d');
-  const [activeCadTool, setActiveCadTool] = useState<CadTool>('select');
   const [existingPoints, setExistingPoints] = useState<Point2D[]>([]);
   const [sketchElevation, setSketchElevation] = useState(0);
+  const [sketchTool, setSketchTool] = useState<SketchTool>('box');
+  const [hint, setHint] = useState('');
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [activeEditPart, setActiveEditPart] = useState<EditPart | null>(null);
 
   const [isCutModalOpen, setIsCutModalOpen] = useState(false);
   const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
@@ -187,35 +161,43 @@ export default function App() {
 
   const bodyCounter = useRef(bodies.length);
 
+  // Isolation hides the rest of the scene from the viewport and the sketch view.
+  const displayBodies = useMemo(
+    () => (isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id)) : bodies),
+    [bodies, isolatedIds]
+  );
+
   // Once the pattern path has been drawn in the viewport, bring the dialog back to finish the job.
   useEffect(() => {
-    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine && activeCadTool === 'repeat') {
-      setIsRepeatModalOpen(true);
-    }
-  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine, activeCadTool]);
+    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine) setIsRepeatModalOpen(true);
+  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine]);
 
-  // Drop selections that no longer exist (after delete / undo).
+  // Drop selections and isolation that no longer exist (after delete / undo).
   useEffect(() => {
     const ids = new Set(bodies.map((b) => b.id));
     setSelectedBodyIds((prev) => (prev.every((id) => ids.has(id)) ? prev : prev.filter((id) => ids.has(id))));
     setSelectedBodyId((prev) => (prev && !ids.has(prev) ? null : prev));
     setSelectedEdges((prev) => (prev.every((e) => ids.has(e.bodyId)) ? prev : prev.filter((e) => ids.has(e.bodyId))));
+    setIsolatedIds((prev) => {
+      if (!prev) return prev;
+      const alive = prev.filter((id) => ids.has(id));
+      return alive.length === prev.length ? prev : alive.length ? alive : null;
+    });
   }, [bodies]);
 
-  const selectedBody = bodies.find((b) => b.id === selectedBodyId) || null;
-  const selectedBodies = selectedBodyIds.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b);
+  const selectedBody = displayBodies.find((b) => b.id === selectedBodyId) || null;
+  const selectedBodies = selectedBodyIds.map((id) => displayBodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b);
 
   const selectOnly = (id: string | null) => {
     setSelectedBodyId(id);
     setSelectedBodyIds(id ? [id] : []);
+    setSelectedEdges([]);
   };
 
   // ---- Selection ----------------------------------------------------------
   const handleSelectBody = (id: string | null, isMultiSelect?: boolean) => {
     if (id === null) {
       selectOnly(null);
-      setActiveEditPart(null);
-      setSelectedEdges([]);
       return;
     }
     // Clicking a member of a group picks the whole group.
@@ -228,6 +210,7 @@ export default function App() {
       setSelectedEdges((prev) => (prev.length && prev[0].bodyId !== id ? [] : prev));
       return;
     }
+    setSelectedEdges([]);
     if (selectedBodyIds.includes(id)) {
       const next = selectedBodyIds.filter((item) => !members.includes(item));
       setSelectedBodyIds(next);
@@ -246,15 +229,35 @@ export default function App() {
     [setBodies]
   );
 
-  const handleDeleteBody = (id: string) => {
-    const target = bodies.find((b) => b.id === id);
-    setBodies((prev) => prev.filter((body) => body.id !== id));
+  /** Rigid move/rotate of several bodies in one update. */
+  const transformBodies = useCallback(
+    (ids: string[], t: BodyTransform) => {
+      const set = new Set(ids);
+      setBodies((prev) => prev.map((b) => (set.has(b.id) ? { ...b, ...transformBody(b, t) } : b)));
+    },
+    [setBodies]
+  );
+
+  const moveSelection = (dx: number, dy: number, dz: number, angle = 0) => {
+    const b = selectionBounds(selectedBodies);
+    if (b) transformBodies(selectedBodyIds, { dx, dy, dz, angle, cx: b.centerX, cy: b.centerY });
+  };
+
+  const handleResize = (width: number, depth: number) => {
+    if (selectedBody) handleUpdateBody(selectedBody.id, resizeBody(selectedBody, width, depth));
+  };
+
+  const handleDeleteSelected = () => {
+    if (!selectedBodyIds.length) return;
+    const ids = new Set(selectedBodyIds);
+    const label = selectedBodyIds.length === 1 ? bodies.find((b) => b.id === selectedBodyIds[0])?.name ?? 'shape' : `${ids.size} shapes`;
+    setBodies((prev) => prev.filter((body) => !ids.has(body.id)));
     setGroups((prev) =>
       prev
-        .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => bid !== id) }))
+        .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => !ids.has(bid)) }))
         .filter((g) => g.bodyIds.length > 1)
     );
-    notify(`Deleted ${target?.name ?? 'body'}. Press ⌘Z to undo.`);
+    notify(`Deleted ${label}. Press ⌘Z to undo.`);
   };
 
   const handleCloneBody = (id: string) => {
@@ -271,7 +274,7 @@ export default function App() {
     };
     setBodies((prev) => [...prev, clone]);
     selectOnly(clonedId);
-    notify('Duplicated body.');
+    notify('Duplicated.');
   };
 
   const handleShapeComplete = (points: Point2D[]) => {
@@ -280,7 +283,7 @@ export default function App() {
     const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
     const newBody: Body3D = {
       id: newBodyId,
-      name: `Body ${bodyCounter.current}`,
+      name: `Shape ${bodyCounter.current}`,
       points: [...points],
       extrusionHeight: 50,
       elevation: sketchElevation,
@@ -290,13 +293,11 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setBodies((prev) => [...prev, newBody]);
+    setIsolatedIds((prev) => (prev ? [...prev, newBodyId] : prev));
     selectOnly(newBodyId);
     setExistingPoints([]);
     setEditorMode('view3d');
-    // Land in Push / pull with the new face selected, so the next drag is obvious.
-    setActiveCadTool('extrude');
-    setActiveEditPart({ bodyId: newBodyId, type: 'face', faceType: 'top' });
-    notify('Profile extruded to 50 mm. Drag the arrow to set the height.');
+    notify('Extruded to 50 mm. Drag the arrow on top to change the height.');
   };
 
   const handleApplyCut = (targetId: string, cutterId: string, keepCutter: boolean) => {
@@ -306,7 +307,7 @@ export default function App() {
 
     const cutResults = cutShape(target.points, target.holes, cutter.points, cutter.holes);
     if (cutResults.length === 0) {
-      notify('The cut removed the entire body.');
+      notify('The cut removed the entire shape.');
       return;
     }
 
@@ -332,7 +333,6 @@ export default function App() {
 
     setBodies(next);
     selectOnly(targetId);
-    setActiveCadTool('select');
     notify(`Cut “${cutter.name}” out of “${target.name}”.`);
   };
 
@@ -356,49 +356,28 @@ export default function App() {
     [setBodies]
   );
 
-  // ---- Moving bodies --------------------------------------------------------
-  const moveSelection = (dx: number, dy: number, dz: number, angle = 0) => {
-    const b = selectionBounds(selectedBodies);
-    if (!b) return;
-    const ids = new Set(selectedBodyIds);
-    setBodies((prev) =>
-      prev.map((body) =>
-        ids.has(body.id) ? { ...body, ...transformBody(body, { dx, dy, dz, angle, cx: b.centerX, cy: b.centerY }) } : body
-      )
-    );
-  };
-
-  // ---- Tools ----------------------------------------------------------------
-  const handleSelectTool = () => {
-    setActiveCadTool('select');
-    setActiveEditPart(null);
-    setSelectedEdges([]);
-    setRepeatConfig((prev) => (prev.isDrawingLine ? { ...prev, isDrawingLine: false, drawingStep: 'start' } : prev));
-  };
-
+  // ---- Commands -------------------------------------------------------------
   const handleOpenCut = () => {
-    if (bodies.filter((b) => b.visible).length < 2) {
-      notify('You need at least two bodies to cut one from another.');
+    if (displayBodies.filter((b) => b.visible).length < 2) {
+      notify('You need at least two shapes to cut one from another.');
       return;
     }
     setIsMobileSidebarOpen(false);
     setIsCutModalOpen(true);
-    setActiveCadTool('cut');
   };
 
   const handleOpenRepeat = () => {
     if (!selectedBodyId) {
-      notify('Select the body you want to repeat first.');
+      notify('Select the shape you want to repeat first.');
       return;
     }
     setIsMobileSidebarOpen(false);
     setIsRepeatModalOpen(true);
-    setActiveCadTool('repeat');
   };
 
   const handleGroupSelected = () => {
     if (selectedBodyIds.length < 2) {
-      notify('Select at least two bodies to group (Shift-click to add).');
+      notify('Select at least two shapes to group (Shift-click to add).');
       return;
     }
     const newGroupId = `group_${Date.now()}`;
@@ -411,8 +390,7 @@ export default function App() {
       groups: [...d.groups, newGroup],
       bodies: d.bodies.map((b) => (selectedBodyIds.includes(b.id) ? { ...b, groupId: newGroupId } : b)),
     }));
-    setActiveCadTool('select');
-    notify(`Grouped ${selectedBodyIds.length} bodies. They now select and move together.`);
+    notify(`Grouped ${selectedBodyIds.length} shapes. They now select and move together.`);
   };
 
   const handleUngroup = (groupId: string) => {
@@ -425,7 +403,7 @@ export default function App() {
 
   const handleMergeSelected = () => {
     if (selectedBodyIds.length < 2) {
-      notify('Select at least two overlapping bodies to unite.');
+      notify('Select at least two overlapping shapes to unite.');
       return;
     }
     const targets = bodies.filter((b) => selectedBodyIds.includes(b.id));
@@ -449,9 +427,9 @@ export default function App() {
     }));
 
     setBodies([...bodies.filter((b) => !selectedBodyIds.includes(b.id)), ...merged]);
+    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !selectedBodyIds.includes(id)), ...merged.map((m) => m.id)] : prev));
     selectOnly(merged[0].id);
-    setActiveCadTool('select');
-    notify(`United ${targets.length} bodies.`);
+    notify(`United ${targets.length} shapes.`);
   };
 
   const handleApplyPattern = (config: RepeatConfig) => {
@@ -474,7 +452,7 @@ export default function App() {
     const stamp = Date.now();
     const copies: Body3D[] = [];
     for (let i = 1; i < transforms.length; i++) {
-      // Optionally turn each copy to follow the path tangent, pivoting around the body's centre.
+      // Optionally turn each copy to follow the path tangent, pivoting around the shape's centre.
       const angle = config.followCurve && config.type === 'curved' ? transforms[i].angle - transforms[0].angle : 0;
       copies.push({
         ...selectedBody,
@@ -487,7 +465,7 @@ export default function App() {
     }
 
     setBodies((prev) => [...prev, ...copies]);
-    setActiveCadTool('select');
+    setIsolatedIds((prev) => (prev ? [...prev, ...copies.map((c) => c.id)] : prev));
     notify(`Created ${copies.length} copies along a ${config.type} path.`);
   };
 
@@ -500,15 +478,14 @@ export default function App() {
       controlPoint: null,
       endPoint: null,
     }));
-    setActiveCadTool('repeat');
     setEditorMode('view3d');
   };
 
   const handleClearWorkspace = () => {
-    if (window.confirm('Remove every body and start from an empty workspace?')) {
+    if (window.confirm('Remove every shape and start from an empty workspace?')) {
       setDoc({ bodies: [], groups: [] });
       selectOnly(null);
-      setSelectedEdges([]);
+      setIsolatedIds(null);
       setExistingPoints([]);
       notify('Workspace cleared. Press ⌘Z to bring it back.');
     }
@@ -518,53 +495,55 @@ export default function App() {
     const starter = createStarterBodies();
     setDoc({ bodies: starter, groups: [] });
     selectOnly(starter[0].id);
+    setIsolatedIds(null);
     setEditorMode('view3d');
-    notify('Loaded the sample scene.');
+    notify('Loaded the starter block.');
   };
 
-  /** Opens the sketch view on the ground, or on a given height (e.g. the top face of a body). */
-  const handleNewSketch = (elevation = 0) => {
+  /** Shows only the given shapes (or everything again), in 2D and 3D. */
+  const isolate = (ids: string[] | null) => {
+    if (!ids) {
+      setIsolatedIds(null);
+      return;
+    }
+    const withGroups = new Set(ids);
+    bodies.forEach((b) => {
+      if (b.groupId && bodies.some((o) => o.groupId === b.groupId && withGroups.has(o.id))) withGroups.add(b.id);
+    });
+    setIsolatedIds([...withGroups]);
+  };
+
+  const toggleIsolate = () => {
+    if (isolatedIds) {
+      isolate(null);
+      notify('Showing everything.');
+    } else if (selectedBodyIds.length) {
+      isolate(selectedBodyIds);
+      notify('Isolated. Press I again to show everything.');
+    } else {
+      notify('Select a shape to isolate it.');
+    }
+  };
+
+  /** Opens the sketch view on the ground, or on a given height (e.g. the top of a shape). */
+  const openSketch = (elevation = 0, tool: SketchTool = 'box') => {
     setExistingPoints([]);
     setSketchElevation(elevation);
-    setActiveCadTool('select');
+    setSketchTool(tool);
     setEditorMode('sketch');
   };
 
+  const topOf = (b: Body3D) => Math.round(((b.elevation ?? 0) + b.extrusionHeight) * 100) / 100;
+
   const sketchOnTopOfSelection = () => {
     if (!selectedBody) return;
-    handleNewSketch(Math.round(((selectedBody.elevation ?? 0) + selectedBody.extrusionHeight) * 100) / 100);
+    openSketch(topOf(selectedBody));
     notify(`Sketching on top of ${selectedBody.name}.`);
   };
 
-  /** Chooses the tool for the rail, keyboard shortcuts and the context bar. */
-  const handleSetTool = (tool: CadTool) => {
-    if (editorMode !== 'view3d') setEditorMode('view3d');
-    switch (tool) {
-      case 'select':
-        handleSelectTool();
-        return;
-      case 'cut':
-        handleOpenCut();
-        return;
-      case 'repeat':
-        handleOpenRepeat();
-        return;
-      case 'group':
-        handleGroupSelected();
-        return;
-      case 'merge':
-        handleMergeSelected();
-        return;
-      case 'extrude':
-        setActiveEditPart(selectedBodyId ? { bodyId: selectedBodyId, type: 'face', faceType: 'top' } : null);
-        setSelectedEdges([]);
-        break;
-      default:
-        setActiveEditPart(null);
-        setSelectedEdges([]);
-    }
-    setActiveCadTool(tool);
-    if (repeatConfig.isDrawingLine) setRepeatConfig((prev) => ({ ...prev, isDrawingLine: false, drawingStep: 'start' }));
+  const editOutline = () => {
+    if (!selectedBody) return;
+    openSketch(topOf(selectedBody), 'select');
   };
 
   const doUndo = () => {
@@ -599,55 +578,51 @@ export default function App() {
     if (e.altKey) return;
 
     if (key === 'escape') {
-      setIsCutModalOpen(false);
-      setIsRepeatModalOpen(false);
-      setIsMobileSidebarOpen(false);
-      handleSelectTool();
+      // One step back each time: close dialogs, drop edge picks, deselect, show everything.
+      if (isCutModalOpen || isRepeatModalOpen || isMobileSidebarOpen) {
+        setIsCutModalOpen(false);
+        setIsRepeatModalOpen(false);
+        setIsMobileSidebarOpen(false);
+      } else if (repeatConfig.isDrawingLine) {
+        setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
+      } else if (selectedEdges.length) setSelectedEdges([]);
+      else if (selectedBodyIds.length) selectOnly(null);
+      else if (isolatedIds) isolate(null);
       return;
     }
     if (isCutModalOpen || isRepeatModalOpen) return;
-    if (editorMode === 'sketch' && !['1', '2'].includes(key)) return;
+    if (editorMode === 'sketch' && !['1', '2', 'i'].includes(key)) return;
 
     switch (key) {
       case '1':
-        setEditorMode('sketch');
+        openSketch(sketchElevation, selectedBodyId ? 'select' : 'box');
         break;
       case '2':
         setEditorMode('view3d');
         break;
-      case 'v':
-        handleSetTool('select');
-        break;
       case 'n':
-      case 's':
-        handleNewSketch(0);
+        openSketch(0);
         break;
-      case 'm':
-        handleSetTool('move');
-        break;
-      case 'e':
-        handleSetTool('extrude');
-        break;
-      case 'b':
-        handleSetTool('bevel');
+      case 'i':
+        toggleIsolate();
         break;
       case 'c':
-        handleSetTool('cut');
+        handleOpenCut();
         break;
       case 'r':
-        handleSetTool('repeat');
+        handleOpenRepeat();
         break;
       case 'g':
-        handleSetTool('group');
+        handleGroupSelected();
         break;
       case 'u':
-        handleSetTool('merge');
+        handleMergeSelected();
         break;
       case 'delete':
       case 'backspace':
         e.preventDefault();
-        if (activeCadTool === 'bevel' && selectedEdges.length) handleEdgeChange(selectedEdges, { size: 0 });
-        else if (selectedBodyId) handleDeleteBody(selectedBodyId);
+        if (selectedEdges.length) handleEdgeChange(selectedEdges, { size: 0 });
+        else handleDeleteSelected();
         break;
     }
   };
@@ -660,11 +635,17 @@ export default function App() {
   // ---- Render -------------------------------------------------------------
   const sidebarProps = {
     bodies,
+    isolatedIds,
     selectedBodyId,
     selectedBodyIds,
     onSelectBody: handleSelectBody,
     onUpdateBody: handleUpdateBody,
-    onDeleteBody: handleDeleteBody,
+    onDeleteBody: (id: string) => {
+      setSelectedBodyIds([id]);
+      setSelectedBodyId(id);
+      setBodies((prev) => prev.filter((b) => b.id !== id));
+      notify('Deleted. Press ⌘Z to undo.');
+    },
     onCloneBody: handleCloneBody,
     onClearWorkspace: handleClearWorkspace,
     onLoadDemo: handleLoadDemo,
@@ -673,10 +654,13 @@ export default function App() {
     onUngroup: handleUngroup,
     onMergeSelected: handleMergeSelected,
     onApplyCornerRadius: handleApplyCornerRadius,
+    onIsolate: (id: string) => {
+      isolate([id]);
+      selectOnly(id);
+    },
+    onShowAll: () => isolate(null),
     onEditEdge: (sel: EdgeSel) => {
       setEditorMode('view3d');
-      setActiveCadTool('bevel');
-      setActiveEditPart(null);
       selectOnly(sel.bodyId);
       setSelectedEdges([sel]);
       setIsMobileSidebarOpen(false);
@@ -687,7 +671,7 @@ export default function App() {
   const modeButton = (mode: EditorMode, label: string, Icon: typeof PenLine, hotkey: string) => (
     <button
       type="button"
-      onClick={() => (mode === 'sketch' ? handleNewSketch(sketchElevation) : setEditorMode(mode))}
+      onClick={() => (mode === 'sketch' ? openSketch(sketchElevation, selectedBodyId ? 'select' : 'box') : setEditorMode(mode))}
       aria-pressed={editorMode === mode}
       title={`${label} (${hotkey})`}
       className={`px-3 h-8 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors ${
@@ -717,6 +701,14 @@ export default function App() {
       <Icon size={17} strokeWidth={1.75} />
     </button>
   );
+
+  const isolatedNames = isolatedIds
+    ? bodies
+        .filter((b) => isolatedIds.includes(b.id))
+        .map((b) => b.name)
+        .slice(0, 2)
+        .join(', ') + (isolatedIds.length > 2 ? ` +${isolatedIds.length - 2}` : '')
+    : '';
 
   return (
     <div className="h-dvh flex flex-col bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
@@ -766,10 +758,15 @@ export default function App() {
                   onShapeComplete={handleShapeComplete}
                   existingPoints={existingPoints}
                   setExistingPoints={setExistingPoints}
-                  bodies={bodies}
+                  bodies={displayBodies}
                   selectedBodyIds={selectedBodyIds}
+                  selectedBodyId={selectedBodyId}
+                  onSelectBody={handleSelectBody}
+                  onEditBody={handleUpdateBody}
+                  onEditStateChange={history.hold}
                   planeElevation={sketchElevation}
                   onPlaneChange={setSketchElevation}
+                  initialTool={sketchTool}
                 />
               </motion.div>
             ) : (
@@ -782,42 +779,44 @@ export default function App() {
                 className="absolute inset-0"
               >
                 <ModelViewer3D
-                  bodies={bodies}
+                  bodies={displayBodies}
                   selectedBodyId={selectedBodyId}
                   selectedBodyIds={selectedBodyIds}
                   onSelectBody={handleSelectBody}
                   onUpdateBody={handleUpdateBody}
+                  onTransformBodies={transformBodies}
                   selectedEdges={selectedEdges}
                   onSelectEdges={setSelectedEdges}
                   onEdgeChange={handleEdgeChange}
                   repeatConfig={repeatConfig}
                   onUpdateRepeatConfig={setRepeatConfig}
-                  activeCadTool={activeCadTool}
-                  activeEditPart={activeEditPart}
-                  setActiveEditPart={setActiveEditPart}
                   onDragStateChange={history.hold}
+                  onHint={setHint}
                 />
 
                 <ContextBar
-                  tool={activeCadTool}
                   selected={selectedBodies}
                   edges={selectedEdges}
-                  part={activeEditPart}
-                  bodyCount={bodies.filter((b) => b.visible).length}
+                  bodyCount={displayBodies.length}
+                  isolated={!!isolatedIds}
                   onUpdateBody={handleUpdateBody}
                   onEdgeChange={handleEdgeChange}
                   onClearEdges={() => setSelectedEdges([])}
-                  onSetTool={handleSetTool}
                   onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
                   onRotate={(deg) => moveSelection(0, 0, 0, (deg * Math.PI) / 180)}
+                  onResize={handleResize}
                   onSketchOnTop={sketchOnTopOfSelection}
+                  onEditOutline={editOutline}
                   onDuplicate={() => selectedBodyId && handleCloneBody(selectedBodyId)}
-                  onDelete={() => selectedBodyId && handleDeleteBody(selectedBodyId)}
+                  onDelete={handleDeleteSelected}
                   onGroup={handleGroupSelected}
                   onUnion={handleMergeSelected}
+                  onCut={handleOpenCut}
+                  onPattern={handleOpenRepeat}
+                  onIsolate={toggleIsolate}
                 />
 
-                {bodies.length === 0 && (
+                {displayBodies.length === 0 && (
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="pointer-events-auto max-w-xs text-center flex flex-col items-center gap-4 p-6">
                       <div className="w-12 h-12 rounded-2xl bg-white/6 border border-white/10 flex items-center justify-center text-slate-300">
@@ -830,7 +829,7 @@ export default function App() {
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => handleNewSketch(0)}
+                          onClick={() => openSketch(0)}
                           className="px-4 h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
                         >
                           <PenLine size={15} /> New sketch
@@ -840,7 +839,7 @@ export default function App() {
                           onClick={handleLoadDemo}
                           className="px-4 h-9 rounded-xl bg-white/8 hover:bg-white/12 text-slate-200 text-sm font-medium flex items-center gap-2 transition-colors"
                         >
-                          <Sparkles size={15} /> Sample
+                          <Sparkles size={15} /> Starter block
                         </button>
                       </div>
                     </div>
@@ -852,32 +851,42 @@ export default function App() {
 
           {editorMode === 'view3d' && (
             <ToolRail
-              activeTool={activeCadTool}
-              selectedBodyCount={selectedBodyIds.length}
-              onSelect={() => handleSetTool('select')}
-              onNewSketch={() => handleNewSketch(0)}
-              onMove={() => handleSetTool('move')}
-              onExtrude={() => handleSetTool('extrude')}
-              onBevel={() => handleSetTool('bevel')}
-              onCut={() => handleSetTool('cut')}
-              onRepeat={() => handleSetTool('repeat')}
-              onGroup={() => handleSetTool('group')}
-              onMerge={() => handleSetTool('merge')}
+              selectedCount={selectedBodyIds.length}
+              bodyCount={displayBodies.length}
+              isolated={!!isolatedIds}
+              onSketch={() => openSketch(0)}
+              onIsolate={toggleIsolate}
+              onGroup={handleGroupSelected}
+              onUnion={handleMergeSelected}
+              onCut={handleOpenCut}
+              onPattern={handleOpenRepeat}
             />
           )}
 
-          {/* Bottom-center stack: tool guidance and toasts */}
+          {/* Bottom-center stack: isolation state and toasts */}
           <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-20 md:bottom-4 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
-            {editorMode === 'view3d' && (
-              <GuidanceBanner
-                activeTool={activeCadTool}
-                hasSelection={selectedBodyIds.length > 0}
-                isDrawingLine={repeatConfig.isDrawingLine}
-                drawingStep={repeatConfig.drawingStep}
-                onCancel={handleSelectTool}
-              />
-            )}
             <AnimatePresence>
+              {isolatedIds && (
+                <motion.div
+                  key="isolated"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  className="flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-xl bg-accent-500/20 border border-accent-400/40 backdrop-blur text-[13px] text-accent-100 shadow-xl max-w-full"
+                >
+                  <Focus size={14} className="shrink-0" />
+                  <span className="truncate">
+                    Isolated: <strong className="font-semibold text-white">{isolatedNames}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => isolate(null)}
+                    className="h-7 px-2.5 rounded-lg bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0"
+                  >
+                    Show all
+                  </button>
+                </motion.div>
+              )}
               {toast && (
                 <motion.div
                   key={toast}
@@ -892,6 +901,9 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+            {editorMode === 'view3d' && hint && (
+              <p className="hidden md:block text-xs text-slate-500 text-center leading-snug px-3">{hint}</p>
+            )}
           </div>
         </main>
 
@@ -939,11 +951,8 @@ export default function App() {
         {isCutModalOpen && (
           <CutModal
             key="cut"
-            onClose={() => {
-              setIsCutModalOpen(false);
-              setActiveCadTool('select');
-            }}
-            bodies={bodies}
+            onClose={() => setIsCutModalOpen(false)}
+            bodies={displayBodies}
             initialTargetId={selectedBodyId}
             onApplyCut={handleApplyCut}
           />
@@ -951,10 +960,7 @@ export default function App() {
         {isRepeatModalOpen && selectedBody && (
           <RepeatPatternModal
             key="repeat"
-            onClose={() => {
-              setIsRepeatModalOpen(false);
-              setActiveCadTool('select');
-            }}
+            onClose={() => setIsRepeatModalOpen(false)}
             selectedBody={selectedBody}
             repeatConfig={repeatConfig}
             setRepeatConfig={setRepeatConfig}

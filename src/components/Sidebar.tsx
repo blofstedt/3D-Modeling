@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   FileJson,
+  Focus,
   Merge,
   RotateCcw,
   Sparkles,
@@ -25,6 +26,7 @@ import { exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
 
 interface SidebarProps {
   bodies: Body3D[];
+  isolatedIds: string[] | null;
   selectedBodyId: string | null;
   selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
@@ -40,6 +42,8 @@ interface SidebarProps {
   onApplyCornerRadius: (id: string, radius: number) => void;
   onEditEdge: (sel: EdgeSel) => void;
   onRemoveEdge: (sel: EdgeSel) => void;
+  onIsolate: (id: string) => void;
+  onShowAll: () => void;
 }
 
 type Tab = 'properties' | 'material' | 'bodies' | 'export';
@@ -142,6 +146,7 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 
 export default function Sidebar({
   bodies,
+  isolatedIds,
   selectedBodyId,
   selectedBodyIds,
   onSelectBody,
@@ -157,6 +162,8 @@ export default function Sidebar({
   onApplyCornerRadius,
   onEditEdge,
   onRemoveEdge,
+  onIsolate,
+  onShowAll,
 }: SidebarProps) {
   const [tab, setTab] = useState<Tab>('properties');
   const [exportNote, setExportNote] = useState<string | null>(null);
@@ -241,7 +248,7 @@ export default function Sidebar({
                 <span className="text-xs font-medium text-slate-400">Beveled edges</span>
                 {features.length === 0 ? (
                   <p className="text-xs text-slate-500 leading-relaxed">
-                    Nothing is beveled. Use Fillet &amp; bevel (B) to pick the edges you want.
+                    Nothing is beveled. Click an edge in the 3D view to bevel just that edge.
                   </p>
                 ) : (
                   <ul className="flex flex-col gap-1">
@@ -434,6 +441,14 @@ export default function Sidebar({
               <EmptyState title="No bodies yet" text="Draw a sketch and pull it into a solid, or load the sample scene." />
             ) : (
               <Field label="All bodies">
+                {isolatedIds && (
+                  <div className="flex items-center justify-between rounded-lg bg-accent-500/12 border border-accent-400/30 px-3 py-2 text-xs text-accent-100">
+                    <span>Isolated: {isolatedIds.length} shown</span>
+                    <button type="button" onClick={onShowAll} className="font-medium text-white hover:underline">
+                      Show all
+                    </button>
+                  </div>
+                )}
                 <ul className="flex flex-col gap-1">
                   {bodies.map((b) => {
                     const selected = selectedBodyIds.includes(b.id);
@@ -451,7 +466,7 @@ export default function Sidebar({
                           }}
                           className={`group h-10 pl-2.5 pr-1.5 rounded-lg flex items-center gap-2.5 text-sm cursor-pointer transition-colors ${
                             selected ? 'bg-accent-500/15 ring-1 ring-accent-400/50' : 'hover:bg-white/6'
-                          } ${b.visible ? '' : 'opacity-50'}`}
+                          } ${b.visible && (!isolatedIds || isolatedIds.includes(b.id)) ? '' : 'opacity-45'}`}
                         >
                           <span
                             className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
@@ -475,6 +490,18 @@ export default function Sidebar({
                             <svg viewBox="0 0 12 12" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2">
                               <path d="M2.5 6.5l2.5 2.5 4.5-5" />
                             </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onIsolate(b.id);
+                            }}
+                            aria-label={`Isolate ${b.name}`}
+                            title="Isolate: show only this shape in 2D and 3D"
+                            className="p-1 rounded text-slate-400 hover:text-white shrink-0"
+                          >
+                            <Focus size={14} />
                           </button>
                           <button
                             type="button"

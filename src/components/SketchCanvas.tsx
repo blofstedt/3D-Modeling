@@ -10,6 +10,7 @@ import {
   Circle,
   Focus,
   Minus,
+  MousePointer2,
   PenTool,
   Plus,
   Square,
@@ -20,6 +21,8 @@ import {
 } from 'lucide-react';
 import { Body3D, GRID_SPACING, Point2D } from '../types';
 import { createClosedCurveRibbon } from '../utils/geometry';
+import { getBase, withOutline } from '../utils/outline';
+import { transformBody } from '../utils/transform';
 
 interface SketchCanvasProps {
   onShapeComplete: (points: Point2D[]) => void;
@@ -31,14 +34,21 @@ interface SketchCanvasProps {
   /** Height of the plane being sketched on (0 = ground). */
   planeElevation: number;
   onPlaneChange: (elevation: number) => void;
+  /** The shape being edited: its corners can be dragged, and with Select the shape itself can be picked and moved. */
+  selectedBodyId: string | null;
+  onSelectBody: (id: string | null) => void;
+  onEditBody: (id: string, updates: Partial<Body3D>) => void;
+  onEditStateChange?: (editing: boolean) => void;
+  initialTool?: SketchTool;
 }
 
-type SketchTool = 'polygon' | 'box' | 'circle' | 'triangle' | 'curve';
+export type SketchTool = 'select' | 'polygon' | 'box' | 'circle' | 'triangle' | 'curve';
 type CurveNode = 'start' | 'end' | 'center' | 'width1' | 'width2';
 
 const TOOLS: { id: SketchTool; label: string; icon: LucideIcon; title: string }[] = [
-  { id: 'polygon', label: 'Polygon', icon: PenTool, title: 'Polygon: click points, click the first point to close' },
+  { id: 'select', label: 'Select', icon: MousePointer2, title: 'Select: click a shape to edit it, drag its corners or the whole shape' },
   { id: 'box', label: 'Rectangle', icon: Square, title: 'Rectangle: drag between opposite corners' },
+  { id: 'polygon', label: 'Polygon', icon: PenTool, title: 'Polygon: click points, click the first point to close' },
   { id: 'circle', label: 'Circle', icon: Circle, title: 'Circle: drag from the center outwards' },
   { id: 'triangle', label: 'Triangle', icon: Triangle, title: 'Triangle: drag its bounding box' },
   { id: 'curve', label: 'Curve', icon: Activity, title: 'Curve: set start and end, then bend with the handles' },
@@ -81,6 +91,19 @@ const generateCirclePoints = (cx: number, cy: number, radius: number): Point2D[]
   return points;
 };
 
+/** Even-odd containment against the outline and its holes. */
+const pointInBody = (pt: Point2D, body: Body3D): boolean => {
+  let inside = false;
+  for (const ring of [body.points, ...(body.holes ?? [])]) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i];
+      const b = ring[j];
+      if (a.y > pt.y !== b.y > pt.y && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+  }
+  return inside;
+};
+
 const curveHandles = (start: Point2D, end: Point2D, center: Point2D, width: number) => ({
   c1: { x: center.x + (start.x - center.x) * width, y: center.y + (start.y - center.y) * width },
   c2: { x: center.x + (end.x - center.x) * width, y: center.y + (end.y - center.y) * width },
@@ -94,6 +117,11 @@ export default function SketchCanvas({
   selectedBodyIds,
   planeElevation,
   onPlaneChange,
+  selectedBodyId,
+  onSelectBody,
+  onEditBody,
+  onEditStateChange,
+  initialTool = 'box',
 }: SketchCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -105,7 +133,8 @@ export default function SketchCanvas({
   const [isPanning, setIsPanning] = useState(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
 
-  const [activeTool, setActiveTool] = useState<SketchTool>('polygon');
+  const [activeTool, setActiveTool] = useState<SketchTool>(initialTool);
+  const [hoverCursor, setHoverCursor] = useState<string | null>(null);
   const [shapeStart, setShapeStart] = useState<Point2D | null>(null);
 
   const [curveStart, setCurveStart] = useState<Point2D | null>(null);
@@ -119,6 +148,14 @@ export default function SketchCanvas({
   const press = useRef<{ x: number; y: number; button: number; pan: boolean; moved: boolean } | null>(null);
   const gesture = useRef<{ distance: number; zoom: number } | null>(null);
   const lastPan = useRef<Point2D | null>(null);
+  /** An in-progress edit of an existing shape: dragging a corner, moving the shape, or clicking empty space. */
+  const edit = useRef<{
+    kind: 'vertex' | 'move' | 'none';
+    body: Body3D;
+    index?: number;
+    startWorld: Point2D;
+    moved: boolean;
+  } | null>(null);
 
   // ---- Coordinate transforms ----------------------------------------------
   const origin = useCallback(
@@ -127,7 +164,7 @@ export default function SketchCanvas({
   );
 
   const screenToGrid = useCallback(
-    (sx: number, sy: number): Point2D => {
+    (sx: number, sy: number, excludeId?: string): Point2D => {
       const o = origin();
       const rawX = (sx - o.x) / zoom;
       const rawY = (o.y - sy) / zoom;
@@ -135,7 +172,7 @@ export default function SketchCanvas({
       let nearest: Point2D | null = null;
       let nearestDist = 10 / zoom;
       for (const body of bodies) {
-        if (!body.visible) continue;
+        if (!body.visible || body.id === excludeId) continue;
         for (const p of body.points) {
           const d = Math.hypot(rawX - p.x, rawY - p.y);
           if (d < nearestDist) {
@@ -151,6 +188,14 @@ export default function SketchCanvas({
       };
     },
     [origin, zoom, bodies]
+  );
+
+  const screenToWorld = useCallback(
+    (sx: number, sy: number): Point2D => {
+      const o = origin();
+      return { x: (sx - o.x) / zoom, y: (o.y - sy) / zoom };
+    },
+    [origin, zoom]
   );
 
   const gridToScreen = useCallback(
@@ -279,6 +324,33 @@ export default function SketchCanvas({
     }
     if (e.button !== 0) return;
 
+    // Existing shapes: the corners of the shape being edited can be dragged in any tool.
+    const active = bodies.find((b) => b.id === selectedBodyId && b.visible);
+    if (active) {
+      const base = getBase(active);
+      const index = base.findIndex((pt) => {
+        const sp = gridToScreen(pt.x, pt.y);
+        return Math.hypot(p.x - sp.x, p.y - sp.y) < 10;
+      });
+      if (index >= 0) {
+        edit.current = { kind: 'vertex', body: active, index, startWorld: screenToWorld(p.x, p.y), moved: false };
+        onEditStateChange?.(true);
+        return;
+      }
+    }
+    if (activeTool === 'select') {
+      const w = screenToWorld(p.x, p.y);
+      const target = [...bodies].reverse().find((b) => b.visible && pointInBody(w, b));
+      if (target) {
+        if (target.id !== selectedBodyId) onSelectBody(target.id);
+        edit.current = { kind: 'move', body: target, startWorld: w, moved: false };
+        onEditStateChange?.(true);
+      } else {
+        edit.current = { kind: 'none', body: bodies[0], startWorld: w, moved: false };
+      }
+      return;
+    }
+
     const snapped = screenToGrid(p.x, p.y);
 
     if (activeTool === 'curve') {
@@ -342,6 +414,35 @@ export default function SketchCanvas({
       press.current.moved = true;
     }
 
+    const ed = edit.current;
+    if (ed) {
+      const w = screenToWorld(p.x, p.y);
+      if (Math.hypot(w.x - ed.startWorld.x, w.y - ed.startWorld.y) * zoom > CLICK_SLOP_PX) ed.moved = true;
+      if (ed.moved && ed.kind === 'vertex' && ed.index !== undefined) {
+        const base = getBase(ed.body).map((pt) => ({ ...pt }));
+        base[ed.index] = screenToGrid(p.x, p.y, ed.body.id);
+        onEditBody(ed.body.id, withOutline(ed.body, { basePoints: base }));
+      } else if (ed.moved && ed.kind === 'move') {
+        const dx = Math.round((w.x - ed.startWorld.x) / 5) * 5;
+        const dy = Math.round((w.y - ed.startWorld.y) / 5) * 5;
+        onEditBody(ed.body.id, transformBody(ed.body, { dx, dy, dz: 0, angle: 0, cx: 0, cy: 0 }));
+      }
+      return;
+    }
+
+    if (activeTool === 'select' || selectedBodyId) {
+      const active = bodies.find((b) => b.id === selectedBodyId && b.visible);
+      const overCorner =
+        !!active &&
+        getBase(active).some((pt) => {
+          const sp = gridToScreen(pt.x, pt.y);
+          return Math.hypot(p.x - sp.x, p.y - sp.y) < 10;
+        });
+      const w = screenToWorld(p.x, p.y);
+      const next = overCorner ? 'move' : activeTool === 'select' && bodies.some((b) => b.visible && pointInBody(w, b)) ? 'move' : null;
+      if (next !== hoverCursor) setHoverCursor(next);
+    }
+
     if (isPanning && lastPan.current) {
       const dx = p.x - lastPan.current.x;
       const dy = p.y - lastPan.current.y;
@@ -376,6 +477,15 @@ export default function SketchCanvas({
       if (pointers.current.size < 2) gesture.current = null;
       if (pointers.current.size === 0) press.current = null;
       lastPan.current = null;
+      return;
+    }
+
+    const ed = edit.current;
+    if (ed) {
+      edit.current = null;
+      press.current = null;
+      if (ed.kind === 'none' && !ed.moved) onSelectBody(null);
+      if (ed.kind !== 'none') onEditStateChange?.(false);
       return;
     }
 
@@ -570,6 +680,21 @@ export default function SketchCanvas({
       }
     });
 
+    // Corner handles for the shape being edited.
+    const editing = bodies.find((b) => b.id === selectedBodyId && b.visible);
+    if (editing) {
+      getBase(editing).forEach((pt) => {
+        const sp = gridToScreen(pt.x, pt.y);
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = COLORS.accent;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(sp.x - 4.5, sp.y - 4.5, 9, 9);
+        ctx.fill();
+        ctx.stroke();
+      });
+    }
+
     const pill = (text: string, x: number, y: number, color: string) => {
       ctx.font = FONT;
       const w = ctx.measureText(text).width + 14;
@@ -744,6 +869,7 @@ export default function SketchCanvas({
     isHoveringStartNode,
     bodies,
     selectedBodyIds,
+    selectedBodyId,
     planeElevation,
     activeTool,
     shapeStart,
@@ -757,6 +883,9 @@ export default function SketchCanvas({
   // ---- UI ------------------------------------------------------------------
   const hasDraft = existingPoints.length > 0 || curveStart !== null;
   const hint = (() => {
+    if (activeTool === 'select') {
+      return selectedBodyId ? 'Drag a corner to reshape · drag the shape to move it · click empty space to deselect' : 'Click a shape to edit it';
+    }
     if (activeTool === 'polygon') {
       if (existingPoints.length === 0) return 'Click to place the first point';
       if (existingPoints.length < 3) return 'Add at least three points';
@@ -783,7 +912,7 @@ export default function SketchCanvas({
     return options;
   })();
 
-  const cursor = isPanning ? 'grabbing' : spaceHeld ? 'grab' : 'crosshair';
+  const cursor = isPanning ? 'grabbing' : spaceHeld ? 'grab' : hoverCursor ?? (activeTool === 'select' ? 'default' : 'crosshair');
   const iconBtn =
     'w-8 h-8 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors';
 

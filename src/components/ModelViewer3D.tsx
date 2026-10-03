@@ -3,68 +3,51 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BevelStyle, Body3D, CadTool, EdgeSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
-import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
+import { BevelStyle, Body3D, EdgeSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
+import { buildBodyGeometry, getInteriorAnchor } from '../utils/bodyGeometry';
 import { EdgePath, edgeKey, edgeSize, listEdges, outlineSegments } from '../utils/edges';
-import { getBase, getOutline, outwardNormal, wallEnds, withOutline } from '../utils/outline';
-import { selectionBounds, transformBody } from '../utils/transform';
+import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
+import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
 
-/** What the user is pointing at on a body. Drives which handles are shown. */
-export interface EditPart {
-  bodyId: string;
-  type: 'face' | 'wall' | 'corner';
-  faceType?: 'top' | 'bottom';
-  /** Base side index for a wall, base vertex index for a corner. */
-  index?: number;
-}
-
-type GizmoKind =
-  | 'extrude-height'
-  | 'offset-wall'
-  | 'vertex'
-  | 'edge-size'
-  | 'move-x'
-  | 'move-y'
-  | 'move-z'
-  | 'move-plane'
-  | 'rotate';
+type GizmoKind = 'extrude-height' | 'offset-wall' | 'edge-size' | 'rotate';
 
 type Hit =
   | { type: 'gizmo'; gizmo: GizmoKind; bodyId?: string; index?: number }
   | { type: 'edge'; sel: EdgeSel }
-  | { type: 'face'; faceType: 'top' | 'bottom'; bodyId: string }
-  | { type: 'wall'; bodyId: string; index: number }
-  | { type: 'corner'; bodyId: string; index: number };
+  | { type: 'body'; bodyId: string; point: THREE.Vector3 };
 
 interface Drag {
-  kind: 'height' | 'wall' | 'vertex' | 'edge-size' | 'move-axis' | 'move-plane' | 'rotate';
-  pointerId: number;
+  kind: 'height' | 'wall' | 'edge-size' | 'move' | 'rotate';
   startClientY: number;
   mmPerPixel: number;
   bodyId?: string;
-  initialHeight?: number;
-  initialBase?: Point2D[];
-  index?: number;
-  normal?: Point2D;
   planeY?: number;
   startPoint?: THREE.Vector3;
+  // height
+  initialHeight?: number;
+  nextHeight?: number;
+  // wall
+  index?: number;
+  initialBase?: Point2D[];
+  normal?: Point2D;
+  // edge size
   sels?: EdgeSel[];
   initialSize?: number;
-  axis?: 'x' | 'y' | 'z';
-  origin?: THREE.Vector3;
-  t0?: number;
-  snapshot?: Map<string, Body3D>;
+  // move / rotate
+  ids?: string[];
   center?: Point2D;
   a0?: number;
-  minElevation?: number;
+  dx?: number;
+  dy?: number;
+  angle?: number;
 }
 
 export interface ModelViewer3DProps {
@@ -73,16 +56,16 @@ export interface ModelViewer3DProps {
   selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
+  onTransformBodies: (ids: string[], t: BodyTransform) => void;
   selectedEdges: EdgeSel[];
   onSelectEdges: (edges: EdgeSel[]) => void;
   onEdgeChange: (edges: EdgeSel[], patch: { size?: number; style?: BevelStyle }) => void;
   repeatConfig: RepeatConfig;
   onUpdateRepeatConfig: React.Dispatch<React.SetStateAction<RepeatConfig>>;
-  activeCadTool: CadTool;
-  activeEditPart: EditPart | null;
-  setActiveEditPart: (part: EditPart | null) => void;
-  /** Fired when a handle drag starts/ends so the app can treat it as a single undo step. */
+  /** Fired when a drag starts/ends so the app can treat it as a single undo step. */
   onDragStateChange?: (dragging: boolean) => void;
+  /** One line saying what the pointer is over and what dragging it will do. */
+  onHint?: (text: string) => void;
 }
 
 const ACCENT = '#8b7cf6';
@@ -90,9 +73,11 @@ const ACCENT_LIGHT = '#a99dff';
 const WARN = '#fbbf24';
 const BACKGROUND = '#08090d';
 const CLICK_SLOP_PX = 5;
-const EDGE_PICK_PX = 9;
+const EDGE_PICK_PX = 7;
+const MAX_WALL_HANDLES = 16;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const signed = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n)}`;
 
 function distanceToSegment2D(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
   const dx = bx - ax;
@@ -121,12 +106,36 @@ function makeFatLine(points: { x: number; y: number; z: number }[], color: strin
   return line;
 }
 
+// Handle geometry and materials are built once and shared; they are never disposed.
+const shared = <T extends THREE.BufferGeometry | THREE.Material>(item: T): T => {
+  item.userData.shared = true;
+  return item;
+};
+const HANDLE = {
+  dot: shared(new THREE.SphereGeometry(1, 16, 12)),
+  shaft: shared(new THREE.CylinderGeometry(1.1, 1.1, 18, 12)),
+  head: shared(new THREE.ConeGeometry(4.2, 9, 20)),
+  arrowHit: shared(new THREE.CylinderGeometry(11, 11, 40, 12)),
+};
+const handleMaterials = new Map<string, THREE.MeshBasicMaterial>();
+const handleMaterial = (color: string, opacity = 1, depthTest = false) => {
+  const key = `${color}:${opacity}:${depthTest}`;
+  let m = handleMaterials.get(key);
+  if (!m) {
+    m = shared(new THREE.MeshBasicMaterial({ color, depthTest, transparent: true, opacity }));
+    handleMaterials.set(key, m);
+  }
+  return m;
+};
+const hiddenMaterial = shared(new THREE.MeshBasicMaterial({ visible: false }));
+
 function disposeObject(root: THREE.Object3D) {
   root.traverse((obj) => {
     const o = obj as THREE.Mesh;
-    o.geometry?.dispose();
+    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
     const m = o.material;
     const dispose = (mat: THREE.Material) => {
+      if (mat.userData.shared) return;
       if (mat instanceof LineMaterial) lineMaterials.delete(mat);
       mat.dispose();
     };
@@ -191,6 +200,7 @@ const bodySignature = (b: Body3D) =>
   ]);
 
 interface BodyEntry {
+  body: Body3D;
   group: THREE.Group;
   outline: THREE.LineSegments;
   signature: string;
@@ -202,18 +212,19 @@ export default function ModelViewer3D({
   selectedBodyIds,
   onSelectBody,
   onUpdateBody,
+  onTransformBodies,
   selectedEdges,
   onSelectEdges,
   onEdgeChange,
   repeatConfig,
   onUpdateRepeatConfig,
-  activeCadTool,
-  activeEditPart,
-  setActiveEditPart,
   onDragStateChange,
+  onHint,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
+  /** Body whose bevel cuts are skipped while its outline is being dragged. */
+  const [fastId, setFastId] = useState<string | null>(null);
   const [dragLabel, setDragLabel] = useState<{ text: string; x: number; y: number } | null>(null);
 
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -222,8 +233,11 @@ export default function ModelViewer3D({
   const helperGroupRef = useRef<THREE.Group | null>(null);
   const previewGroupRef = useRef<THREE.Group | null>(null);
   const entriesRef = useRef<Map<string, BodyEntry>>(new Map());
-  const dragRef = useRef<Drag | null>(null);
+  const heightArrowRef = useRef<THREE.Object3D | null>(null);
+  const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
+  const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
+  const frameViewRef = useRef<(face: CubeFace, instant?: boolean) => void>(() => {});
   const tweenRef = useRef<{
     start: number;
     fromPos: THREE.Vector3;
@@ -231,25 +245,23 @@ export default function ModelViewer3D({
     fromTarget: THREE.Vector3;
     toTarget: THREE.Vector3;
   } | null>(null);
-  const frameViewRef = useRef<(face: CubeFace, instant?: boolean) => void>(() => {});
 
   // Latest props for long-lived event handlers
-  const live = useRef({} as Omit<ModelViewer3DProps, 'selectedBodyIds'> & { selectedBodyIds: string[] });
+  const live = useRef({} as ModelViewer3DProps);
   live.current = {
     bodies,
     selectedBodyId,
     selectedBodyIds,
     selectedEdges,
-    activeCadTool,
-    activeEditPart,
     repeatConfig,
     onSelectBody,
     onUpdateBody,
+    onTransformBodies,
     onSelectEdges,
     onEdgeChange,
     onUpdateRepeatConfig,
-    setActiveEditPart,
     onDragStateChange,
+    onHint,
   };
 
   // ---- Scene setup (once) -------------------------------------------------
@@ -268,12 +280,15 @@ export default function ModelViewer3D({
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    const fullRatio = Math.min(window.devicePixelRatio, 2);
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(fullRatio);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 0.95;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    // Shadows only change when something moves, so they are redrawn on request.
+    renderer.shadowMap.autoUpdate = false;
     renderer.domElement.style.touchAction = 'none';
     renderer.domElement.style.display = 'block';
     container.appendChild(renderer.domElement);
@@ -283,12 +298,12 @@ export default function ModelViewer3D({
     const pmrem = new THREE.PMREMGenerator(renderer);
     const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environment = envTexture;
-    scene.environmentIntensity = 0.9;
+    scene.environmentIntensity = 0.55;
 
-    const key = new THREE.DirectionalLight('#ffffff', 1.6);
+    const key = new THREE.DirectionalLight('#ffffff', 1.15);
     key.position.set(240, 420, 260);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.mapSize.set(1536, 1536);
     key.shadow.camera.near = 50;
     key.shadow.camera.far = 1400;
     key.shadow.camera.left = -420;
@@ -331,6 +346,27 @@ export default function ModelViewer3D({
     helperGroupRef.current = helperGroup;
     previewGroupRef.current = previewGroup;
 
+    // ---- On-demand rendering and adaptive resolution ----------------------
+    let needsRender = true;
+    let shadowsDirty = true;
+    const invalidate = (shadows = false) => {
+      needsRender = true;
+      if (shadows) shadowsDirty = true;
+    };
+    invalidateRef.current = invalidate;
+
+    let qualityTimer = 0;
+    const lowerQualityWhileBusy = () => {
+      if (fullRatio > 1 && renderer.getPixelRatio() !== 1) renderer.setPixelRatio(1);
+      window.clearTimeout(qualityTimer);
+      qualityTimer = window.setTimeout(() => {
+        if (renderer.getPixelRatio() !== fullRatio) {
+          renderer.setPixelRatio(fullRatio);
+          invalidate();
+        }
+      }, 220);
+    };
+
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     const setRay = (clientX: number, clientY: number) => {
@@ -343,32 +379,8 @@ export default function ModelViewer3D({
       const point = new THREE.Vector3();
       return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), point) ? point : null;
     };
-    /** Position along a world axis nearest to the pointer ray. */
-    const axisParam = (clientX: number, clientY: number, origin: THREE.Vector3, dir: THREE.Vector3): number | null => {
-      setRay(clientX, clientY);
-      const rd = raycaster.ray.direction;
-      const w0 = origin.clone().sub(raycaster.ray.origin);
-      const b = dir.dot(rd);
-      const d = dir.dot(w0);
-      const e = rd.dot(w0);
-      const denom = 1 - b * b;
-      if (Math.abs(denom) < 1e-4) return null;
-      return (b * e - d) / denom;
-    };
-    const axisDir = (name: 'x' | 'y' | 'z') =>
-      name === 'x' ? new THREE.Vector3(1, 0, 0) : name === 'y' ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(0, 1, 0);
 
     // ---- Edge picking (screen-space distance to each edge's polyline) -----
-    const edgeCache = new WeakMap<Body3D, EdgePath[]>();
-    const edgesOf = (b: Body3D) => {
-      let edges = edgeCache.get(b);
-      if (!edges) {
-        edges = listEdges(b);
-        edgeCache.set(b, edges);
-      }
-      return edges;
-    };
-
     const pickEdge = (clientX: number, clientY: number): EdgeSel | null => {
       const rect = renderer.domElement.getBoundingClientRect();
       const px = clientX - rect.left;
@@ -380,7 +392,7 @@ export default function ModelViewer3D({
 
       for (const body of live.current.bodies) {
         if (!body.visible) continue;
-        for (const edge of edgesOf(body)) {
+        for (const edge of listEdges(body)) {
           let best = Infinity;
           let bestPoint: THREE.Vector3 | null = null;
           for (let i = 0; i + 1 < edge.points.length; i++) {
@@ -393,6 +405,9 @@ export default function ModelViewer3D({
             const ay = (-a.y * 0.5 + 0.5) * rect.height;
             const bx = (b.x * 0.5 + 0.5) * rect.width;
             const by = (-b.y * 0.5 + 0.5) * rect.height;
+            // Cheap reject before the exact distance.
+            if (Math.min(ax, bx) - EDGE_PICK_PX > px || Math.max(ax, bx) + EDGE_PICK_PX < px) continue;
+            if (Math.min(ay, by) - EDGE_PICK_PX > py || Math.max(ay, by) + EDGE_PICK_PX < py) continue;
             const { distance, t } = distanceToSegment2D(px, py, ax, ay, bx, by);
             if (distance < best) {
               best = distance;
@@ -407,7 +422,7 @@ export default function ModelViewer3D({
       candidates.sort((c1, c2) => c1.dist - c2.dist);
 
       // Skip edges hidden behind the body.
-      for (const c of candidates.slice(0, 8)) {
+      for (const c of candidates.slice(0, 6)) {
         const toPoint = c.point.clone().sub(camera.position);
         const dist = toPoint.length();
         raycaster.set(camera.position, toPoint.normalize());
@@ -417,22 +432,25 @@ export default function ModelViewer3D({
       return null;
     };
 
-    // ---- Hit testing: handles first, then edges (bevel tool), then solids --
+    // ---- Hit testing: handles first, then edges, then solids ---------------
     const resolveHit = (clientX: number, clientY: number): Hit | null => {
       setRay(clientX, clientY);
 
-      if (gizmoGroup.children.length) {
+      if (gizmoGroup.visible && gizmoGroup.children.length) {
         const gizmoHit = raycaster.intersectObjects(gizmoGroup.children, true)[0];
         if (gizmoHit) {
           let obj: THREE.Object3D | null = gizmoHit.object;
           while (obj && !obj.userData.gizmo) obj = obj.parent;
-          if (obj) {
+          // The rotation halo lies on the floor: where a shape stands in front of it, the shape wins.
+          const hiddenBehindShape =
+            obj?.userData.gizmo === 'rotate' && (raycaster.intersectObjects(bodyGroup.children, true)[0]?.distance ?? Infinity) < gizmoHit.distance;
+          if (obj && !hiddenBehindShape) {
             return { type: 'gizmo', gizmo: obj.userData.gizmo, bodyId: obj.userData.bodyId, index: obj.userData.index };
           }
         }
       }
 
-      if (live.current.activeCadTool === 'bevel') {
+      if (!live.current.repeatConfig.isDrawingLine) {
         const sel = pickEdge(clientX, clientY);
         if (sel) return { type: 'edge', sel };
         setRay(clientX, clientY);
@@ -442,220 +460,310 @@ export default function ModelViewer3D({
       if (!hit) return null;
       let obj: THREE.Object3D | null = hit.object;
       while (obj && !obj.userData.bodyId) obj = obj.parent;
-      if (!obj) return null;
-      const bodyId: string = obj.userData.bodyId;
-      const body = live.current.bodies.find((b) => b.id === bodyId);
-      if (!body) return null;
-
-      const normalY = hit.face ? hit.face.normal.y : 1;
-      if (normalY > 0.5) return { type: 'face', faceType: 'top', bodyId };
-      if (normalY < -0.5) return { type: 'face', faceType: 'bottom', bodyId };
-
-      const outline = getOutline(body);
-      const hx = hit.point.x;
-      const hy = -hit.point.z;
-      let best = 0;
-      let bestDist = Infinity;
-      outline.points.forEach((p1, i) => {
-        const p2 = outline.points[(i + 1) % outline.points.length];
-        const d = distanceToSegment2D(hx, hy, p1.x, p1.y, p2.x, p2.y).distance;
-        if (d < bestDist) {
-          bestDist = d;
-          best = i;
-        }
-      });
-      const role = outline.roles[best];
-      return role.kind === 'corner'
-        ? { type: 'corner', bodyId, index: role.index }
-        : { type: 'wall', bodyId, index: role.index };
+      return obj ? { type: 'body', bodyId: obj.userData.bodyId, point: hit.point.clone() } : null;
     };
 
-    // ---- Hover highlight for edges ----------------------------------------
-    let hoverKey: string | null = null;
-    const setHover = (sel: EdgeSel | null) => {
-      const key = sel ? edgeKey(sel) : null;
-      if (key === hoverKey) return;
-      hoverKey = key;
+    // ---- Hover feedback ----------------------------------------------------
+    let hoverEdgeKey: string | null = null;
+    let hoverBodyId: string | null = null;
+    let lastHint = '';
+    const showHint = (text: string) => {
+      if (text !== lastHint) {
+        lastHint = text;
+        live.current.onHint?.(text);
+      }
+    };
+
+    const setHoverEdge = (sel: EdgeSel | null) => {
+      const k = sel ? edgeKey(sel) : null;
+      if (k === hoverEdgeKey) return;
+      hoverEdgeKey = k;
       clearGroup(hoverGroup);
-      if (!sel) return;
-      const body = live.current.bodies.find((b) => b.id === sel.bodyId);
-      const edge = body && edgesOf(body).find((e) => e.kind === sel.kind && e.index === sel.index);
-      if (edge) hoverGroup.add(makeFatLine(edge.points, ACCENT_LIGHT, 4));
+      if (sel) {
+        const body = live.current.bodies.find((b) => b.id === sel.bodyId);
+        const edge = body && listEdges(body).find((e) => e.kind === sel.kind && e.index === sel.index);
+        if (edge) hoverGroup.add(makeFatLine(edge.points, ACCENT_LIGHT, 4));
+      }
+      invalidate();
     };
-    clearHoverRef.current = () => setHover(null);
+    clearHoverRef.current = () => {
+      setHoverEdge(null);
+      if (hoverBodyId) {
+        hoverBodyId = null;
+        refreshOutlines();
+      }
+    };
+
+    const refreshOutlines = () => {
+      const { selectedBodyIds: ids, selectedBodyId: id } = live.current;
+      entriesRef.current.forEach((entry, bodyId) => {
+        const selected = bodyId === id || ids.includes(bodyId);
+        const hovered = bodyId === hoverBodyId;
+        entry.outline.visible = selected || hovered;
+        (entry.outline.material as THREE.LineBasicMaterial).opacity = selected ? 1 : 0.45;
+      });
+      invalidate();
+    };
+    refreshOutlinesRef.current = refreshOutlines;
+
+    const idleHint = () => {
+      if (live.current.repeatConfig.isDrawingLine) return 'Click the ground or a corner to place the pattern path';
+      return live.current.selectedBodyIds.length
+        ? 'Drag the shape to move it · arrow = height · dots = walls · ring = rotate · click an edge to bevel it'
+        : 'Click a shape to select it · drag empty space to orbit';
+    };
+
+    const hover = (clientX: number, clientY: number) => {
+      if (drag || candidate) return;
+      const hit = resolveHit(clientX, clientY);
+      setHoverEdge(hit?.type === 'edge' ? hit.sel : null);
+      const bodyHover = hit?.type === 'body' ? hit.bodyId : hit?.type === 'edge' ? hit.sel.bodyId : null;
+      if (bodyHover !== hoverBodyId) {
+        hoverBodyId = bodyHover;
+        refreshOutlines();
+      }
+
+      let cursor = 'default';
+      let text = idleHint();
+      if (live.current.repeatConfig.isDrawingLine) cursor = 'crosshair';
+      else if (hit?.type === 'gizmo') {
+        cursor = hit.gizmo === 'extrude-height' || hit.gizmo === 'edge-size' ? 'ns-resize' : 'grab';
+        text =
+          hit.gizmo === 'extrude-height'
+            ? 'Drag to change the height'
+            : hit.gizmo === 'offset-wall'
+              ? 'Drag to push or pull this wall'
+              : hit.gizmo === 'edge-size'
+                ? 'Drag to change the bevel size'
+                : 'Drag to rotate';
+      } else if (hit?.type === 'edge') {
+        cursor = 'pointer';
+        text = 'Click to select this edge and bevel it · drag to move the shape';
+      } else if (hit?.type === 'body') {
+        cursor = 'move';
+        text = live.current.selectedBodyIds.includes(hit.bodyId) ? 'Drag to move · click an edge to bevel it' : 'Click to select · drag to move';
+      }
+      renderer.domElement.style.cursor = cursor;
+      showHint(text);
+    };
 
     // ---- Drag sessions ----------------------------------------------------
+    let drag: Drag | null = null;
+    let candidate: { x: number; y: number; hit: Hit | null; pointerId: number } | null = null;
+    let pending: { x: number; y: number; shift: boolean } | null = null;
+    let pendingHover: { x: number; y: number } | null = null;
+
     const mmPerPixel = () => {
       const dist = camera.position.distanceTo(controls.target);
       return (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / (renderer.domElement.clientHeight || 1);
     };
 
-    const selectedSet = (): Body3D[] => {
-      const { selectedBodyIds: ids, selectedBodyId: id, bodies: all } = live.current;
-      const list = ids.length ? ids : id ? [id] : [];
-      return list.map((i) => all.find((b) => b.id === i)).filter((b): b is Body3D => !!b && b.visible);
+    const resetPreviews = () => {
+      entriesRef.current.forEach((entry) => {
+        entry.group.position.set(0, 0, 0);
+        entry.group.rotation.set(0, 0, 0);
+        entry.group.scale.set(1, 1, 1);
+      });
     };
 
-    const wallDrag = (common: Pick<Drag, 'pointerId' | 'startClientY' | 'mmPerPixel'>, body: Body3D, side: number, e: PointerEvent): Drag | null => {
-      const ends = wallEnds(body, side);
-      if (!ends) return null;
-      const planeY = (body.elevation ?? 0) + body.extrusionHeight / 2;
+    const bodyOf = (id?: string) => live.current.bodies.find((b) => b.id === id);
+
+    /** Bodies that move together when `id` is dragged: the selection if it includes it, else its group. */
+    const movingSet = (id: string): string[] => {
+      const { selectedBodyIds: sel, bodies: all } = live.current;
+      if (sel.includes(id)) return sel;
+      const group = all.find((b) => b.id === id)?.groupId;
+      return group ? all.filter((b) => b.groupId === group).map((b) => b.id) : [id];
+    };
+
+    const restoreGizmos = () => {
+      gizmoGroup.visible = true;
+      helperGroup.visible = true;
+      gizmoGroup.children.forEach((c) => (c.visible = true));
+    };
+
+    const beginDrag = (d: Drag, pointerId: number) => {
+      drag = d;
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture(pointerId);
+      // Show only the handle being dragged; the rest would be stale until the edit lands.
+      gizmoGroup.visible = d.kind === 'height' || d.kind === 'edge-size';
+      helperGroup.visible = d.kind === 'edge-size';
+      if (d.kind === 'height') gizmoGroup.children.forEach((c) => (c.visible = c === heightArrowRef.current));
+      setHoverEdge(null);
+      if (d.kind === 'wall') setFastId(d.bodyId ?? null);
+      live.current.onDragStateChange?.(true);
+      invalidate(true);
+    };
+
+    const startGizmoDrag = (hit: Extract<Hit, { type: 'gizmo' }>, e: PointerEvent): Drag | null => {
+      const common = { startClientY: e.clientY, mmPerPixel: mmPerPixel() };
+      const body = bodyOf(hit.bodyId);
+      switch (hit.gizmo) {
+        case 'extrude-height':
+          return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
+        case 'offset-wall': {
+          const ends = body && hit.index !== undefined ? wallEnds(body, hit.index) : null;
+          if (!body || !ends) return null;
+          const planeY = (body.elevation ?? 0) + body.extrusionHeight / 2;
+          return {
+            ...common,
+            kind: 'wall',
+            bodyId: body.id,
+            index: hit.index,
+            initialBase: getBase(body).map((p) => ({ ...p })),
+            normal: outwardNormal(ends.a, ends.b, ends.winding),
+            planeY,
+            startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+          };
+        }
+        case 'edge-size': {
+          const sels = live.current.selectedEdges;
+          const first = sels[0] && bodyOf(sels[0].bodyId);
+          return first ? { ...common, kind: 'edge-size', sels, initialSize: edgeSize(first, sels[0]) } : null;
+        }
+        default: {
+          const ids = live.current.selectedBodyIds;
+          const bounds = selectionBounds(ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b));
+          if (!bounds) return null;
+          const planeY = bounds.minElevation + 0.3;
+          const p = intersectPlane(e.clientX, e.clientY, planeY);
+          if (!p) return null;
+          const center = { x: bounds.centerX, y: bounds.centerY };
+          return { ...common, kind: 'rotate', ids, center, planeY, a0: Math.atan2(-p.z - center.y, p.x - center.x), angle: 0 };
+        }
+      }
+    };
+
+    const startMoveDrag = (bodyId: string, point: THREE.Vector3, e: { clientY: number }): Drag | null => {
+      const ids = movingSet(bodyId);
+      const bounds = selectionBounds(ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b));
+      if (!bounds) return null;
+      if (!live.current.selectedBodyIds.includes(bodyId)) live.current.onSelectBody(bodyId);
       return {
-        ...common,
-        kind: 'wall',
-        bodyId: body.id,
-        index: side,
-        initialBase: getBase(body).map((p) => ({ ...p })),
-        normal: outwardNormal(ends.a, ends.b, ends.winding),
-        planeY,
-        startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+        kind: 'move',
+        startClientY: e.clientY,
+        mmPerPixel: mmPerPixel(),
+        ids,
+        center: { x: bounds.centerX, y: bounds.centerY },
+        planeY: point.y,
+        startPoint: point,
+        dx: 0,
+        dy: 0,
       };
     };
 
-    const startDrag = (hit: Hit, e: PointerEvent): Drag | null => {
-      const common = { pointerId: e.pointerId, startClientY: e.clientY, mmPerPixel: mmPerPixel() };
-      const bodyOf = (id?: string) => live.current.bodies.find((b) => b.id === id);
-
-      if (hit.type === 'gizmo') {
-        const body = bodyOf(hit.bodyId);
-        switch (hit.gizmo) {
-          case 'extrude-height':
-            return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight } : null;
-          case 'offset-wall':
-            return body && hit.index !== undefined ? wallDrag(common, body, hit.index, e) : null;
-          case 'vertex':
-            return body && hit.index !== undefined
-              ? {
-                  ...common,
-                  kind: 'vertex',
-                  bodyId: body.id,
-                  index: hit.index,
-                  initialBase: getBase(body).map((p) => ({ ...p })),
-                  planeY: (body.elevation ?? 0) + body.extrusionHeight,
-                }
-              : null;
-          case 'edge-size': {
-            const sels = live.current.selectedEdges;
-            const first = sels[0] && bodyOf(sels[0].bodyId);
-            return first ? { ...common, kind: 'edge-size', sels, initialSize: edgeSize(first, sels[0]) } : null;
-          }
-          default: {
-            const set = selectedSet();
-            const bounds = selectionBounds(set);
-            if (!bounds) return null;
-            const origin = new THREE.Vector3(bounds.centerX, bounds.maxTop + 0.2, -bounds.centerY);
-            const center = { x: bounds.centerX, y: bounds.centerY };
-            const move = {
-              ...common,
-              snapshot: new Map(set.map((b) => [b.id, b])),
-              center,
-              origin,
-              minElevation: bounds.minElevation,
-            };
-            if (hit.gizmo === 'move-plane') {
-              const start = intersectPlane(e.clientX, e.clientY, origin.y);
-              return start ? { ...move, kind: 'move-plane', planeY: origin.y, startPoint: start } : null;
-            }
-            if (hit.gizmo === 'rotate') {
-              const p = intersectPlane(e.clientX, e.clientY, origin.y);
-              return p ? { ...move, kind: 'rotate', planeY: origin.y, a0: Math.atan2(-p.z - center.y, p.x - center.x) } : null;
-            }
-            const name = hit.gizmo === 'move-x' ? 'x' : hit.gizmo === 'move-y' ? 'y' : 'z';
-            const t0 = axisParam(e.clientX, e.clientY, origin, axisDir(name));
-            return t0 === null ? null : { ...move, kind: 'move-axis', axis: name, t0 };
-          }
-        }
-      }
-
-      // In Push/Pull you can also drag the face or wall itself.
-      if (live.current.activeCadTool !== 'extrude') return null;
-      if (hit.type === 'face' && hit.faceType === 'top') {
-        const body = bodyOf(hit.bodyId);
-        return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight } : null;
-      }
-      if (hit.type === 'wall') {
-        const body = bodyOf(hit.bodyId);
-        return body ? wallDrag(common, body, hit.index, e) : null;
-      }
-      return null;
-    };
-
-    const signed = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n)}`;
-
-    const applyDrag = (drag: Drag, e: PointerEvent) => {
-      const update = live.current.onUpdateBody;
-      const body = drag.bodyId ? live.current.bodies.find((b) => b.id === drag.bodyId) : undefined;
+    const applyDrag = (d: Drag, m: { x: number; y: number; shift: boolean }) => {
       const rect = renderer.domElement.getBoundingClientRect();
       let text = '';
+      lowerQualityWhileBusy();
 
-      if (drag.kind === 'height' && body) {
-        const next = clamp(Math.round(drag.initialHeight! + (drag.startClientY - e.clientY) * drag.mmPerPixel), 2, 600);
-        update(body.id, { extrusionHeight: next });
+      if (d.kind === 'height') {
+        const next = clamp(Math.round(d.initialHeight! + (d.startClientY - m.y) * d.mmPerPixel), 2, 600);
+        d.nextHeight = next;
+        // Preview by stretching the existing mesh; the exact geometry is rebuilt on release.
+        const body = bodyOf(d.bodyId);
+        const entry = entriesRef.current.get(d.bodyId!);
+        if (body && entry) {
+          const s = next / d.initialHeight!;
+          const elev = body.elevation ?? 0;
+          entry.group.scale.y = s;
+          entry.group.position.y = elev * (1 - s);
+          heightArrowRef.current?.position.setY(elev + next + 0.2);
+        }
         text = `Height ${next} mm`;
-      } else if (drag.kind === 'edge-size') {
-        const raw = drag.initialSize! + (drag.startClientY - e.clientY) * drag.mmPerPixel * 0.35;
+      } else if (d.kind === 'edge-size') {
+        const raw = d.initialSize! + (d.startClientY - m.y) * d.mmPerPixel * 0.35;
         const next = clamp(Math.round(raw * 2) / 2, 0, 30);
-        live.current.onEdgeChange(drag.sels!, { size: next });
+        live.current.onEdgeChange(d.sels!, { size: next });
         text = next > 0 ? `Size ${next} mm` : 'No bevel';
-      } else if (drag.kind === 'wall' && body && drag.normal && drag.startPoint) {
-        const cur = intersectPlane(e.clientX, e.clientY, drag.planeY!);
-        if (!cur) return;
-        const n = drag.normal;
-        const dist = Math.round((cur.x - drag.startPoint.x) * n.x - (cur.z - drag.startPoint.z) * n.y);
-        const base = drag.initialBase!.map((p) => ({ ...p }));
-        [drag.index!, (drag.index! + 1) % base.length].forEach((i) => {
+      } else if (d.kind === 'wall') {
+        const body = bodyOf(d.bodyId);
+        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        if (!body || !cur || !d.normal || !d.startPoint) return;
+        const n = d.normal;
+        const dist = Math.round((cur.x - d.startPoint.x) * n.x - (cur.z - d.startPoint.z) * n.y);
+        const base = d.initialBase!.map((p) => ({ ...p }));
+        [d.index!, (d.index! + 1) % base.length].forEach((i) => {
           base[i] = { x: Math.round(base[i].x + n.x * dist), y: Math.round(base[i].y + n.y * dist) };
         });
-        update(body.id, withOutline(body, { basePoints: base }));
+        live.current.onUpdateBody(body.id, withOutline(body, { basePoints: base }));
         text = `Wall ${signed(dist)} mm`;
-      } else if (drag.kind === 'vertex' && body) {
-        const cur = intersectPlane(e.clientX, e.clientY, drag.planeY!);
+      } else if (d.kind === 'move') {
+        const cur = intersectPlane(m.x, m.y, d.planeY!);
         if (!cur) return;
-        const base = drag.initialBase!.map((p) => ({ ...p }));
-        base[drag.index!] = { x: Math.round(cur.x / 5) * 5, y: Math.round(-cur.z / 5) * 5 };
-        update(body.id, withOutline(body, { basePoints: base }));
-        text = `Corner ${base[drag.index!].x}, ${base[drag.index!].y}`;
-      } else if (drag.snapshot && drag.center && drag.origin) {
-        let dx = 0;
-        let dy = 0;
-        let dz = 0;
-        let angle = 0;
-        if (drag.kind === 'move-axis') {
-          const t = axisParam(e.clientX, e.clientY, drag.origin, axisDir(drag.axis!));
-          if (t === null) return;
-          const delta = Math.round(t - drag.t0!);
-          if (drag.axis === 'x') dx = delta;
-          else if (drag.axis === 'y') dy = delta;
-          else dz = Math.max(delta, -drag.minElevation!);
-          const shown = drag.axis === 'z' ? dz : delta;
-          text = `${drag.axis!.toUpperCase()} ${signed(shown)} mm`;
-        } else if (drag.kind === 'move-plane') {
-          const cur = intersectPlane(e.clientX, e.clientY, drag.planeY!);
-          if (!cur) return;
-          dx = Math.round(cur.x - drag.startPoint!.x);
-          dy = Math.round(-(cur.z - drag.startPoint!.z));
-          text = `X ${signed(dx)}, Y ${signed(dy)} mm`;
-        } else {
-          const cur = intersectPlane(e.clientX, e.clientY, drag.planeY!);
-          if (!cur) return;
-          let delta = Math.atan2(-cur.z - drag.center.y, cur.x - drag.center.x) - drag.a0!;
-          while (delta > Math.PI) delta -= 2 * Math.PI;
-          while (delta < -Math.PI) delta += 2 * Math.PI;
-          const step = e.shiftKey ? 15 : 1;
-          const deg = Math.round((delta * 180) / Math.PI / step) * step;
-          angle = (deg * Math.PI) / 180;
-          text = `Rotate ${deg}°`;
+        let dx = Math.round(cur.x - d.startPoint!.x);
+        let dy = Math.round(-(cur.z - d.startPoint!.z));
+        if (m.shift) {
+          if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+          else dx = 0;
         }
-        drag.snapshot.forEach((b0, id) => {
-          update(id, transformBody(b0, { dx, dy, dz, angle, cx: drag.center!.x, cy: drag.center!.y }));
+        d.dx = dx;
+        d.dy = dy;
+        // A pure transform of the existing meshes: no geometry is rebuilt while dragging.
+        d.ids!.forEach((id) => entriesRef.current.get(id)?.group.position.set(dx, 0, -dy));
+        text = `X ${signed(dx)}, Y ${signed(dy)} mm`;
+      } else if (d.kind === 'rotate') {
+        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        if (!cur) return;
+        let delta = Math.atan2(-cur.z - d.center!.y, cur.x - d.center!.x) - d.a0!;
+        while (delta > Math.PI) delta -= 2 * Math.PI;
+        while (delta < -Math.PI) delta += 2 * Math.PI;
+        const step = m.shift ? 15 : 1;
+        const deg = Math.round((delta * 180) / Math.PI / step) * step;
+        const angle = (deg * Math.PI) / 180;
+        d.angle = angle;
+        const pivot = new THREE.Vector3(d.center!.x, 0, -d.center!.y);
+        const shift = pivot.clone().sub(pivot.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), angle));
+        d.ids!.forEach((id) => {
+          const group = entriesRef.current.get(id)?.group;
+          if (group) {
+            group.rotation.y = angle;
+            group.position.copy(shift);
+          }
         });
+        text = `Rotate ${deg}°`;
       }
-      setDragLabel({ text, x: e.clientX - rect.left + 16, y: e.clientY - rect.top - 28 });
+      setDragLabel({ text, x: m.x - rect.left + 16, y: m.y - rect.top - 28 });
+      invalidate(d.kind === 'move' || d.kind === 'rotate' || d.kind === 'height');
+    };
+
+    const endDrag = () => {
+      const d = drag;
+      if (!d) return;
+      drag = null;
+      controls.enabled = true;
+      setDragLabel(null);
+
+      // Commit the previewed change in one update.
+      if (d.kind === 'move' && (d.dx || d.dy)) {
+        live.current.onTransformBodies(d.ids!, { dx: d.dx!, dy: d.dy!, dz: 0, angle: 0, cx: d.center!.x, cy: d.center!.y });
+      } else if (d.kind === 'rotate' && d.angle) {
+        live.current.onTransformBodies(d.ids!, { dx: 0, dy: 0, dz: 0, angle: d.angle, cx: d.center!.x, cy: d.center!.y });
+      } else if (d.kind === 'height' && d.nextHeight !== d.initialHeight) {
+        live.current.onUpdateBody(d.bodyId!, { extrusionHeight: d.nextHeight! });
+      } else {
+        resetPreviews();
+      }
+      setFastId(null);
+      restoreGizmos();
+      live.current.onDragStateChange?.(false);
+      invalidate(true);
+    };
+
+    const cancelDrag = () => {
+      if (!drag) return;
+      drag = null;
+      resetPreviews();
+      controls.enabled = true;
+      setDragLabel(null);
+      restoreGizmos();
+      setFastId(null);
+      live.current.onDragStateChange?.(false);
+      invalidate(true);
     };
 
     // ---- Pointer pipeline -------------------------------------------------
-    let pressed: { x: number; y: number; pointerId: number } | null = null;
-
     const handleRepeatClick = (clientX: number, clientY: number) => {
       const point = intersectPlane(clientX, clientY, 0);
       if (!point) return;
@@ -680,72 +788,79 @@ export default function ModelViewer3D({
       }
     };
 
-    const partFromHit = (hit: Hit): EditPart | null => {
-      if (hit.type === 'face') return { bodyId: hit.bodyId, type: 'face', faceType: hit.faceType };
-      if (hit.type === 'wall') return { bodyId: hit.bodyId, type: 'wall', index: hit.index };
-      if (hit.type === 'corner') return { bodyId: hit.bodyId, type: 'corner', index: hit.index };
-      return null;
-    };
-
     const onPointerDown = (e: PointerEvent) => {
-      if (!e.isPrimary || e.button !== 0) return;
-      pressed = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
-      if (live.current.repeatConfig.isDrawingLine) return;
-
-      const hit = resolveHit(e.clientX, e.clientY);
-      if (!hit) return;
-      const drag = startDrag(hit, e);
-      if (!drag) return;
-
-      // Take the gesture away from OrbitControls before it starts.
-      controls.enabled = false;
-      dragRef.current = drag;
-      renderer.domElement.setPointerCapture(e.pointerId);
-
-      if (hit.type !== 'gizmo' && hit.type !== 'edge') {
-        live.current.onSelectBody(hit.bodyId);
-        const part = partFromHit(hit);
-        if (part) live.current.setActiveEditPart(part);
-      } else if (drag.kind === 'vertex') {
-        live.current.setActiveEditPart({ bodyId: drag.bodyId!, type: 'corner', index: drag.index });
-      } else if (drag.kind === 'wall') {
-        live.current.setActiveEditPart({ bodyId: drag.bodyId!, type: 'wall', index: drag.index });
+      // A second finger means the user wants to orbit/pinch: abandon any one-finger drag.
+      if (!e.isPrimary) {
+        cancelDrag();
+        candidate = null;
+        return;
       }
-      live.current.onDragStateChange?.(true);
-      applyDrag(drag, e);
+      if (e.button !== 0) return;
+      const drawing = live.current.repeatConfig.isDrawingLine;
+      const hit = drawing ? null : resolveHit(e.clientX, e.clientY);
+      candidate = { x: e.clientX, y: e.clientY, hit, pointerId: e.pointerId };
+      if (drawing || !hit) return; // empty space: let OrbitControls take it
+
+      if (hit.type === 'gizmo') {
+        const d = startGizmoDrag(hit, e);
+        if (d) {
+          beginDrag(d, e.pointerId);
+          applyDrag(d, { x: e.clientX, y: e.clientY, shift: e.shiftKey });
+          candidate = null;
+          return;
+        }
+      }
+      // Pressing on a shape never orbits: it either selects it or starts moving it.
+      controls.enabled = false;
+      renderer.domElement.setPointerCapture(e.pointerId);
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      const drag = dragRef.current;
+      if (drag || candidate) pending = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
+      else if (e.pointerType === 'mouse' && e.buttons === 0) pendingHover = { x: e.clientX, y: e.clientY };
+    };
+
+    const processMove = (m: { x: number; y: number; shift: boolean }) => {
       if (drag) {
-        applyDrag(drag, e);
+        applyDrag(drag, m);
         return;
       }
-      if (e.pointerType !== 'mouse' || e.buttons !== 0) return;
-      const hit = resolveHit(e.clientX, e.clientY);
-      setHover(hit?.type === 'edge' ? hit.sel : null);
-      const tool = live.current.activeCadTool;
-      let cursor = 'default';
-      if (live.current.repeatConfig.isDrawingLine) cursor = 'crosshair';
-      else if (hit?.type === 'gizmo') cursor = 'grab';
-      else if (hit?.type === 'edge') cursor = 'pointer';
-      else if (hit && tool === 'extrude' && (hit.type === 'wall' || (hit.type === 'face' && hit.faceType === 'top'))) cursor = 'ns-resize';
-      else if (hit) cursor = 'pointer';
-      renderer.domElement.style.cursor = cursor;
+      if (!candidate?.hit || candidate.hit.type === 'gizmo') return;
+      if (Math.hypot(m.x - candidate.x, m.y - candidate.y) <= CLICK_SLOP_PX) return;
+      const hit = candidate.hit;
+      const bodyId = hit.type === 'body' ? hit.bodyId : hit.sel.bodyId;
+      // For an edge, the move still grabs the body: use the pointer ray's ground hit as the anchor.
+      const start = hit.type === 'body' ? hit.point : (() => {
+        const body = bodyOf(bodyId);
+        return intersectPlane(candidate!.x, candidate!.y, (body?.elevation ?? 0) + (body?.extrusionHeight ?? 0)) ?? new THREE.Vector3();
+      })();
+      const pointerId = candidate.pointerId;
+      const d = startMoveDrag(bodyId, start, { clientY: candidate.y });
+      candidate = null;
+      if (d) {
+        beginDrag(d, pointerId);
+        applyDrag(d, m);
+      }
     };
 
     const finishPointer = (e: PointerEvent, cancelled: boolean) => {
-      if (dragRef.current) {
-        dragRef.current = null;
-        controls.enabled = true;
-        setDragLabel(null);
-        live.current.onDragStateChange?.(false);
-        if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId);
-        pressed = null;
+      if (!e.isPrimary) return;
+      if (pending) {
+        const m = pending;
+        pending = null;
+        processMove(m);
+      }
+      const hadDrag = !!drag;
+      if (renderer.domElement.hasPointerCapture(e.pointerId)) renderer.domElement.releasePointerCapture(e.pointerId);
+      if (hadDrag) {
+        if (cancelled) cancelDrag();
+        else endDrag();
+        candidate = null;
         return;
       }
-      const down = pressed;
-      pressed = null;
+      const down = candidate;
+      candidate = null;
+      controls.enabled = true;
       if (cancelled || !down || down.pointerId !== e.pointerId) return;
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX) return; // it was an orbit/pan
 
@@ -754,40 +869,30 @@ export default function ModelViewer3D({
         return;
       }
 
-      const tool = live.current.activeCadTool;
       const multi = e.shiftKey || e.metaKey || e.ctrlKey;
-      const hit = resolveHit(e.clientX, e.clientY);
-
+      const hit = down.hit;
       if (!hit) {
-        if (tool === 'bevel' && live.current.selectedEdges.length) live.current.onSelectEdges([]);
-        else live.current.onSelectBody(null);
-        live.current.setActiveEditPart(null);
-        return;
-      }
-      if (hit.type === 'gizmo') return;
-
-      if (hit.type === 'edge') {
+        live.current.onSelectBody(null);
+      } else if (hit.type === 'edge') {
         const current = live.current.selectedEdges;
         const sameBody = current.length > 0 && current[0].bodyId === hit.sel.bodyId;
         const already = current.some((s) => edgeKey(s) === edgeKey(hit.sel));
-        if (multi && sameBody) {
-          live.current.onSelectEdges(already ? current.filter((s) => edgeKey(s) !== edgeKey(hit.sel)) : [...current, hit.sel]);
-        } else {
-          live.current.onSelectEdges([hit.sel]);
-        }
         live.current.onSelectBody(hit.sel.bodyId);
-        return;
+        live.current.onSelectEdges(
+          multi && sameBody ? (already ? current.filter((s) => edgeKey(s) !== edgeKey(hit.sel)) : [...current, hit.sel]) : [hit.sel]
+        );
+      } else if (hit.type === 'body') {
+        live.current.onSelectBody(hit.bodyId, multi);
       }
-
-      live.current.onSelectBody(hit.bodyId, multi);
-      if (tool === 'bevel') live.current.onSelectEdges([]);
-      if (!multi) live.current.setActiveEditPart(partFromHit(hit));
     };
     const onPointerUp = (e: PointerEvent) => finishPointer(e, false);
     const onPointerCancel = (e: PointerEvent) => finishPointer(e, true);
-    const onPointerLeave = () => setHover(null);
+    const onPointerLeave = () => {
+      pendingHover = null;
+      clearHoverRef.current();
+    };
 
-    // Registered in the capture phase, ahead of OrbitControls, so a handle grab can disable it.
+    // Registered in the capture phase, ahead of OrbitControls, so a press on a shape can keep it from orbiting.
     renderer.domElement.addEventListener('pointerdown', onPointerDown, { capture: true });
     renderer.domElement.addEventListener('pointermove', onPointerMove);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
@@ -801,6 +906,10 @@ export default function ModelViewer3D({
     controls.zoomToCursor = true;
     controls.minDistance = 20;
     controls.maxDistance = 2500;
+    controls.addEventListener('change', () => {
+      invalidate();
+      lowerQualityWhileBusy();
+    });
 
     // ---- Camera framing ---------------------------------------------------
     const frameView = (face: CubeFace, instant = false) => {
@@ -848,6 +957,7 @@ export default function ModelViewer3D({
           toTarget: center,
         };
       }
+      invalidate();
     };
     frameViewRef.current = frameView;
     frameView('iso', true);
@@ -862,12 +972,26 @@ export default function ModelViewer3D({
       renderer.setSize(w, h);
       viewportSize.set(w, h);
       lineMaterials.forEach((m) => m.resolution.set(w, h));
+      invalidate();
     });
     resizeObserver.observe(container);
 
     let raf = 0;
     const animate = () => {
       raf = requestAnimationFrame(animate);
+
+      // Input is applied once per frame, however fast the pointer reports.
+      if (pending) {
+        const m = pending;
+        pending = null;
+        processMove(m);
+      }
+      if (pendingHover && !drag && !candidate) {
+        const h = pendingHover;
+        pendingHover = null;
+        hover(h.x, h.y);
+      }
+
       const tween = tweenRef.current;
       if (tween) {
         const t = clamp((performance.now() - tween.start) / 450, 0, 1);
@@ -875,8 +999,16 @@ export default function ModelViewer3D({
         camera.position.lerpVectors(tween.fromPos, tween.toPos, ease);
         controls.target.lerpVectors(tween.fromTarget, tween.toTarget, ease);
         if (t >= 1) tweenRef.current = null;
+        needsRender = true;
       }
-      controls.update();
+      const moved = controls.update();
+      if (!moved && !needsRender) return; // nothing changed: skip the frame entirely
+
+      if (shadowsDirty) {
+        renderer.shadowMap.needsUpdate = true;
+        shadowsDirty = false;
+      }
+      needsRender = false;
       renderer.render(scene, camera);
     };
     animate();
@@ -885,6 +1017,7 @@ export default function ModelViewer3D({
     return () => {
       setIsSceneReady(false);
       cancelAnimationFrame(raf);
+      window.clearTimeout(qualityTimer);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown, { capture: true });
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
@@ -903,8 +1036,9 @@ export default function ModelViewer3D({
     };
   }, []);
 
-  // ---- Sync solids with the document (only rebuilt when their shape changes) ----
-  useEffect(() => {
+  // ---- Sync solids with the document -------------------------------------
+  // Layout effect so a rebuilt mesh replaces the previewed one before the next paint.
+  useLayoutEffect(() => {
     const group = bodyGroupRef.current;
     if (!isSceneReady || !group) return;
     const entries = entriesRef.current;
@@ -919,23 +1053,28 @@ export default function ModelViewer3D({
     });
 
     visible.forEach((body, id) => {
-      const signature = bodySignature(body);
       const existing = entries.get(id);
-      if (existing?.signature === signature) return;
+      const fast = id === fastId;
+      if (existing?.body === body && existing.signature.endsWith('|fast') === fast) return; // untouched object
+      const signature = bodySignature(body) + (fast ? '|fast' : '');
+      if (existing && existing.signature === signature) {
+        existing.body = body;
+        return;
+      }
       if (existing) {
         group.remove(existing.group);
         disposeObject(existing.group);
         entries.delete(id);
       }
 
-      const geometry = buildBodyGeometry(body);
+      const geometry = buildBodyGeometry(body, { fast });
       if (!geometry) return;
       const mesh = new THREE.Mesh(geometry, createMaterial(body));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const outline = new THREE.LineSegments(
         new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(outlineSegments(body), 3)),
-        new THREE.LineBasicMaterial({ color: ACCENT })
+        new THREE.LineBasicMaterial({ color: ACCENT, transparent: true })
       );
       outline.visible = false;
 
@@ -943,213 +1082,108 @@ export default function ModelViewer3D({
       bodyGroup.userData.bodyId = id;
       bodyGroup.add(mesh, outline);
       group.add(bodyGroup);
-      entries.set(id, { group: bodyGroup, outline, signature });
+      entries.set(id, { body, group: bodyGroup, outline, signature });
     });
-  }, [bodies, isSceneReady]);
+    refreshOutlinesRef.current();
+    invalidateRef.current(true);
+  }, [bodies, isSceneReady, fastId]);
 
-  // ---- Selection outlines -------------------------------------------------
   useEffect(() => {
-    entriesRef.current.forEach((entry, id) => {
-      entry.outline.visible = id === selectedBodyId || selectedBodyIds.includes(id);
-    });
-  }, [selectedBodyId, selectedBodyIds, bodies, isSceneReady]);
+    refreshOutlinesRef.current();
+  }, [selectedBodyId, selectedBodyIds, isSceneReady]);
 
-  // ---- Tool handles & highlights ------------------------------------------
-  useEffect(() => {
+  // ---- Handles for what is selected ---------------------------------------
+  useLayoutEffect(() => {
     const gizmoGroup = gizmoGroupRef.current;
     const helperGroup = helperGroupRef.current;
     if (!isSceneReady || !gizmoGroup || !helperGroup) return;
     clearGroup(gizmoGroup);
     clearGroup(helperGroup);
+    heightArrowRef.current = null;
 
     const ids = selectedBodyIds.length ? selectedBodyIds : selectedBodyId ? [selectedBodyId] : [];
     const picked = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
-    const handleMaterial = (color = '#ffffff', opacity = 1) =>
-      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity });
-    const overlayMaterial = (opacity: number) =>
-      new THREE.MeshBasicMaterial({
-        color: ACCENT,
-        transparent: true,
-        opacity,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-      });
-    const hiddenHit = () => new THREE.MeshBasicMaterial({ visible: false });
-    const handleScale = (extent: number) => clamp(extent / 170, 0.7, 2.4);
-    const extentOf = (b: Body3D) => {
-      const xs = b.points.map((p) => p.x);
-      const ys = b.points.map((p) => p.y);
-      return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    };
-
-    // ---- Move: axes, ground-plane square, rotation ring ----
-    if (activeCadTool === 'move' && picked.length) {
-      const b = selectionBounds(picked)!;
-      const s = handleScale(Math.max(b.maxX - b.minX, b.maxY - b.minY));
-      const root = new THREE.Group();
-      root.position.set(b.centerX, b.maxTop + 0.2, -b.centerY);
-      root.scale.setScalar(s);
-
-      const arrow = (gizmo: GizmoKind, color: string, orient: (o: THREE.Object3D) => void) => {
-        const g = new THREE.Group();
-        g.userData = { gizmo };
-        const mat = handleMaterial(color);
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 34, 10), mat);
-        shaft.position.y = 25;
-        const head = new THREE.Mesh(new THREE.ConeGeometry(4.2, 11, 16), mat);
-        head.position.y = 47.5;
-        const hit = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 6.5, 58, 8), hiddenHit());
-        hit.position.y = 30;
-        shaft.renderOrder = head.renderOrder = 31;
-        g.add(shaft, head, hit);
-        orient(g);
-        root.add(g);
-      };
-      arrow('move-x', '#fb7185', (o) => (o.rotation.z = -Math.PI / 2));
-      arrow('move-y', '#34d399', (o) => (o.rotation.x = -Math.PI / 2));
-      arrow('move-z', ACCENT, () => {});
-
-      const square = new THREE.Mesh(new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2), handleMaterial(WARN, 0.6));
-      square.position.set(26, 0.3, -26);
-      square.renderOrder = 30;
-      square.userData = { gizmo: 'move-plane' };
-      root.add(square);
-
-      const radius = 64;
-      const ringGroup = new THREE.Group();
-      ringGroup.userData = { gizmo: 'rotate' };
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 1, 8, 72).rotateX(Math.PI / 2), handleMaterial('#d4d9e6', 0.9));
-      ring.renderOrder = 30;
-      const ringHit = new THREE.Mesh(new THREE.TorusGeometry(radius, 6, 6, 48).rotateX(Math.PI / 2), hiddenHit());
-      ringGroup.add(ring, ringHit);
-      root.add(ringGroup);
-      gizmoGroup.add(root);
+    if (!picked.length) {
+      invalidateRef.current();
+      return;
     }
+    const bounds = selectionBounds(picked)!;
+    const extent = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+    const s = clamp(extent / 170, 0.7, 2.4);
 
-    const single = picked.length === 1 ? picked[0] : null;
+    // Rotation halo around the selection, on the ground it stands on.
+    const radius = 0.5 * Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) + 12;
+    const ring = new THREE.Group();
+    ring.position.set(bounds.centerX, bounds.minElevation + 0.3, -bounds.centerY);
+    ring.userData = { gizmo: 'rotate' };
+    const ringLine = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.8, 6, 96).rotateX(Math.PI / 2), handleMaterial('#d4d9e6', 0.55, true));
+    ringLine.renderOrder = 28;
+    const ringHit = new THREE.Mesh(new THREE.TorusGeometry(radius, 6, 5, 48).rotateX(Math.PI / 2), hiddenMaterial);
+    ring.add(ringLine, ringHit);
+    gizmoGroup.add(ring);
 
-    // ---- Push/pull: face or wall handle, corner dots ----
-    if (activeCadTool === 'extrude' && single) {
-      const part = activeEditPart?.bodyId === single.id ? activeEditPart : null;
-      const elev = single.elevation ?? 0;
-      const top = elev + single.extrusionHeight;
+    const body = picked.length === 1 ? picked[0] : null;
+    if (body) {
+      const elev = body.elevation ?? 0;
+      const top = elev + body.extrusionHeight;
       const topY = top + 0.2;
-      const s = handleScale(extentOf(single));
-      const wall = part?.type === 'wall' && part.index !== undefined ? wallEnds(single, part.index) : null;
-      const topActive = !part || (part.type === 'face' && part.faceType !== 'bottom');
 
-      if (topActive) {
-        const shape = buildBodyShape(single);
-        if (shape) {
-          const overlay = new THREE.Mesh(new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2), overlayMaterial(0.2));
-          overlay.position.y = topY;
-          overlay.renderOrder = 10;
-          helperGroup.add(overlay);
+      // Arrow on the top face: height.
+      const anchor = getInteriorAnchor(body);
+      const arrow = new THREE.Group();
+      arrow.position.set(anchor.x, topY, -anchor.y);
+      arrow.scale.setScalar(s);
+      arrow.userData = { gizmo: 'extrude-height', bodyId: body.id };
+      const mat = handleMaterial(ACCENT);
+      const arrowRing = new THREE.Mesh(shared(new THREE.RingGeometry(4.5, 6.5, 40).rotateX(-Math.PI / 2)), mat);
+      const shaft = new THREE.Mesh(HANDLE.shaft, mat);
+      shaft.position.y = 9;
+      const head = new THREE.Mesh(HANDLE.head, mat);
+      head.position.y = 22.5;
+      arrowRing.renderOrder = shaft.renderOrder = head.renderOrder = 30;
+      const hit = new THREE.Mesh(HANDLE.arrowHit, hiddenMaterial);
+      hit.position.y = 16;
+      arrow.add(arrowRing, shaft, head, hit);
+      gizmoGroup.add(arrow);
+      heightArrowRef.current = arrow;
+
+      // A dot at the middle of each wall: push or pull it.
+      const base = getBase(body);
+      if (base.length <= MAX_WALL_HANDLES) {
+        for (let j = 0; j < base.length; j++) {
+          const ends = wallEnds(body, j);
+          if (!ends) continue;
+          const len = Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y);
+          if (len < 14) continue;
+          const n = outwardNormal(ends.a, ends.b, ends.winding);
+          const dot = new THREE.Group();
+          dot.position.set((ends.a.x + ends.b.x) / 2 + n.x * 6 * s, topY, -((ends.a.y + ends.b.y) / 2 + n.y * 6 * s));
+          dot.userData = { gizmo: 'offset-wall', bodyId: body.id, index: j };
+          const knob = new THREE.Mesh(HANDLE.dot, handleMaterial('#ffffff'));
+          knob.scale.setScalar(2.6 * s);
+          knob.renderOrder = 30;
+          const knobHit = new THREE.Mesh(HANDLE.dot, hiddenMaterial);
+          knobHit.scale.setScalar(7 * s);
+          dot.add(knob, knobHit);
+          gizmoGroup.add(dot);
         }
-        const anchor = getInteriorAnchor(single);
-        const arrow = new THREE.Group();
-        arrow.position.set(anchor.x, topY, -anchor.y);
-        arrow.scale.setScalar(s);
-        arrow.userData = { gizmo: 'extrude-height', bodyId: single.id };
-        const mat = handleMaterial(ACCENT);
-        const ring = new THREE.Mesh(new THREE.RingGeometry(4.5, 6.5, 40).rotateX(-Math.PI / 2), mat);
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 18, 12), mat);
-        shaft.position.y = 9;
-        const head = new THREE.Mesh(new THREE.ConeGeometry(4.2, 9, 20), mat);
-        head.position.y = 22.5;
-        ring.renderOrder = shaft.renderOrder = head.renderOrder = 30;
-        const hit = new THREE.Mesh(new THREE.CylinderGeometry(11, 11, 40, 12), hiddenHit());
-        hit.position.y = 16;
-        arrow.add(ring, shaft, head, hit);
-        gizmoGroup.add(arrow);
       }
 
-      if (wall) {
-        const { a, b, winding } = wall;
-        const quad = new THREE.BufferGeometry();
-        quad.setAttribute(
-          'position',
-          new THREE.BufferAttribute(
-            new Float32Array([
-              a.x, elev, -a.y, b.x, elev, -b.y, b.x, top, -b.y,
-              a.x, elev, -a.y, b.x, top, -b.y, a.x, top, -a.y,
-            ]),
-            3
-          )
-        );
-        const wallMesh = new THREE.Mesh(quad, overlayMaterial(0.28));
-        wallMesh.renderOrder = 10;
-        helperGroup.add(wallMesh);
-
-        const n = outwardNormal(a, b, winding);
-        const dir = new THREE.Vector3(n.x, 0, -n.y);
-        const group = new THREE.Group();
-        group.position.set((a.x + b.x) / 2, (elev + top) / 2, -(a.y + b.y) / 2);
-        group.userData = { gizmo: 'offset-wall', bodyId: single.id, index: part!.index };
-        const helper = new THREE.ArrowHelper(dir, new THREE.Vector3(), 26 * s, ACCENT, 9 * s, 5 * s);
-        (helper.line.material as THREE.Material).depthTest = false;
-        (helper.cone.material as THREE.Material).depthTest = false;
-        helper.line.renderOrder = helper.cone.renderOrder = 31;
-        const hit = new THREE.Mesh(new THREE.SphereGeometry(12 * s, 12, 8), hiddenHit());
-        hit.position.copy(dir.clone().multiplyScalar(14 * s));
-        group.add(helper, hit);
-        gizmoGroup.add(group);
-      }
-
-      if (part && part.type !== 'face') {
-        const dot = new THREE.SphereGeometry(2.4 * s, 16, 12);
-        getBase(single).forEach((pt, i) => {
-          const active = part.type === 'corner' && part.index === i;
-          const node = new THREE.Mesh(dot, handleMaterial(active ? ACCENT : '#ffffff'));
-          node.position.set(pt.x, topY, -pt.y);
-          node.renderOrder = 30;
-          node.userData = { gizmo: 'vertex', bodyId: single.id, index: i };
-          gizmoGroup.add(node);
-        });
-      }
-    }
-
-    // ---- Fillet & bevel: pickable edges, the selection, and its size handle ----
-    if (activeCadTool === 'bevel') {
-      const positions: number[] = [];
-      bodies.forEach((body) => {
-        if (!body.visible) return;
-        listEdges(body).forEach((edge) => {
-          for (let i = 0; i + 1 < edge.points.length; i++) {
-            const p = edge.points[i];
-            const q = edge.points[i + 1];
-            positions.push(p.x, p.y, p.z, q.x, q.y, q.z);
-          }
-        });
-      });
-      helperGroup.add(
-        new THREE.LineSegments(
-          new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)),
-          new THREE.LineBasicMaterial({ color: ACCENT_LIGHT, transparent: true, opacity: 0.28 })
-        )
-      );
-
+      // The selected edges, and a handle to size their bevel.
       const chosen = selectedEdges
         .map((sel) => {
-          const body = bodies.find((b) => b.id === sel.bodyId);
-          const edge = body && listEdges(body).find((e) => e.kind === sel.kind && e.index === sel.index);
-          return body && edge ? { body, edge } : null;
+          const edge = sel.bodyId === body.id ? listEdges(body).find((e) => e.kind === sel.kind && e.index === sel.index) : undefined;
+          return edge ? edge : null;
         })
-        .filter((x): x is { body: Body3D; edge: EdgePath } => !!x);
-      chosen.forEach(({ edge }) => helperGroup.add(makeFatLine(edge.points, WARN, 4.5)));
+        .filter((e): e is EdgePath => !!e);
+      chosen.forEach((edge) => helperGroup.add(makeFatLine(edge.points, WARN, 4.5)));
 
       if (chosen.length) {
-        const { body, edge } = chosen[0];
+        const edge = chosen[0];
         const mi = Math.floor(edge.points.length / 2);
         const mid = edge.points[mi];
         const prev = edge.points[Math.max(0, mi - 1)];
         const next = edge.points[Math.min(edge.points.length - 1, mi + 1)];
-        const s = handleScale(extentOf(body));
-
-        // Push the handle away from the body so it never covers the edge it controls.
         const cx = body.points.reduce((acc, p) => acc + p.x, 0) / body.points.length;
         const cy = body.points.reduce((acc, p) => acc + p.y, 0) / body.points.length;
         const out = new THREE.Vector3(mid.x - cx, 0, mid.z + cy);
@@ -1165,14 +1199,17 @@ export default function ModelViewer3D({
         const handle = new THREE.Group();
         handle.position.set(mid.x + out.x, mid.y + (edge.kind === 'bottom' ? -4 * s : edge.kind === 'top' ? 4 * s : 0), mid.z + out.z);
         handle.userData = { gizmo: 'edge-size', bodyId: body.id };
-        const knob = new THREE.Mesh(new THREE.SphereGeometry(3.4 * s, 18, 12), handleMaterial('#ffffff'));
+        const knob = new THREE.Mesh(HANDLE.dot, handleMaterial(WARN));
+        knob.scale.setScalar(3.6 * s);
         knob.renderOrder = 32;
-        const hit = new THREE.Mesh(new THREE.SphereGeometry(9 * s, 12, 8), hiddenHit());
-        handle.add(knob, hit);
+        const knobHit = new THREE.Mesh(HANDLE.dot, hiddenMaterial);
+        knobHit.scale.setScalar(9 * s);
+        handle.add(knob, knobHit);
         gizmoGroup.add(handle);
       }
     }
-  }, [activeEditPart, activeCadTool, bodies, selectedBodyId, selectedBodyIds, selectedEdges, isSceneReady]);
+    invalidateRef.current();
+  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, isSceneReady]);
 
   // ---- Pattern path preview ----------------------------------------------
   useEffect(() => {
@@ -1181,37 +1218,44 @@ export default function ModelViewer3D({
     clearGroup(group);
 
     const { startPoint, endPoint, controlPoint, type, isDrawingLine, drawingStep } = repeatConfig;
-    if (!isDrawingLine && drawingStep !== 'done') return;
-
-    const toWorld = (p: Point2D) => new THREE.Vector3(p.x, 0.6, -p.y);
-    const marker = new THREE.SphereGeometry(3.2, 14, 10);
-    const markerMat = new THREE.MeshBasicMaterial({ color: ACCENT, depthTest: false });
-    [startPoint, controlPoint, endPoint].forEach((p) => {
-      if (!p) return;
-      const m = new THREE.Mesh(marker, markerMat);
-      m.position.copy(toWorld(p));
-      m.renderOrder = 40;
-      group.add(m);
-    });
-
-    if (startPoint && endPoint) {
-      const curve =
-        type === 'curved' && controlPoint
-          ? new THREE.QuadraticBezierCurve3(toWorld(startPoint), toWorld(controlPoint), toWorld(endPoint))
-          : new THREE.LineCurve3(toWorld(startPoint), toWorld(endPoint));
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)),
-        new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false })
-      );
-      line.renderOrder = 39;
-      group.add(line);
+    if (isDrawingLine || drawingStep === 'done') {
+      const toWorld = (p: Point2D) => new THREE.Vector3(p.x, 0.6, -p.y);
+      const markerMat = shared(new THREE.MeshBasicMaterial({ color: ACCENT, depthTest: false }));
+      [startPoint, controlPoint, endPoint].forEach((p) => {
+        if (!p) return;
+        const m = new THREE.Mesh(HANDLE.dot, markerMat);
+        m.scale.setScalar(3.2);
+        m.position.copy(toWorld(p));
+        m.renderOrder = 40;
+        group.add(m);
+      });
+      if (startPoint && endPoint) {
+        const curve =
+          type === 'curved' && controlPoint
+            ? new THREE.QuadraticBezierCurve3(toWorld(startPoint), toWorld(controlPoint), toWorld(endPoint))
+            : new THREE.LineCurve3(toWorld(startPoint), toWorld(endPoint));
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)),
+          new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false })
+        );
+        line.renderOrder = 39;
+        group.add(line);
+      }
     }
+    invalidateRef.current();
   }, [repeatConfig, isSceneReady]);
 
-  // Drop any edge hover highlight when leaving the bevel tool.
+  // The idle hint depends on selection; hover text takes over while the pointer is over something.
   useEffect(() => {
-    if (activeCadTool !== 'bevel') clearHoverRef.current();
-  }, [activeCadTool]);
+    clearHoverRef.current();
+    onHint?.(
+      repeatConfig.isDrawingLine
+        ? 'Click the ground or a corner to place the pattern path'
+        : selectedBodyIds.length
+          ? 'Drag the shape to move it · arrow = height · dots = walls · ring = rotate · click an edge to bevel it'
+          : 'Click a shape to select it · drag empty space to orbit'
+    );
+  }, [selectedBodyIds, repeatConfig.isDrawingLine, onHint]);
 
   const handleSelectCameraAngle = useCallback((face: CubeFace) => frameViewRef.current(face), []);
 
@@ -1233,10 +1277,6 @@ export default function ModelViewer3D({
           {dragLabel.text}
         </div>
       )}
-
-      <div className="hidden md:block absolute bottom-3 left-3 text-xs text-slate-500 pointer-events-none">
-        Drag empty space to orbit · Right-drag to pan · Scroll to zoom
-      </div>
     </div>
   );
 }

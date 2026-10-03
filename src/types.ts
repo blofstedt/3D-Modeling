@@ -67,8 +67,6 @@ export interface ShapeGroup {
   bodyIds: string[];
 }
 
-export type CadTool = 'select' | 'move' | 'extrude' | 'bevel' | 'cut' | 'group' | 'repeat' | 'merge';
-
 export interface RepeatConfig {
   type: 'linear' | 'curved';
   count: number;

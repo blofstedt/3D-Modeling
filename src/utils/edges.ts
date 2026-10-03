@@ -16,8 +16,19 @@ export interface EdgePath {
   points: { x: number; y: number; z: number }[];
 }
 
-/** Every pickable edge of a body, in world space. */
+const edgeCache = new WeakMap<Body3D, EdgePath[]>();
+
+/** Every pickable edge of a body, in world space. Cached per body object (bodies are immutable). */
 export function listEdges(body: Body3D): EdgePath[] {
+  let edges = edgeCache.get(body);
+  if (!edges) {
+    edges = computeEdges(body);
+    edgeCache.set(body, edges);
+  }
+  return edges;
+}
+
+function computeEdges(body: Body3D): EdgePath[] {
   const base = getBase(body);
   const n = base.length;
   if (n < 3) return [];
