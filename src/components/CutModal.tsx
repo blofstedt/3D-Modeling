@@ -71,7 +71,7 @@ export default function CutModal({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+            className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer"
           >
             <X size={16} />
           </button>
@@ -110,7 +110,7 @@ export default function CutModal({
                   <select
                     value={targetId}
                     onChange={(e) => setTargetId(e.target.value)}
-                    className="bg-slate-800 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-accent-400 font-medium cursor-pointer"
+                    className="bg-slate-800 border border-white/15 rounded-full px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-accent-400 font-medium cursor-pointer"
                   >
                     {availableBodies.map((b) => (
                       <option key={b.id} value={b.id} disabled={b.id === cutterId}>
@@ -150,7 +150,7 @@ export default function CutModal({
                   <select
                     value={cutterId}
                     onChange={(e) => setCutterId(e.target.value)}
-                    className="bg-slate-800 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-rose-400 font-medium cursor-pointer"
+                    className="bg-slate-800 border border-white/15 rounded-full px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-rose-400 font-medium cursor-pointer"
                   >
                     {availableBodies.map((b) => (
                       <option key={b.id} value={b.id} disabled={b.id === targetId}>
@@ -193,14 +193,14 @@ export default function CutModal({
         <div className="px-6 py-4 border-t border-white/10 flex items-center justify-end gap-2.5 bg-white/5">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-white/60 hover:text-white rounded-xl hover:bg-white/10 transition-colors cursor-pointer"
+            className="px-4 py-2 text-xs font-semibold text-white/60 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             onClick={handlePerformCut}
             disabled={!targetId || !cutterId || targetId === cutterId}
-            className="px-5 py-2.5 bg-rose-500 hover:bg-rose-400 disabled:opacity-30 disabled:pointer-events-none text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-rose-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
+            className="px-5 py-2.5 bg-rose-500 hover:bg-rose-400 disabled:opacity-30 disabled:pointer-events-none text-white rounded-full text-xs font-semibold transition-all shadow-lg shadow-rose-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
           >
             <Scissors size={14} />
             <span>Cut Shape Out</span>

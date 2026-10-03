@@ -83,7 +83,7 @@ export default function RepeatPatternModal({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+            className="p-1.5 text-white/40 hover:text-white hover:bg-white/10 rounded-full transition-colors cursor-pointer"
           >
             <X size={16} />
           </button>
@@ -100,7 +100,7 @@ export default function RepeatPatternModal({
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => setRepeatConfig((prev) => ({ ...prev, type: 'linear' }))}
-                className={`py-2.5 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
+                className={`py-2.5 px-3 rounded-full text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
                   repeatConfig.type === 'linear'
                     ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                     : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
@@ -117,7 +117,7 @@ export default function RepeatPatternModal({
 
               <button
                 onClick={() => setRepeatConfig((prev) => ({ ...prev, type: 'curved' }))}
-                className={`py-2.5 px-3 rounded-xl text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
+                className={`py-2.5 px-3 rounded-full text-xs font-semibold cursor-pointer transition border text-left flex items-center gap-2.5 ${
                   repeatConfig.type === 'curved'
                     ? 'bg-accent-500/20 border-accent-400 text-accent-300 font-semibold'
                     : 'bg-white/5 border-white/10 text-white/60 hover:text-white hover:bg-white/10'
@@ -152,7 +152,7 @@ export default function RepeatPatternModal({
                   onClose();
                   onStartDrawingLine();
                 }}
-                className="shrink-0 px-3 py-2 bg-accent-500 hover:bg-accent-400 text-white rounded-xl text-xs font-semibold transition-all shadow-md shadow-accent-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
+                className="shrink-0 px-3 py-2 bg-accent-500 hover:bg-accent-400 text-white rounded-full text-xs font-semibold transition-all shadow-md shadow-accent-500/20 cursor-pointer flex items-center gap-1.5 active:scale-95"
               >
                 <Compass size={13} />
                 <span>Draw Path Now</span>
@@ -180,7 +180,8 @@ export default function RepeatPatternModal({
               step="1"
               value={repeatConfig.count}
               onChange={(e) => setRepeatConfig((prev) => ({ ...prev, count: parseInt(e.target.value) }))}
-              className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-400 focus:outline-none"
+              style={{ ["--fill" as string]: `${((repeatConfig.count - 2) / 18) * 100}%` }}
+              className="w-full h-1.5 cursor-pointer focus:outline-none"
             />
             <div className="flex justify-between text-[11px]  text-white/30">
               <span>2</span>
@@ -232,13 +233,13 @@ export default function RepeatPatternModal({
         <div className="px-6 py-4 border-t border-white/10 flex items-center justify-end gap-2.5 bg-white/5">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-white/60 hover:text-white rounded-xl hover:bg-white/10 transition-colors cursor-pointer"
+            className="px-4 py-2 text-xs font-semibold text-white/60 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             onClick={handleApply}
-            className="px-5 py-2.5 bg-accent-500 hover:bg-accent-400 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-accent-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
+            className="px-5 py-2.5 bg-accent-500 hover:bg-accent-400 text-white rounded-full text-xs font-semibold transition-all shadow-lg shadow-accent-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
           >
             <Repeat size={14} />
             <span>Create {repeatConfig.count - 1} {repeatConfig.count - 1 === 1 ? 'copy' : 'copies'}</span>

@@ -61,7 +61,7 @@ function Group({ label, children }: { label?: string; children: React.ReactNode 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="absolute z-20 top-3 left-3 right-32 flex justify-center pointer-events-none">
-      <div className="pointer-events-auto max-w-full flex flex-wrap items-end justify-center gap-x-4 gap-y-2 px-3 py-2 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl">
+      <div className="pointer-events-auto max-w-full flex flex-wrap items-end justify-center gap-x-4 gap-y-2 px-3.5 py-2 rounded-[1.75rem] bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl">
         {children}
       </div>
     </div>

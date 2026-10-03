@@ -914,7 +914,7 @@ export default function SketchCanvas({
 
   const cursor = isPanning ? 'grabbing' : spaceHeld ? 'grab' : hoverCursor ?? (activeTool === 'select' ? 'default' : 'crosshair');
   const iconBtn =
-    'w-8 h-8 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors';
+    'w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors';
 
   return (
     <div ref={containerRef} className="absolute inset-0 overflow-hidden select-none touch-none">
@@ -939,7 +939,7 @@ export default function SketchCanvas({
             onClick={() => selectTool(id)}
             title={title}
             aria-pressed={activeTool === id}
-            className={`h-9 px-3 rounded-xl flex items-center gap-2 text-[13px] font-medium shrink-0 transition-colors ${
+            className={`h-9 px-3 rounded-full flex items-center gap-2 text-[13px] font-medium shrink-0 transition-colors ${
               activeTool === id ? 'bg-accent-500 text-white shadow-md shadow-accent-500/25' : 'text-slate-300 hover:text-white hover:bg-white/10'
             }`}
           >
@@ -957,7 +957,7 @@ export default function SketchCanvas({
           value={planeOptions.some((o) => o.value === planeElevation) ? planeElevation : 'custom'}
           onChange={(e) => e.target.value !== 'custom' && onPlaneChange(parseFloat(e.target.value))}
           aria-label="Sketch plane"
-          className="h-9 pl-3 pr-8 rounded-xl bg-slate-800/95 border border-white/10 text-[13px] font-medium text-slate-100 focus:outline-none focus:border-accent-400 shadow-xl truncate"
+          className="h-9 pl-4 pr-8 rounded-full bg-slate-800/95 border border-white/10 text-[13px] font-medium text-slate-100 focus:outline-none focus:border-accent-400 shadow-xl truncate"
         >
           {planeOptions.map((o) => (
             <option key={`${o.value}-${o.label}`} value={o.value}>
@@ -982,7 +982,7 @@ export default function SketchCanvas({
           <button
             type="button"
             onClick={completeCurve}
-            className="h-9 px-4 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-accent-500/25 transition-colors"
+            className="h-9 px-4 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-accent-500/25 transition-colors"
           >
             <Check size={15} strokeWidth={2.5} /> Extrude curve
           </button>
@@ -991,12 +991,12 @@ export default function SketchCanvas({
           <button
             type="button"
             onClick={closePolygon}
-            className="h-9 px-4 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-accent-500/25 transition-colors"
+            className="h-9 px-4 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-accent-500/25 transition-colors"
           >
             <Check size={15} strokeWidth={2.5} /> Close &amp; extrude
           </button>
         )}
-        <div className="flex items-center gap-0.5 p-1 rounded-xl bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-xl">
+        <div className="flex items-center gap-0.5 p-1 rounded-full bg-slate-800/90 backdrop-blur-xl border border-white/10 shadow-xl">
           <button type="button" onClick={handleUndo} disabled={!hasDraft} className={iconBtn} title="Undo last point (⌘Z)" aria-label="Undo last point">
             <Undo2 size={16} />
           </button>

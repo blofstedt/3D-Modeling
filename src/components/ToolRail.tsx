@@ -48,7 +48,7 @@ export default function ToolRail(props: ToolRailProps) {
   return (
     <nav
       aria-label="Actions"
-      className="absolute z-30 bottom-3 left-3 right-3 md:right-auto md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:left-3 flex md:flex-col items-center gap-1 p-1.5 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto md:overflow-visible no-scrollbar"
+      className="absolute z-30 bottom-3 left-3 right-3 md:right-auto md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:left-3 flex md:flex-col items-center gap-1 p-1.5 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto md:overflow-visible no-scrollbar"
     >
       {groups.map((group, gi) => (
         <React.Fragment key={gi}>
@@ -63,7 +63,7 @@ export default function ToolRail(props: ToolRailProps) {
                 disabled={a.disabled}
                 aria-label={a.label}
                 aria-pressed={a.active || undefined}
-                className={`group relative shrink-0 w-11 h-11 md:w-10 md:h-10 rounded-xl flex items-center justify-center transition-colors ${
+                className={`group relative shrink-0 w-11 h-11 md:w-10 md:h-10 rounded-full flex items-center justify-center transition-colors ${
                   a.active
                     ? 'bg-accent-500 text-white shadow-md shadow-accent-500/30'
                     : 'text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent'

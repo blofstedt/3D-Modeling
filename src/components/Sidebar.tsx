@@ -56,10 +56,10 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 const fieldClass =
-  'h-8 rounded-lg bg-white/6 border border-white/8 px-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent-400 focus:bg-white/8 transition-colors';
+  'h-8 rounded-full bg-white/6 border border-white/8 px-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent-400 focus:bg-white/8 transition-colors';
 
 const secondaryButton =
-  'h-9 px-3 rounded-xl bg-white/6 hover:bg-white/10 border border-white/8 text-sm font-medium text-slate-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+  'h-9 px-3 rounded-full bg-white/6 hover:bg-white/10 border border-white/8 text-sm font-medium text-slate-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none';
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -112,7 +112,8 @@ function NumberSlider({ label, value, min, max, step = 1, hardMax = max, onChang
         value={value}
         onChange={(e) => onChange(clampValue(parseFloat(e.target.value)))}
         aria-label={`${label} slider`}
-        className="w-full h-1 cursor-pointer"
+        style={{ ["--fill" as string]: `${((value - min) / Math.max(1, Math.max(max, value) - min)) * 100}%` }}
+        className="w-full h-1.5 cursor-pointer"
       />
     </div>
   );
@@ -135,7 +136,7 @@ function bodyStats(body: Body3D) {
 function EmptyState({ title, text }: { title: string; text: string }) {
   return (
     <div className="flex flex-col items-center text-center gap-2 py-12 px-4">
-      <div className="w-10 h-10 rounded-xl bg-white/6 flex items-center justify-center text-slate-400">
+      <div className="w-10 h-10 rounded-full bg-white/6 flex items-center justify-center text-slate-400">
         <Box size={20} strokeWidth={1.5} />
       </div>
       <p className="text-sm font-medium text-slate-200">{title}</p>
@@ -262,7 +263,7 @@ export default function Sidebar({
                           type="button"
                           onClick={() => onRemoveEdge(f.sel)}
                           aria-label={`Remove ${f.label}`}
-                          className="w-7 h-7 rounded-md text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center"
+                          className="w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -342,7 +343,7 @@ export default function Sidebar({
                         type="button"
                         onClick={() => onUpdateBody(body.id, { materialType: m.id })}
                         aria-pressed={active}
-                        className={`h-9 px-3 rounded-lg flex items-center justify-between text-sm transition-colors ${
+                        className={`h-9 px-3 rounded-full flex items-center justify-between text-sm transition-colors ${
                           active ? 'bg-accent-500/15 text-white ring-1 ring-accent-400/60' : 'bg-white/4 text-slate-300 hover:bg-white/8'
                         }`}
                       >
@@ -402,10 +403,10 @@ export default function Sidebar({
               <div className="flex items-center justify-between rounded-xl bg-accent-500/10 border border-accent-400/25 px-3 py-2">
                 <span className="text-xs font-medium text-accent-200">{selectedBodyIds.length} selected</span>
                 <div className="flex gap-1.5">
-                  <button type="button" onClick={onGroupSelected} className="h-7 px-2.5 rounded-md bg-white/10 hover:bg-white/16 text-xs font-medium flex items-center gap-1.5">
+                  <button type="button" onClick={onGroupSelected} className="h-7 px-2.5 rounded-full bg-white/10 hover:bg-white/16 text-xs font-medium flex items-center gap-1.5">
                     <Boxes size={13} /> Group
                   </button>
-                  <button type="button" onClick={onMergeSelected} className="h-7 px-2.5 rounded-md bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5">
+                  <button type="button" onClick={onMergeSelected} className="h-7 px-2.5 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5">
                     <Merge size={13} /> Union
                   </button>
                 </div>
@@ -416,7 +417,7 @@ export default function Sidebar({
               <Field label="Groups">
                 <div className="flex flex-col gap-1">
                   {groups.map((g) => (
-                    <div key={g.id} className="h-9 px-3 rounded-lg bg-white/4 flex items-center justify-between text-sm">
+                    <div key={g.id} className="h-9 px-3 rounded-full bg-white/4 flex items-center justify-between text-sm">
                       <span className="flex items-center gap-2 min-w-0">
                         <Boxes size={14} className="text-slate-400 shrink-0" />
                         <span className="truncate">{g.name}</span>
@@ -536,7 +537,7 @@ export default function Sidebar({
                 type="button"
                 onClick={() => runExport(exportSTL)}
                 disabled={bodies.length === 0}
-                className="h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                className="h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
               >
                 <Download size={15} /> Export STL
               </button>

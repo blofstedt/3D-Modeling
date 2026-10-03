@@ -5,6 +5,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { AnimatePresence } from 'motion/react';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
@@ -1110,10 +1111,11 @@ export default function ModelViewer3D({
       const el = panelRef.current;
       const anchor = anchorRef.current;
       if (!el) return;
-      if (!anchor || drag) {
+      if (drag) {
         el.style.visibility = 'hidden';
         return;
       }
+      if (!anchor) return; // nothing selected: keep the spot so the card can animate out
       const v = anchor.pos.clone().project(camera);
       const w = container.clientWidth;
       const h = container.clientHeight;
@@ -1488,11 +1490,9 @@ export default function ModelViewer3D({
     <div className="absolute inset-0 select-none touch-none overflow-hidden">
       <div ref={mountRef} className="absolute inset-0" />
 
-      {floating && (
-        <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
-          {floating}
-        </div>
-      )}
+      <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
+        <AnimatePresence mode="wait">{floating}</AnimatePresence>
+      </div>
 
       <ViewCube
         camera={isSceneReady ? cameraRef.current : null}

@@ -4,21 +4,29 @@
  */
 
 import React from 'react';
+import { motion } from 'motion/react';
 import { PenLine, Trash2, X } from 'lucide-react';
 import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
 import { edgeSize, edgeStyle, MAX_BEVEL_SIZE } from '../utils/edges';
-import { IconButton, NumberBox, signed, stepClass } from './controls';
+import { IconButton, NumberBox, Segmented, StepButton, signed, spring } from './controls';
 
-/** Small card that the viewer pins next to whatever is selected. */
+/** Rounded card the viewer pins next to the selection; it springs in from the selection and shrinks back out. */
 function PanelShell({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-2 px-3 py-2.5 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl">
-      <div className="flex items-baseline gap-2">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.8, y: 12 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.9, y: 6, transition: { duration: 0.12 } }}
+      transition={{ ...spring, stiffness: 420, damping: 28 }}
+      style={{ transformOrigin: '50% 100%' }}
+      className="flex flex-col gap-2.5 px-4 py-3 rounded-[1.75rem] bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-2xl shadow-black/50"
+    >
+      <div className="flex items-baseline gap-2 px-1">
         <span className="text-sm font-semibold text-white leading-tight">{title}</span>
         {sub && <span className="text-[11px] leading-tight text-slate-400 truncate max-w-40">{sub}</span>}
       </div>
       {children}
-    </div>
+    </motion.div>
   );
 }
 
@@ -50,27 +58,23 @@ export function EdgePanel({
           value={Math.min(size, MAX_BEVEL_SIZE)}
           onChange={(e) => set(parseFloat(e.target.value))}
           aria-label={onlyCorners ? 'Radius' : 'Bevel size'}
-          className="w-36 accent-accent-400"
+          style={{ ["--fill" as string]: `${(Math.min(size, MAX_BEVEL_SIZE) / MAX_BEVEL_SIZE) * 100}%` }}
+          className="w-36 h-1.5"
         />
         <NumberBox label={onlyCorners ? 'Radius' : 'Size'} value={size} step={0.5} min={0} max={MAX_BEVEL_SIZE} onCommit={set} />
       </div>
       <div className="flex items-center gap-2">
         {!onlyCorners && (
-          <div className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg bg-white/6" role="group" aria-label="Edge profile">
-            {(['round', 'chamfer'] as BevelStyle[]).map((s) => (
-              <button
-                key={s}
-                type="button"
-                aria-pressed={style === s}
-                onClick={() => onEdgeChange(edges, { style: s })}
-                className={`h-7 px-2.5 rounded-md text-xs font-medium transition-colors ${
-                  style === s ? 'bg-white/14 text-white' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {s === 'round' ? 'Curved' : 'Flat'}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            id="profile"
+            label="Edge profile"
+            value={style}
+            onChange={(v) => onEdgeChange(edges, { style: v })}
+            options={[
+              { value: 'round', label: 'Curved' },
+              { value: 'chamfer', label: 'Flat' },
+            ]}
+          />
         )}
         <div className="flex items-center gap-0.5 ml-auto">
           <IconButton icon={Trash2} label="Remove bevel (Del)" onClick={() => onEdgeChange(edges, { size: 0 })} danger />
@@ -107,9 +111,9 @@ export function FacePanel({
         )}
         <div className="flex items-center gap-1 h-7" role="group" aria-label="Extrude by">
           {[-10, -1, 1, 10].map((n) => (
-            <button key={n} type="button" onClick={() => onExtrudeFace(face, n)} className={stepClass} title={`${n > 0 ? 'Pull out' : 'Push in'} ${Math.abs(n)} mm`}>
+            <StepButton key={n} onClick={() => onExtrudeFace(face, n)} title={`${n > 0 ? 'Pull out' : 'Push in'} ${Math.abs(n)} mm`}>
               {signed(n)}
-            </button>
+            </StepButton>
           ))}
         </div>
         <div className="flex items-center gap-0.5">

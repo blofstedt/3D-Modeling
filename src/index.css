@@ -90,6 +90,28 @@ button:disabled {
 /* Range inputs */
 input[type="range"] {
   accent-color: var(--color-accent-400);
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-accent-400) var(--fill, 0%), rgba(255, 255, 255, 0.14) var(--fill, 0%));
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 0 0 4px rgba(110, 91, 255, 0.45), 0 2px 6px rgba(0, 0, 0, 0.5);
+  transition: transform 0.15s cubic-bezier(0.3, 1.6, 0.5, 1), box-shadow 0.15s;
+}
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.25); box-shadow: 0 0 0 7px rgba(110, 91, 255, 0.4), 0 2px 6px rgba(0, 0, 0, 0.5); }
+input[type="range"]::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 999px; background: #fff; border: 0;
+  box-shadow: 0 0 0 4px rgba(110, 91, 255, 0.45);
 }
 
 @media (prefers-reduced-motion: reduce) {

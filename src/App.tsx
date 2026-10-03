@@ -689,7 +689,7 @@ export default function App() {
       onClick={() => (mode === 'sketch' ? openSketch(sketchElevation, selectedBodyId ? 'select' : 'box') : setEditorMode(mode))}
       aria-pressed={editorMode === mode}
       title={`${label} (${hotkey})`}
-      className={`px-3 h-8 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors ${
+      className={`px-3 h-8 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors ${
         editorMode === mode ? 'bg-white/12 text-white shadow-sm' : 'text-slate-400 hover:text-white'
       }`}
     >
@@ -711,7 +711,7 @@ export default function App() {
       disabled={disabled}
       aria-label={label}
       title={label}
-      className={`w-8 h-8 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors ${extra}`}
+      className={`w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors ${extra}`}
     >
       <Icon size={17} strokeWidth={1.75} />
     </button>
@@ -730,7 +730,7 @@ export default function App() {
       {/* Top bar */}
       <header className="h-12 shrink-0 px-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2 bg-slate-900 border-b border-white/8 z-40">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-accent-500 flex items-center justify-center text-white shrink-0">
+          <div className="w-7 h-7 rounded-full bg-accent-500 flex items-center justify-center text-white shrink-0">
             <Box size={16} strokeWidth={2} />
           </div>
           <span className="text-sm font-semibold tracking-tight hidden sm:inline">Craft3D</span>
@@ -739,7 +739,7 @@ export default function App() {
           {iconButton('Redo (⇧⌘Z)', doRedo, Redo2, !history.canRedo)}
         </div>
 
-        <div className="flex items-center p-0.5 rounded-xl bg-white/6 border border-white/8">
+        <div className="flex items-center p-0.5 rounded-full bg-white/6 border border-white/8">
           {modeButton('sketch', 'Sketch', PenLine, '1')}
           {modeButton('view3d', 'Model', Rotate3d, '2')}
         </div>
@@ -811,9 +811,10 @@ export default function App() {
                   onHint={setHint}
                   floating={
                     selectedBody && selectedBodies.length === 1 && selectedEdges.length ? (
-                      <EdgePanel body={selectedBody} edges={selectedEdges} onEdgeChange={handleEdgeChange} onClear={() => setSelectedEdges([])} />
+                      <EdgePanel key="edge" body={selectedBody} edges={selectedEdges} onEdgeChange={handleEdgeChange} onClear={() => setSelectedEdges([])} />
                     ) : selectedBody && selectedBodies.length === 1 && selectedFace ? (
                       <FacePanel
+                        key={`face-${selectedFace.kind}`}
                         body={selectedBody}
                         face={selectedFace}
                         onExtrudeFace={handleExtrudeFace}
@@ -863,14 +864,14 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => openSketch(0)}
-                          className="px-4 h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
+                          className="px-4 h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
                         >
                           <PenLine size={15} /> New sketch
                         </button>
                         <button
                           type="button"
                           onClick={handleLoadDemo}
-                          className="px-4 h-9 rounded-xl bg-white/8 hover:bg-white/12 text-slate-200 text-sm font-medium flex items-center gap-2 transition-colors"
+                          className="px-4 h-9 rounded-full bg-white/8 hover:bg-white/12 text-slate-200 text-sm font-medium flex items-center gap-2 transition-colors"
                         >
                           <Sparkles size={15} /> Starter block
                         </button>
@@ -914,7 +915,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => isolate(null)}
-                    className="h-7 px-2.5 rounded-lg bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0"
+                    className="h-7 px-2.5 rounded-full bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0"
                   >
                     Show all
                   </button>
@@ -970,7 +971,7 @@ export default function App() {
                 type="button"
                 onClick={() => setIsMobileSidebarOpen(false)}
                 aria-label="Close inspector"
-                className="absolute top-3 right-3 z-10 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
+                className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
               >
                 <X size={17} />
               </button>
