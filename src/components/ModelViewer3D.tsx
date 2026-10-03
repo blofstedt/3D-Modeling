@@ -279,6 +279,9 @@ export default function ModelViewer3D({
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
   const placePanelRef = useRef<() => void>(() => {});
+  /** When the handles last popped in (ms), and the selection they popped in for. */
+  const popRef = useRef<{ start: number } | null>(null);
+  const popKeyRef = useRef('');
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
@@ -1146,6 +1149,22 @@ export default function ModelViewer3D({
         hover(h.x, h.y);
       }
 
+      const pop = popRef.current;
+      if (pop) {
+        const elapsed = performance.now() - pop.start;
+        let running = false;
+        gizmoGroup.children.forEach((child, i) => {
+          const t = clamp((elapsed - i * 35) / 380, 0, 1);
+          // Ease out with a little overshoot, so handles spring into place.
+          const c = 1.70158;
+          const k = t === 0 ? 0.0001 : t >= 1 ? 1 : 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2);
+          child.scale.setScalar((child.userData.baseScale ?? 1) * k);
+          if (t < 1) running = true;
+        });
+        if (!running) popRef.current = null;
+        needsRender = true;
+      }
+
       const tween = tweenRef.current;
       if (tween) {
         const t = clamp((performance.now() - tween.start) / 450, 0, 1);
@@ -1260,6 +1279,8 @@ export default function ModelViewer3D({
     const ids = selectedBodyIds.length ? selectedBodyIds : selectedBodyId ? [selectedBodyId] : [];
     const picked = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
     if (!picked.length) {
+      popRef.current = null;
+      popKeyRef.current = '';
       invalidateRef.current();
       return;
     }
@@ -1426,6 +1447,15 @@ export default function ModelViewer3D({
         gizmoGroup.add(handle);
         anchorRef.current = { pos: handle.position.clone(), lift: 36 };
       }
+    }
+
+    // Handles spring in when the selection changes (not on every edit of the same selection).
+    const popKey = `${ids.join(',')}|${selectedFace ? `${selectedFace.kind}${selectedFace.index ?? ''}` : ''}|${selectedEdges.length}`;
+    gizmoGroup.children.forEach((c) => (c.userData.baseScale = c.scale.x));
+    if (popKeyRef.current !== popKey) {
+      popKeyRef.current = popKey;
+      popRef.current = { start: performance.now() };
+      gizmoGroup.children.forEach((c) => c.scale.setScalar(0.0001));
     }
     invalidateRef.current();
   }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, isSceneReady]);
