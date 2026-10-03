@@ -4,688 +4,537 @@
  */
 
 import React, { useState } from 'react';
-import { Body3D, EditorMode, MATERIAL_PRESETS, Point2D, ShapeGroup } from '../types';
-import { generateSTL } from '../utils/geometry';
-import { 
-  Box, 
-  Trash2, 
-  FolderDown, 
-  RotateCcw, 
-  Plus, 
-  Layers, 
-  Sliders, 
-  FileDown, 
-  Copy, 
-  Sparkles, 
-  Rotate3d, 
-  Eye, 
-  EyeOff,
-  Scissors, 
-  Move3d, 
-  Repeat, 
-  FolderPlus, 
-  Ungroup, 
-  CheckSquare, 
-  Square,
-  ArrowUpDown,
+import {
+  Box,
+  Boxes,
+  Copy,
   Download,
-  Palette,
-  Maximize2
+  Eye,
+  EyeOff,
+  FileJson,
+  Merge,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Ungroup,
 } from 'lucide-react';
+import { Body3D, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
+import { getPolygonSignedArea } from '../utils/geometry';
+import { exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
 
 interface SidebarProps {
   bodies: Body3D[];
   selectedBodyId: string | null;
-  selectedBodyIds?: string[];
+  selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
-  onToggleSelectBody?: (id: string) => void;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
   onDeleteBody: (id: string) => void;
   onCloneBody: (id: string) => void;
   onClearWorkspace: () => void;
-  editorMode: EditorMode;
-  setEditorMode: (mode: EditorMode) => void;
-  onTriggerNewSketch: () => void;
-  groups?: ShapeGroup[];
-  onGroupSelected?: () => void;
-  onUngroup?: (groupId: string) => void;
-  onMergeSelected?: () => void;
-  onOpenCut?: () => void;
-  onOpenBevel?: () => void;
-  onOpenMoveFace?: () => void;
-  onOpenRepeat?: () => void;
-  onApplyCornerRadius?: (id: string, radius: number) => void;
+  onLoadDemo: () => void;
+  groups: ShapeGroup[];
+  onGroupSelected: () => void;
+  onUngroup: (groupId: string) => void;
+  onMergeSelected: () => void;
+  onApplyCornerRadius: (id: string, radius: number) => void;
 }
 
-const SWATCHES = [
-  { name: 'Cobalt Blue', value: '#3b82f6' },
-  { name: 'Lead Gray', value: '#475569' },
-  { name: 'Crimson Red', value: '#ef4444' },
-  { name: 'Teal Forest', value: '#0d9488' },
-  { name: 'Neon Amber', value: '#f59e0b' },
-  { name: 'Emerald', value: '#10b981' },
-  { name: 'Hot Pink', value: '#db2777' },
-  { name: 'Brass Gold', value: '#b45309' },
-  { name: 'Royal Violet', value: '#6d28d9' },
-  { name: 'Snow Pearl', value: '#f1f5f9' },
+type Tab = 'properties' | 'material' | 'bodies' | 'export';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'properties', label: 'Properties' },
+  { id: 'material', label: 'Material' },
+  { id: 'bodies', label: 'Bodies' },
+  { id: 'export', label: 'Export' },
 ];
+
+const fieldClass =
+  'h-8 rounded-lg bg-white/6 border border-white/8 px-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent-400 focus:bg-white/8 transition-colors';
+
+const secondaryButton =
+  'h-9 px-3 rounded-xl bg-white/6 hover:bg-white/10 border border-white/8 text-sm font-medium text-slate-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-xs font-medium text-slate-400">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+interface NumberSliderProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  /** Values outside [min, max] are still accepted via the number field. */
+  hardMax?: number;
+  onChange: (value: number) => void;
+}
+
+function NumberSlider({ label, value, min, max, step = 1, hardMax = max, onChange }: NumberSliderProps) {
+  const clampValue = (v: number) => Math.max(min, Math.min(hardMax, v));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-400">{label}</span>
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            min={min}
+            max={hardMax}
+            step={step}
+            value={value}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (!Number.isNaN(v)) onChange(clampValue(v));
+            }}
+            aria-label={label}
+            className={`${fieldClass} w-16 text-right tabular-nums`}
+          />
+          <span className="text-xs text-slate-500 w-5">mm</span>
+        </div>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={Math.max(max, value)}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(clampValue(parseFloat(e.target.value)))}
+        aria-label={`${label} slider`}
+        className="w-full h-1 cursor-pointer"
+      />
+    </div>
+  );
+}
+
+function bodyStats(body: Body3D) {
+  const area = (ring: { x: number; y: number }[]) => (ring.length < 3 ? 0 : Math.abs(getPolygonSignedArea(ring)));
+  const footprint = Math.max(0, area(body.points) - (body.holes ?? []).reduce((sum, h) => sum + area(h), 0));
+  const xs = body.points.map((p) => p.x);
+  const ys = body.points.map((p) => p.y);
+  return {
+    width: Math.round(Math.max(...xs) - Math.min(...xs)),
+    depth: Math.round(Math.max(...ys) - Math.min(...ys)),
+    height: Math.round(body.extrusionHeight),
+    area: Math.round(footprint),
+    volume: Math.round(footprint * body.extrusionHeight),
+  };
+}
+
+function EmptyState({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="flex flex-col items-center text-center gap-2 py-12 px-4">
+      <div className="w-10 h-10 rounded-xl bg-white/6 flex items-center justify-center text-slate-400">
+        <Box size={20} strokeWidth={1.5} />
+      </div>
+      <p className="text-sm font-medium text-slate-200">{title}</p>
+      <p className="text-xs text-slate-500 max-w-52 leading-relaxed">{text}</p>
+    </div>
+  );
+}
 
 export default function Sidebar({
   bodies,
   selectedBodyId,
-  selectedBodyIds = [],
+  selectedBodyIds,
   onSelectBody,
-  onToggleSelectBody,
   onUpdateBody,
   onDeleteBody,
   onCloneBody,
   onClearWorkspace,
-  editorMode,
-  setEditorMode,
-  onTriggerNewSketch,
-  groups = [],
+  onLoadDemo,
+  groups,
   onGroupSelected,
   onUngroup,
   onMergeSelected,
-  onOpenCut,
-  onOpenBevel,
-  onOpenMoveFace,
-  onOpenRepeat,
   onApplyCornerRadius,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<'inspect' | 'materials' | 'layers' | 'export'>('inspect');
-  const selectedBody = bodies.find((b) => b.id === selectedBodyId);
+  const [tab, setTab] = useState<Tab>('properties');
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  const body = bodies.find((b) => b.id === selectedBodyId) || null;
+  const stats = body ? bodyStats(body) : null;
 
-  // Geometric measurements calculation
-  const calculateGeometryStats = (points: Point2D[], height: number) => {
-    if (points.length < 3) return { area: 0, volume: 0, bbox: { x: 0, z: 0, y: 0 } };
-
-    let area = 0;
-    const n = points.length;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      area += points[i].x * points[j].y;
-      area -= points[j].x * points[i].y;
-    }
-    area = Math.abs(area) / 2;
-    const volume = Math.round(area * height);
-
-    const xs = points.map(p => p.x);
-    const ys = points.map(p => p.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-
-    return {
-      area: Math.round(area),
-      volume,
-      bbox: {
-        x: Math.round(maxX - minX),
-        z: Math.round(maxY - minY),
-        y: Math.round(height),
-      }
-    };
-  };
-
-  const activeStats = selectedBody
-    ? calculateGeometryStats(selectedBody.points, selectedBody.extrusionHeight)
-    : null;
-
-  // Export handlers
-  const handleExportSTL = () => {
-    if (bodies.length === 0) return;
-    const stlText = generateSTL(bodies);
-    const blob = new Blob([stlText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Craft3D-Model-${new Date().toISOString().substring(0, 10)}.stl`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleExportOBJ = () => {
-    if (bodies.length === 0) return;
-    let objText = `# Craft3D Precision CAD Export\n# Exported on ${new Date().toISOString()}\n\n`;
-    let vertexOffset = 1;
-
-    bodies.forEach((body) => {
-      if (!body.visible || body.points.length < 3) return;
-      objText += `g ${body.name.replace(/\s+/g, '_')}\n`;
-      const pts = body.points;
-      const n = pts.length;
-      const h = body.extrusionHeight;
-
-      // Bottom vertices at y = 0
-      pts.forEach((pt) => {
-        objText += `v ${pt.x.toFixed(2)} 0.00 ${(-pt.y).toFixed(2)}\n`;
-      });
-      // Top vertices at y = h
-      pts.forEach((pt) => {
-        objText += `v ${pt.x.toFixed(2)} ${h.toFixed(2)} ${(-pt.y).toFixed(2)}\n`;
-      });
-
-      objText += `\n# Bottom cap\nf `;
-      for (let i = n; i >= 1; i--) {
-        objText += `${vertexOffset + i - 1} `;
-      }
-      objText += `\n# Top cap\nf `;
-      for (let i = 1; i <= n; i++) {
-        objText += `${vertexOffset + n + i - 1} `;
-      }
-      objText += `\n# Side faces\n`;
-      for (let i = 0; i < n; i++) {
-        const next = (i + 1) % n;
-        const v1 = vertexOffset + i;
-        const v2 = vertexOffset + next;
-        const v3 = vertexOffset + n + next;
-        const v4 = vertexOffset + n + i;
-        objText += `f ${v1} ${v4} ${v3} ${v2}\n`;
-      }
-      objText += `\n`;
-      vertexOffset += n * 2;
-    });
-
-    const blob = new Blob([objText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Craft3D-Model-${new Date().toISOString().substring(0, 10)}.obj`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleExportJSON = () => {
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bodies, null, 2));
-    const a = document.createElement('a');
-    a.href = dataStr;
-    a.download = `Craft3D-Workspace-${new Date().toISOString().substring(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  const runExport = (fn: (b: Body3D[]) => boolean | void) => {
+    const ok = fn(bodies);
+    setExportNote(ok === false ? 'Nothing visible to export.' : null);
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#090d16] text-slate-100 select-none border-l border-white/5">
-      
-      {/* Precision CAD Inspector Header */}
-      <div className="p-4 pb-3 border-b border-white/5 flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold tracking-tight text-white flex items-center gap-2">
-            Model Inspector
-          </h2>
-          <p className="text-xs text-slate-400">
-            {bodies.length} solid {bodies.length === 1 ? 'body' : 'bodies'} in scene
-          </p>
-        </div>
-
-        <button
-          onClick={onTriggerNewSketch}
-          className="p-1.5 px-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-lg text-xs transition cursor-pointer flex items-center gap-1 shadow-sm"
-          title="New 2D Sketch"
-        >
-          <Plus size={13} className="stroke-[2.5]" />
-          <span>Sketch</span>
-        </button>
+    <div className="flex flex-col h-full min-h-0 text-slate-100">
+      <div className="px-4 pt-3.5 pr-14 md:pr-4 shrink-0">
+        <h2 className="text-sm font-semibold tracking-tight">Inspector</h2>
+        <p className="text-xs text-slate-500">
+          {bodies.length} {bodies.length === 1 ? 'body' : 'bodies'}
+          {selectedBodyIds.length > 1 && ` · ${selectedBodyIds.length} selected`}
+        </p>
       </div>
 
-      {/* Modern Clean Segmented Navigation Tabs */}
-      <div className="flex items-center gap-1 p-2 px-3 border-b border-white/5 bg-white/[0.02]">
-        <button
-          onClick={() => setActiveTab('inspect')}
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer text-center ${
-            activeTab === 'inspect'
-              ? 'bg-white/10 text-white font-semibold shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Geometry
-        </button>
-        <button
-          onClick={() => setActiveTab('materials')}
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer text-center ${
-            activeTab === 'materials'
-              ? 'bg-white/10 text-white font-semibold shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Material
-        </button>
-        <button
-          onClick={() => setActiveTab('layers')}
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer text-center ${
-            activeTab === 'layers'
-              ? 'bg-white/10 text-white font-semibold shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Bodies ({bodies.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('export')}
-          className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition cursor-pointer text-center ${
-            activeTab === 'export'
-              ? 'bg-white/10 text-white font-semibold shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-white/5'
-          }`}
-        >
-          Export
-        </button>
+      <div role="tablist" className="flex gap-1 px-3 mt-3 border-b border-white/8 shrink-0">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={`relative px-2.5 pb-2.5 pt-1 text-[13px] font-medium transition-colors ${
+              tab === t.id ? 'text-white' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {t.label}
+            {tab === t.id && <span className="absolute left-2 right-2 -bottom-px h-0.5 rounded-full bg-accent-400" />}
+          </button>
+        ))}
       </div>
 
-      {/* Main Tab Content Area */}
-      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5 pr-3">
-        
-        {/* TAB 1: GEOMETRY INSPECTOR */}
-        {activeTab === 'inspect' && (
-          selectedBody ? (
-            <div className="flex flex-col gap-5">
-              
-              {/* Object Identity */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs text-slate-400 font-medium">Part Name</label>
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-5">
+        {/* ---------------- Properties ---------------- */}
+        {tab === 'properties' &&
+          (body && stats ? (
+            <>
+              <Field label="Name">
                 <input
                   type="text"
-                  value={selectedBody.name}
-                  onChange={(e) => onUpdateBody(selectedBody.id, { name: e.target.value })}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400 focus:bg-white/10 transition"
+                  value={body.name}
+                  onChange={(e) => onUpdateBody(body.id, { name: e.target.value })}
+                  className={fieldClass}
                 />
-              </div>
+              </Field>
 
-              {/* Primary Extrusion Depth Section */}
-              <div className="flex flex-col gap-2 p-3 bg-white/[0.03] rounded-xl border border-white/5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-white flex items-center gap-1.5">
-                    <ArrowUpDown size={13} className="text-cyan-400" />
-                    Extrusion Depth
-                  </span>
-                  <span className="font-mono font-semibold text-cyan-300 tabular-nums">
-                    {selectedBody.extrusionHeight} mm
-                  </span>
-                </div>
+              <NumberSlider
+                label="Height"
+                value={body.extrusionHeight}
+                min={2}
+                max={250}
+                hardMax={600}
+                onChange={(v) => onUpdateBody(body.id, { extrusionHeight: v })}
+              />
 
-                <input
-                  type="range"
-                  min="5"
-                  max="250"
-                  step="5"
-                  value={selectedBody.extrusionHeight}
-                  onChange={(e) => onUpdateBody(selectedBody.id, { extrusionHeight: parseInt(e.target.value) })}
-                  className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
-                />
+              <NumberSlider
+                label="Corner radius"
+                value={body.cornerRadius || 0}
+                min={0}
+                max={30}
+                onChange={(v) => onApplyCornerRadius(body.id, v)}
+              />
 
-                <div className="flex items-center justify-between gap-1 pt-1">
-                  <button
-                    onClick={() => onUpdateBody(selectedBody.id, { extrusionHeight: Math.max(5, selectedBody.extrusionHeight - 10) })}
-                    className="px-2 py-1 bg-white/5 hover:bg-white/10 text-white rounded text-xs font-mono transition cursor-pointer"
-                  >
-                    -10
-                  </button>
-                  <button
-                    onClick={() => onUpdateBody(selectedBody.id, { extrusionHeight: Math.max(5, selectedBody.extrusionHeight - 5) })}
-                    className="px-2 py-1 bg-white/5 hover:bg-white/10 text-white rounded text-xs font-mono transition cursor-pointer"
-                  >
-                    -5
-                  </button>
-                  <button
-                    onClick={() => onUpdateBody(selectedBody.id, { extrusionHeight: Math.min(500, selectedBody.extrusionHeight + 5) })}
-                    className="px-2 py-1 bg-white/5 hover:bg-white/10 text-white rounded text-xs font-mono transition cursor-pointer"
-                  >
-                    +5
-                  </button>
-                  <button
-                    onClick={() => onUpdateBody(selectedBody.id, { extrusionHeight: Math.min(500, selectedBody.extrusionHeight + 10) })}
-                    className="px-2 py-1 bg-white/5 hover:bg-white/10 text-white rounded text-xs font-mono transition cursor-pointer"
-                  >
-                    +10
-                  </button>
-                </div>
-              </div>
-
-              {/* Corner Fillet / Rounding */}
-              {onApplyCornerRadius && (
-                <div className="flex flex-col gap-2 p-3 bg-white/[0.03] rounded-xl border border-white/5">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-white flex items-center gap-1.5">
-                      <Sparkles size={13} className="text-amber-400" />
-                      Corner Fillet (Round)
-                    </span>
-                    <span className="font-mono font-semibold text-amber-300 tabular-nums">
-                      {selectedBody.cornerRadius || 0} mm
-                    </span>
-                  </div>
+              <div className="flex flex-col gap-3">
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-xs font-medium text-slate-400">Edge bevel</span>
                   <input
-                    type="range"
-                    min="0"
-                    max="30"
-                    step="1"
-                    value={selectedBody.cornerRadius || 0}
-                    onChange={(e) => onApplyCornerRadius(selectedBody.id, parseInt(e.target.value))}
-                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-amber-400 focus:outline-none"
+                    type="checkbox"
+                    checked={body.bevelEnabled !== false}
+                    onChange={(e) => onUpdateBody(body.id, { bevelEnabled: e.target.checked })}
+                    className="w-4 h-4 accent-accent-400"
                   />
-                </div>
-              )}
-
-              {/* Bevel & Chamfer Edges */}
-              <div className="flex flex-col gap-2 p-3 bg-white/[0.03] rounded-xl border border-white/5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-white">3D Edge Bevel</span>
-                  <label className="flex items-center gap-2 cursor-pointer text-xs">
-                    <input
-                      type="checkbox"
-                      checked={selectedBody.bevelEnabled !== false}
-                      onChange={(e) => onUpdateBody(selectedBody.id, { bevelEnabled: e.target.checked })}
-                      className="rounded accent-cyan-400"
+                </label>
+                {body.bevelEnabled !== false && (
+                  <>
+                    <NumberSlider
+                      label="Bevel size"
+                      value={body.bevelSize ?? 1}
+                      min={0.5}
+                      max={10}
+                      step={0.5}
+                      onChange={(v) => onUpdateBody(body.id, { bevelSize: v })}
                     />
-                    <span className="text-slate-300">{selectedBody.bevelEnabled !== false ? 'Enabled' : 'Sharp'}</span>
-                  </label>
-                </div>
-                {selectedBody.bevelEnabled !== false && (
-                  <div className="flex items-center gap-2 pt-1">
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="10"
-                      step="0.5"
-                      value={selectedBody.bevelSize ?? 1}
-                      onChange={(e) => onUpdateBody(selectedBody.id, { bevelSize: parseFloat(e.target.value) })}
-                      className="flex-1 h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
-                    />
-                    <span className="text-xs font-mono text-cyan-300 tabular-nums w-12 text-right">
-                      {selectedBody.bevelSize ?? 1} mm
-                    </span>
-                  </div>
+                    <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-white/6">
+                      {[
+                        { label: 'Chamfer', active: (body.bevelSegments ?? 3) <= 1, segments: 1 },
+                        { label: 'Round', active: (body.bevelSegments ?? 3) > 1, segments: 4 },
+                      ].map((opt) => (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => onUpdateBody(body.id, { bevelSegments: opt.segments })}
+                          className={`h-7 rounded-md text-xs font-medium transition-colors ${
+                            opt.active ? 'bg-white/12 text-white' : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
 
-              {/* Cutout Holes Indicator */}
-              {selectedBody.holes && selectedBody.holes.length > 0 && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-between text-xs">
-                  <span className="text-rose-200">
-                    {selectedBody.holes.length} internal {selectedBody.holes.length === 1 ? 'cutout' : 'cutouts'}
+              {body.holes && body.holes.length > 0 && (
+                <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-xs">
+                  <span className="text-slate-300">
+                    {body.holes.length} {body.holes.length === 1 ? 'cutout' : 'cutouts'}
                   </span>
                   <button
-                    onClick={() => onUpdateBody(selectedBody.id, { holes: [] })}
-                    className="text-xs text-rose-300 hover:text-white underline cursor-pointer"
+                    type="button"
+                    onClick={() => onUpdateBody(body.id, { holes: [] })}
+                    className="text-accent-300 hover:text-accent-200 font-medium"
                   >
-                    Clear Cutouts
+                    Fill in
                   </button>
                 </div>
               )}
 
-              {/* Bounding Box & Volume Dimensions */}
-              {activeStats && (
-                <div className="flex flex-col gap-2 p-3 bg-white/[0.02] rounded-xl border border-white/5 text-xs">
-                  <span className="text-xs text-slate-400 font-medium">Geometric Dimensions</span>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="p-2 bg-white/5 rounded-lg">
-                      <div className="text-[10px] text-slate-400">Width (X)</div>
-                      <div className="font-mono font-semibold text-white">{activeStats.bbox.x} mm</div>
+              <div className="rounded-xl bg-white/4 border border-white/6 p-3">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  {[
+                    ['Width', stats.width],
+                    ['Depth', stats.depth],
+                    ['Height', stats.height],
+                  ].map(([label, v]) => (
+                    <div key={label}>
+                      <div className="text-[11px] text-slate-500">{label}</div>
+                      <div className="text-sm font-semibold tabular-nums">{v}</div>
                     </div>
-                    <div className="p-2 bg-white/5 rounded-lg">
-                      <div className="text-[10px] text-slate-400">Length (Y)</div>
-                      <div className="font-mono font-semibold text-white">{activeStats.bbox.z} mm</div>
-                    </div>
-                    <div className="p-2 bg-white/5 rounded-lg">
-                      <div className="text-[10px] text-slate-400">Height (Z)</div>
-                      <div className="font-mono font-semibold text-white">{activeStats.bbox.y} mm</div>
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-[11px] text-slate-400 pt-1">
-                    <span>Base Area: <strong className="text-white font-mono">{activeStats.area.toLocaleString()} mm²</strong></span>
-                    <span>Volume: <strong className="text-white font-mono">{activeStats.volume.toLocaleString()} mm³</strong></span>
-                  </div>
+                  ))}
                 </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex gap-2 pt-1">
-                <button
-                  onClick={() => onCloneBody(selectedBody.id)}
-                  className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer border border-white/10"
-                >
-                  <Copy size={13} />
-                  <span>Duplicate</span>
-                </button>
-                <button
-                  onClick={() => onDeleteBody(selectedBody.id)}
-                  className="py-2 px-3 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer border border-rose-500/20"
-                >
-                  <Trash2 size={13} />
-                </button>
+                <div className="mt-2.5 pt-2.5 border-t border-white/6 flex justify-between text-xs text-slate-400">
+                  <span>
+                    Area <span className="text-slate-200 tabular-nums">{stats.area.toLocaleString()}</span> mm²
+                  </span>
+                  <span>
+                    Volume <span className="text-slate-200 tabular-nums">{stats.volume.toLocaleString()}</span> mm³
+                  </span>
+                </div>
               </div>
 
-            </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => onCloneBody(body.id)} className={`${secondaryButton} flex-1`}>
+                  <Copy size={14} /> Duplicate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteBody(body.id)}
+                  aria-label="Delete body"
+                  className={`${secondaryButton} text-rose-300 hover:bg-rose-500/15 w-9 px-0`}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </>
           ) : (
-            <div className="text-center py-10 text-slate-400 text-xs flex flex-col items-center gap-2">
-              <Box size={24} className="text-slate-600 mb-1" />
-              <p className="font-medium text-slate-300">No Solid Selected</p>
-              <p className="text-[11px] text-slate-500 max-w-[200px]">
-                Click or tap any shape on the 3D plane to inspect and adjust dimensions.
-              </p>
-            </div>
-          )
-        )}
+            <EmptyState title="Nothing selected" text="Click a body in the viewport or the Bodies list to edit its properties." />
+          ))}
 
-        {/* TAB 2: MATERIALS & APPEARANCE */}
-        {activeTab === 'materials' && (
-          selectedBody ? (
-            <div className="flex flex-col gap-5">
-              
-              {/* Material Preset Selection */}
-              <div className="flex flex-col gap-2">
-                <label className="text-xs text-slate-400 font-medium">Physical Material Preset</label>
-                <div className="grid grid-cols-1 gap-1.5">
-                  {MATERIAL_PRESETS.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => onUpdateBody(selectedBody.id, { materialType: m.id })}
-                      className={`p-2.5 rounded-xl border text-xs text-left transition cursor-pointer flex items-center justify-between ${
-                        selectedBody.materialType === m.id
-                          ? 'bg-cyan-500/15 border-cyan-400/60 text-white font-semibold'
-                          : 'bg-white/5 border-white/5 text-slate-300 hover:bg-white/10 hover:border-white/10'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className={`w-3 h-3 rounded-full ${selectedBody.materialType === m.id ? 'bg-cyan-400' : 'bg-slate-600'}`} />
+        {/* ---------------- Material ---------------- */}
+        {tab === 'material' &&
+          (body ? (
+            <>
+              <Field label="Finish">
+                <div className="flex flex-col gap-1">
+                  {MATERIAL_PRESETS.map((m) => {
+                    const active = body.materialType === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => onUpdateBody(body.id, { materialType: m.id })}
+                        aria-pressed={active}
+                        className={`h-9 px-3 rounded-lg flex items-center justify-between text-sm transition-colors ${
+                          active ? 'bg-accent-500/15 text-white ring-1 ring-accent-400/60' : 'bg-white/4 text-slate-300 hover:bg-white/8'
+                        }`}
+                      >
                         <span>{m.name}</span>
-                      </div>
-                      <span className="text-[10px] text-slate-400 font-mono capitalize">
-                        Roughness: {Math.round(m.roughness * 100)}%
-                      </span>
-                    </button>
-                  ))}
+                        <span className="text-xs text-slate-500 tabular-nums">
+                          {m.metalness > 0.5 ? 'Metallic' : `${Math.round(m.roughness * 100)}% rough`}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-              </div>
+              </Field>
 
-              {/* Color Swatches */}
-              <div className="flex flex-col gap-2">
-                <label className="text-xs text-slate-400 font-medium">Pigment / Surface Color</label>
+              <Field label="Color">
                 <div className="flex flex-wrap gap-2">
-                  {SWATCHES.map((swatch) => (
-                    <button
-                      key={swatch.value}
-                      onClick={() => onUpdateBody(selectedBody.id, { color: swatch.value })}
-                      title={swatch.name}
-                      style={{ backgroundColor: swatch.value }}
-                      className={`w-7 h-7 rounded-lg transition-transform hover:scale-110 cursor-pointer relative shadow-sm border ${
-                        selectedBody.color.toLowerCase() === swatch.value.toLowerCase()
-                          ? 'border-white scale-110 ring-2 ring-cyan-400/60'
-                          : 'border-white/10'
-                      }`}
+                  {SWATCHES.map((swatch) => {
+                    const active = body.color.toLowerCase() === swatch.value.toLowerCase();
+                    return (
+                      <button
+                        key={swatch.value}
+                        type="button"
+                        onClick={() => onUpdateBody(body.id, { color: swatch.value })}
+                        title={swatch.name}
+                        aria-label={swatch.name}
+                        aria-pressed={active}
+                        style={{ backgroundColor: swatch.value }}
+                        className={`w-7 h-7 rounded-full border border-white/20 transition-transform hover:scale-110 ${
+                          active ? 'ring-2 ring-offset-2 ring-offset-slate-900 ring-accent-400' : ''
+                        }`}
+                      />
+                    );
+                  })}
+                  <label
+                    title="Custom color"
+                    className="relative w-7 h-7 rounded-full border border-dashed border-white/30 overflow-hidden cursor-pointer hover:scale-110 transition-transform"
+                    style={{ background: 'conic-gradient(#f43f5e, #f59e0b, #10b981, #3b82f6, #a855f7, #f43f5e)' }}
+                  >
+                    <input
+                      type="color"
+                      value={/^#[0-9a-f]{6}$/i.test(body.color) ? body.color : '#3b82f6'}
+                      onChange={(e) => onUpdateBody(body.id, { color: e.target.value })}
+                      aria-label="Custom color"
+                      className="absolute inset-0 opacity-0 cursor-pointer"
                     />
+                  </label>
+                </div>
+              </Field>
+            </>
+          ) : (
+            <EmptyState title="Nothing selected" text="Select a body to change its material and color." />
+          ))}
+
+        {/* ---------------- Bodies ---------------- */}
+        {tab === 'bodies' && (
+          <>
+            {selectedBodyIds.length > 1 && (
+              <div className="flex items-center justify-between rounded-xl bg-accent-500/10 border border-accent-400/25 px-3 py-2">
+                <span className="text-xs font-medium text-accent-200">{selectedBodyIds.length} selected</span>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={onGroupSelected} className="h-7 px-2.5 rounded-md bg-white/10 hover:bg-white/16 text-xs font-medium flex items-center gap-1.5">
+                    <Boxes size={13} /> Group
+                  </button>
+                  <button type="button" onClick={onMergeSelected} className="h-7 px-2.5 rounded-md bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5">
+                    <Merge size={13} /> Union
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {groups.length > 0 && (
+              <Field label="Groups">
+                <div className="flex flex-col gap-1">
+                  {groups.map((g) => (
+                    <div key={g.id} className="h-9 px-3 rounded-lg bg-white/4 flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <Boxes size={14} className="text-slate-400 shrink-0" />
+                        <span className="truncate">{g.name}</span>
+                        <span className="text-xs text-slate-500 shrink-0">{g.bodyIds.length}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUngroup(g.id)}
+                        aria-label={`Ungroup ${g.name}`}
+                        title="Ungroup"
+                        className="p-1 rounded text-slate-400 hover:text-white"
+                      >
+                        <Ungroup size={14} />
+                      </button>
+                    </div>
                   ))}
                 </div>
-              </div>
-
-            </div>
-          ) : (
-            <div className="text-center py-10 text-slate-400 text-xs">
-              Select an object to modify its physical material or pigment.
-            </div>
-          )
-        )}
-
-        {/* TAB 3: BODIES & ASSEMBLIES */}
-        {activeTab === 'layers' && (
-          <div className="flex flex-col gap-4">
-            
-            {/* Multi-selection Bar */}
-            {selectedBodyIds.length > 1 && (
-              <div className="p-3 bg-white/5 border border-white/10 rounded-xl flex items-center justify-between text-xs">
-                <span className="font-medium text-cyan-300">{selectedBodyIds.length} solids selected</span>
-                <div className="flex items-center gap-2">
-                  {onGroupSelected && (
-                    <button
-                      onClick={onGroupSelected}
-                      className="px-2 py-1 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded font-semibold text-[11px] cursor-pointer"
-                    >
-                      Group
-                    </button>
-                  )}
-                  {onMergeSelected && (
-                    <button
-                      onClick={onMergeSelected}
-                      className="px-2 py-1 bg-purple-500 hover:bg-purple-400 text-white rounded font-semibold text-[11px] cursor-pointer"
-                    >
-                      Merge
-                    </button>
-                  )}
-                </div>
-              </div>
+              </Field>
             )}
 
-            {/* Assemblies List */}
-            {groups.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-slate-400 font-medium">Assemblies ({groups.length})</span>
-                {groups.map((grp) => (
-                  <div
-                    key={grp.id}
-                    className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs"
-                  >
-                    <div className="flex items-center gap-2">
-                      <FolderPlus size={14} className="text-blue-400" />
-                      <span className="font-medium text-white">{grp.name}</span>
-                      <span className="text-[10px] text-slate-400">({grp.bodyIds.length} parts)</span>
-                    </div>
-                    {onUngroup && (
-                      <button
-                        onClick={() => onUngroup(grp.id)}
-                        className="text-slate-400 hover:text-white p-1 rounded cursor-pointer"
-                        title="Ungroup assembly"
-                      >
-                        <Ungroup size={13} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
+            {bodies.length === 0 ? (
+              <EmptyState title="No bodies yet" text="Draw a sketch and pull it into a solid, or load the sample scene." />
+            ) : (
+              <Field label="All bodies">
+                <ul className="flex flex-col gap-1">
+                  {bodies.map((b) => {
+                    const selected = selectedBodyIds.includes(b.id);
+                    return (
+                      <li key={b.id}>
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => onSelectBody(b.id, e.shiftKey || e.metaKey || e.ctrlKey)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              onSelectBody(b.id, e.shiftKey);
+                            }
+                          }}
+                          className={`group h-10 pl-2.5 pr-1.5 rounded-lg flex items-center gap-2.5 text-sm cursor-pointer transition-colors ${
+                            selected ? 'bg-accent-500/15 ring-1 ring-accent-400/50' : 'hover:bg-white/6'
+                          } ${b.visible ? '' : 'opacity-50'}`}
+                        >
+                          <span
+                            className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
+                            style={{ backgroundColor: b.color }}
+                          />
+                          <span className="flex-1 truncate">{b.name}</span>
+                          <span className="text-xs text-slate-500 tabular-nums shrink-0">{b.extrusionHeight} mm</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectBody(b.id, true);
+                            }}
+                            aria-label={selected ? `Remove ${b.name} from selection` : `Add ${b.name} to selection`}
+                            aria-pressed={selected}
+                            title="Add to / remove from selection"
+                            className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                              selected ? 'bg-accent-500 border-accent-400 text-white' : 'border-white/20 text-transparent hover:border-white/40'
+                            }`}
+                          >
+                            <svg viewBox="0 0 12 12" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M2.5 6.5l2.5 2.5 4.5-5" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onUpdateBody(b.id, { visible: !b.visible });
+                            }}
+                            aria-label={b.visible ? `Hide ${b.name}` : `Show ${b.name}`}
+                            className="p-1 rounded text-slate-400 hover:text-white shrink-0"
+                          >
+                            {b.visible ? <Eye size={14} /> : <EyeOff size={14} />}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="text-[11px] text-slate-600 mt-1">Shift-click to select several bodies.</p>
+              </Field>
             )}
-
-            {/* Bodies List */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs text-slate-400 font-medium">All Solids ({bodies.length})</span>
-              {bodies.map((body) => {
-                const isSelected = selectedBodyId === body.id || selectedBodyIds.includes(body.id);
-                return (
-                  <div
-                    key={body.id}
-                    onClick={() => onSelectBody(body.id)}
-                    className={`p-2.5 rounded-xl border flex items-center justify-between text-xs transition cursor-pointer ${
-                      isSelected
-                        ? 'bg-cyan-500/15 border-cyan-400/60 text-white shadow-sm'
-                        : 'bg-white/[0.02] border-white/5 text-slate-300 hover:bg-white/5 hover:border-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span
-                        className="w-3 h-3 rounded-full shrink-0"
-                        style={{ backgroundColor: body.color }}
-                      />
-                      <span className="font-medium truncate">{body.name}</span>
-                      <span className="text-[10px] text-slate-400 font-mono tabular-nums shrink-0">
-                        {body.extrusionHeight}mm
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => onUpdateBody(body.id, { visible: !body.visible })}
-                        className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
-                        title={body.visible ? 'Hide body' : 'Show body'}
-                      >
-                        {body.visible ? <Eye size={13} /> : <EyeOff size={13} className="text-slate-600" />}
-                      </button>
-                      <button
-                        onClick={() => onDeleteBody(body.id)}
-                        className="p-1 text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                        title="Delete body"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-          </div>
+          </>
         )}
 
-        {/* TAB 4: EXPORT & 3D PRINTING */}
-        {activeTab === 'export' && (
-          <div className="flex flex-col gap-4">
-            <div className="p-3 bg-white/[0.03] border border-white/5 rounded-xl flex flex-col gap-2">
-              <span className="text-xs font-semibold text-white">3D Printing Export</span>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Export solids directly to industry-standard 3D formats compatible with slicers (Cura, PrusaSlicer, Bambu Studio) and 3D modeling packages (Blender, Fusion 360).
-              </p>
-            </div>
-
+        {/* ---------------- Export ---------------- */}
+        {tab === 'export' && (
+          <>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Exports every visible body exactly as shown, including cutouts and bevels. STL is Z-up, ready for slicers.
+            </p>
             <div className="flex flex-col gap-2">
               <button
-                onClick={handleExportSTL}
-                className="w-full py-2.5 px-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+                type="button"
+                onClick={() => runExport(exportSTL)}
+                disabled={bodies.length === 0}
+                className="h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
               >
-                <Download size={14} />
-                <span>Export Standard STL (3D Print)</span>
+                <Download size={15} /> Export STL
               </button>
-
-              <button
-                onClick={handleExportOBJ}
-                className="w-full py-2.5 px-3 bg-white/5 hover:bg-white/10 text-white font-medium rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2 border border-white/10"
-              >
-                <FileDown size={14} />
-                <span>Export Wavefront OBJ</span>
+              <button type="button" onClick={() => runExport(exportOBJ)} disabled={bodies.length === 0} className={secondaryButton}>
+                <Download size={15} /> Export OBJ
               </button>
-
-              <button
-                onClick={handleExportJSON}
-                className="w-full py-2 px-3 bg-transparent hover:bg-white/5 text-slate-400 hover:text-white rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2"
-              >
-                <FolderDown size={14} />
-                <span>Export Workspace JSON</span>
+              <button type="button" onClick={() => runExport(exportJSON)} disabled={bodies.length === 0} className={secondaryButton}>
+                <FileJson size={15} /> Save as JSON
               </button>
             </div>
+            {exportNote && <p className="text-xs text-amber-300">{exportNote}</p>}
 
-            <div className="pt-2 border-t border-white/5">
+            <div className="mt-2 pt-4 border-t border-white/8 flex flex-col gap-2">
+              <button type="button" onClick={onLoadDemo} className={secondaryButton}>
+                <Sparkles size={15} /> Load sample scene
+              </button>
               <button
+                type="button"
                 onClick={onClearWorkspace}
-                className="w-full py-2 px-3 text-rose-400/80 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                disabled={bodies.length === 0}
+                className={`${secondaryButton} text-rose-300 hover:bg-rose-500/15`}
               >
-                <RotateCcw size={13} />
-                <span>Reset All Solids</span>
+                <RotateCcw size={15} /> Clear workspace
               </button>
             </div>
-          </div>
+          </>
         )}
-
       </div>
     </div>
   );

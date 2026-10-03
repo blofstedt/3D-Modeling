@@ -4,184 +4,124 @@
  */
 
 import React from 'react';
-import { Body3D } from '../types';
-import { Move3d, Plus, Minus, ArrowUp, ArrowDown, Check, X, ArrowUpDown } from 'lucide-react';
+import { ArrowUpDown, Check, Minus, Plus } from 'lucide-react';
 import { motion } from 'motion/react';
+import { Body3D } from '../types';
+import { EditPart } from './ModelViewer3D';
 
 interface MoveFaceControlsProps {
-  activeEditPart: {
-    bodyId: string;
-    type: 'face' | 'edge' | 'corner';
-    faceType?: 'top' | 'side';
-    startIndex?: number;
-    endIndex?: number;
-    index?: number;
-  } | null;
-  body: Body3D | null;
+  activeEditPart: EditPart | null;
+  body: Body3D;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
   onClose: () => void;
 }
 
-export default function MoveFaceControls({
-  activeEditPart,
-  body,
-  onUpdateBody,
-  onClose,
-}: MoveFaceControlsProps) {
-  if (!body) return null;
+const step =
+  'h-8 min-w-9 px-2 rounded-lg bg-white/6 hover:bg-white/12 text-xs font-medium text-slate-100 tabular-nums transition-colors flex items-center justify-center gap-1';
 
-  // Default to top face if no specific part selected
-  const isTopFace = !activeEditPart || activeEditPart.type === 'face' || activeEditPart.faceType === 'top';
-  const isSideFace = Boolean(activeEditPart && (activeEditPart.type === 'edge' || activeEditPart.faceType === 'side'));
+export default function MoveFaceControls({ activeEditPart, body, onUpdateBody, onClose }: MoveFaceControlsProps) {
+  const wallSelected =
+    activeEditPart?.bodyId === body.id &&
+    activeEditPart.type === 'edge' &&
+    activeEditPart.startIndex !== undefined &&
+    activeEditPart.endIndex !== undefined;
 
-  // Handler to adjust height (Top Face Push/Pull)
-  const adjustHeight = (delta: number) => {
-    const newHeight = Math.max(5, Math.min(500, Math.round(body.extrusionHeight + delta)));
-    onUpdateBody(body.id, { extrusionHeight: newHeight });
-  };
+  const setHeight = (value: number) =>
+    onUpdateBody(body.id, { extrusionHeight: Math.max(2, Math.min(600, Math.round(value))) });
 
-  // Handler to push/pull side face outward or inward
-  const offsetSideWall = (deltaDistance: number) => {
-    if (!isSideFace || !activeEditPart || activeEditPart.startIndex === undefined || activeEditPart.endIndex === undefined) return;
-    const pts = [...body.points];
-    const n = pts.length;
-    const i1 = activeEditPart.startIndex;
-    const i2 = activeEditPart.endIndex;
-
+  const offsetWall = (distance: number) => {
+    if (!wallSelected || !activeEditPart) return;
+    const i1 = activeEditPart.startIndex!;
+    const i2 = activeEditPart.endIndex!;
+    const pts = body.points.map((p) => ({ ...p }));
     const p1 = pts[i1];
     const p2 = pts[i2];
-
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = Math.hypot(dx, dy);
+    const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
     if (len < 0.001) return;
+    const nx = -(p2.y - p1.y) / len;
+    const ny = (p2.x - p1.x) / len;
+    const move = (p: { x: number; y: number }) => ({
+      x: Math.round((p.x + nx * distance) * 10) / 10,
+      y: Math.round((p.y + ny * distance) * 10) / 10,
+    });
+    pts[i1] = move(p1);
+    pts[i2] = move(p2);
 
-    // Normal vector perpendicular to edge
-    const nx = -dy / len;
-    const ny = dx / len;
-
-    pts[i1] = {
-      x: Math.round((p1.x + nx * deltaDistance) * 10) / 10,
-      y: Math.round((p1.y + ny * deltaDistance) * 10) / 10,
-    };
-    pts[i2] = {
-      x: Math.round((p2.x + nx * deltaDistance) * 10) / 10,
-      y: Math.round((p2.y + ny * deltaDistance) * 10) / 10,
-    };
-
-    onUpdateBody(body.id, { points: pts });
+    const base = body.basePoints;
+    if (base && base.length === body.points.length) {
+      const nextBase = base.map((p) => ({ ...p }));
+      nextBase[i1] = move(base[i1]);
+      nextBase[i2] = move(base[i2]);
+      onUpdateBody(body.id, { points: pts, basePoints: nextBase });
+    } else {
+      onUpdateBody(body.id, { points: pts, basePoints: pts, cornerRadius: 0 });
+    }
   };
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 15, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 15, scale: 0.98 }}
-      className="absolute bottom-20 left-1/2 -translate-x-1/2 z-35 bg-[#090d16]/95 border border-white/10 backdrop-blur-2xl px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3.5 text-white max-w-lg w-[92%] sm:w-auto"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      className="flex items-center gap-3 px-3 py-2 rounded-2xl bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl max-w-full flex-wrap justify-center"
     >
-      {/* Icon badge */}
-      <div className="p-2 bg-cyan-500/15 text-cyan-400 border border-cyan-400/20 rounded-xl shrink-0">
-        <ArrowUpDown size={17} />
+      <div className="flex items-center gap-2 text-[13px]">
+        <ArrowUpDown size={15} className="text-accent-300" />
+        <span className="font-semibold text-white">{wallSelected ? 'Wall offset' : 'Height'}</span>
+        <span className="text-slate-500 truncate max-w-32">{body.name}</span>
       </div>
 
-      {/* Info & Step Controls */}
-      <div className="flex flex-col gap-1.5 flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 truncate">
-            <span className="text-xs font-semibold text-white tracking-tight">
-              {isTopFace ? 'Top Face Extrude' : 'Side Wall Offset'}
-            </span>
-            <span className="text-[11px] text-white/45 truncate">
-              {body.name}
-            </span>
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <input
-              type="number"
-              min="2"
-              max="600"
-              value={body.extrusionHeight}
-              onChange={(e) => {
-                const val = parseInt(e.target.value);
-                if (!isNaN(val)) onUpdateBody(body.id, { extrusionHeight: Math.max(2, Math.min(600, val)) });
-              }}
-              className="w-14 px-1.5 py-0.5 bg-slate-800/90 border border-cyan-400/50 rounded text-xs font-mono font-bold text-cyan-300 text-right focus:outline-none focus:border-cyan-300"
-            />
-            <span className="text-[11px] font-mono text-cyan-300/80">mm</span>
-          </div>
+      {wallSelected ? (
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => offsetWall(-5)} className={step} title="Push wall in 5 mm">
+            <Minus size={12} /> 5
+          </button>
+          <button type="button" onClick={() => offsetWall(-1)} className={step} title="Push wall in 1 mm">
+            <Minus size={12} /> 1
+          </button>
+          <button type="button" onClick={() => offsetWall(1)} className={step} title="Pull wall out 1 mm">
+            <Plus size={12} /> 1
+          </button>
+          <button type="button" onClick={() => offsetWall(5)} className={step} title="Pull wall out 5 mm">
+            <Plus size={12} /> 5
+          </button>
         </div>
+      ) : (
+        <div className="flex items-center gap-1.5">
+          <input
+            type="range"
+            min={5}
+            max={Math.max(250, body.extrusionHeight)}
+            step={1}
+            value={body.extrusionHeight}
+            onChange={(e) => setHeight(parseFloat(e.target.value))}
+            aria-label="Height"
+            className="w-28 sm:w-36 h-1"
+          />
+          <input
+            type="number"
+            min={2}
+            max={600}
+            value={body.extrusionHeight}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (!Number.isNaN(v)) setHeight(v);
+            }}
+            aria-label="Height in millimetres"
+            className="w-16 h-8 px-2 rounded-lg bg-white/6 border border-white/8 text-sm text-right text-white tabular-nums focus:outline-none focus:border-accent-400"
+          />
+          <span className="text-xs text-slate-500">mm</span>
+        </div>
+      )}
 
-        {isTopFace ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <input
-              type="range"
-              min="5"
-              max="250"
-              step="5"
-              value={body.extrusionHeight}
-              onChange={(e) => onUpdateBody(body.id, { extrusionHeight: parseInt(e.target.value) })}
-              className="w-28 sm:w-36 h-1 bg-white/15 rounded-lg appearance-none cursor-pointer accent-cyan-400 focus:outline-none"
-            />
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => adjustHeight(-10)}
-                className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition"
-                title="Decrease height by 10mm"
-              >
-                -10
-              </button>
-              <button
-                onClick={() => adjustHeight(-5)}
-                className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition"
-                title="Decrease height by 5mm"
-              >
-                -5
-              </button>
-              <button
-                onClick={() => adjustHeight(5)}
-                className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition"
-                title="Increase height by 5mm"
-              >
-                +5
-              </button>
-              <button
-                onClick={() => adjustHeight(10)}
-                className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition"
-                title="Increase height by 10mm"
-              >
-                +10
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => offsetSideWall(-5)}
-              className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition flex items-center gap-1"
-              title="Push wall inward by 5mm"
-            >
-              <Minus size={11} /> -5mm
-            </button>
-            <button
-              onClick={() => offsetSideWall(5)}
-              className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-lg text-xs font-mono cursor-pointer transition flex items-center gap-1"
-              title="Pull wall outward by 5mm"
-            >
-              <Plus size={11} /> +5mm
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="h-7 w-[1px] bg-white/10 shrink-0" />
-
-      {/* Done button */}
       <button
+        type="button"
         onClick={onClose}
-        className="p-1.5 text-white/50 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer shrink-0"
-        title="Close Inspector"
+        aria-label="Done"
+        title="Done (Esc)"
+        className="h-8 px-3 rounded-lg bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5 transition-colors"
       >
-        <Check size={16} />
+        <Check size={14} strokeWidth={2.5} /> Done
       </button>
     </motion.div>
   );
