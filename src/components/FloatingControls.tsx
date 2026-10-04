@@ -48,7 +48,7 @@ export function EdgePanel({
   const set = (v: number) => onEdgeChange(edges, { size: Math.max(0, Math.min(MAX_BEVEL_SIZE, v)) });
 
   return (
-    <PanelShell title={edges.length > 1 ? `${edges.length} ${noun.toLowerCase()}s` : noun} sub={edges.length === 1 ? 'Shift-click to add more' : undefined}>
+    <PanelShell title={edges.length > 1 ? `${edges.length} ${noun.toLowerCase()}s` : noun}>
       <div className="flex items-center gap-2">
         <input
           type="range"
@@ -101,7 +101,7 @@ export function FacePanel({
   const elev = body.elevation ?? 0;
   const title = face.kind === 'top' ? 'Top face' : face.kind === 'bottom' ? 'Bottom face' : `Wall ${(face.index ?? 0) + 1}`;
   return (
-    <PanelShell title={title} sub="Drag it to extrude">
+    <PanelShell title={title}>
       <div className="flex items-end gap-2">
         {face.kind === 'top' && (
           <NumberBox label="Height" value={body.extrusionHeight} min={2} max={600} onCommit={(v) => onExtrudeFace(face, v - body.extrusionHeight)} />
