@@ -68,7 +68,7 @@ src/
     ModelViewer3D.tsx     three.js scene, direct-manipulation handles, hit-testing, edge picking, camera
     SketchCanvas.tsx      2D sketch canvas (pan / zoom / snapping, reference outlines)
     ToolRail.tsx          left command rail (sketch, isolate, group, union, cut, repeat)
-    ContextBar.tsx        bar for the selection: exact values and actions
+    FloatingControls.tsx  edge bevel panel pinned to the selected edge
     Sidebar.tsx           inspector: properties, material, bodies, export
     ViewCube.tsx          orientation cube
     *Modal.tsx            cut and pattern dialogs

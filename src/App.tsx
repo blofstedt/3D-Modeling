@@ -20,7 +20,6 @@ import SketchCanvas, { SketchTool } from './components/SketchCanvas';
 import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
-import ContextBar from './components/ContextBar';
 import { EdgePanel } from './components/FloatingControls';
 import CutModal from './components/CutModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
@@ -28,7 +27,7 @@ import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
 import { applyEdgeChange, edgeKey } from './utils/edges';
-import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
+import { BodyTransform, transformBody } from './utils/transform';
 import {
   Box,
   Focus,
@@ -244,15 +243,6 @@ export default function App() {
     },
     [setBodies]
   );
-
-  const moveSelection = (dx: number, dy: number, dz: number, angle = 0) => {
-    const b = selectionBounds(selectedBodies);
-    if (b) transformBodies(selectedBodyIds, { dx, dy, dz, angle, cx: b.centerX, cy: b.centerY });
-  };
-
-  const handleResize = (width: number, depth: number) => {
-    if (selectedBody) handleUpdateBody(selectedBody.id, resizeBody(selectedBody, width, depth));
-  };
 
   const handleDeleteSelected = () => {
     if (!selectedBodyIds.length) return;
@@ -542,15 +532,16 @@ export default function App() {
 
   const topOf = (b: Body3D) => Math.round(((b.elevation ?? 0) + b.extrusionHeight) * 100) / 100;
 
+  /** New sketch: on the top face when that face is selected, otherwise on the ground. */
+  const newSketch = () => {
+    if (selectedBody && selectedFace?.kind === 'top' && selectedFace.bodyId === selectedBody.id) sketchOnTopOfSelection();
+    else openSketch(0);
+  };
+
   const sketchOnTopOfSelection = () => {
     if (!selectedBody) return;
     openSketch(topOf(selectedBody));
     notify(`Sketching on top of ${selectedBody.name}.`);
-  };
-
-  const editOutline = () => {
-    if (!selectedBody) return;
-    openSketch(topOf(selectedBody), 'select');
   };
 
   const doUndo = () => {
@@ -609,7 +600,7 @@ export default function App() {
         setEditorMode('view3d');
         break;
       case 'n':
-        openSketch(0);
+        newSketch();
         break;
       case 'i':
         toggleIsolate();
@@ -809,28 +800,6 @@ export default function App() {
                   }
                 />
 
-                <ContextBar
-                  selected={selectedBodies}
-                  edges={selectedEdges}
-                  bodyCount={displayBodies.length}
-                  isolated={!!isolatedIds}
-                  onUpdateBody={handleUpdateBody}
-                  onEdgeChange={handleEdgeChange}
-                  onClearEdges={() => setSelectedEdges([])}
-                  onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
-                  onRotate={(deg) => moveSelection(0, 0, 0, (deg * Math.PI) / 180)}
-                  onResize={handleResize}
-                  onSketchOnTop={sketchOnTopOfSelection}
-                  onEditOutline={editOutline}
-                  onDuplicate={() => selectedBodyId && handleCloneBody(selectedBodyId)}
-                  onDelete={handleDeleteSelected}
-                  onGroup={handleGroupSelected}
-                  onUnion={handleMergeSelected}
-                  onCut={handleOpenCut}
-                  onPattern={handleOpenRepeat}
-                  onIsolate={toggleIsolate}
-                />
-
                 {displayBodies.length === 0 && (
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="pointer-events-auto max-w-xs text-center flex flex-col items-center gap-4 p-6">
@@ -869,7 +838,7 @@ export default function App() {
               selectedCount={selectedBodyIds.length}
               bodyCount={displayBodies.length}
               isolated={!!isolatedIds}
-              onSketch={() => openSketch(0)}
+              onSketch={newSketch}
               onIsolate={toggleIsolate}
               onGroup={handleGroupSelected}
               onUnion={handleMergeSelected}
