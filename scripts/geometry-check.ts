@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
-import { buildOutline, sideRun, withOutline } from '../src/utils/outline';
+import { buildOutline, sideRun, wallEnds, withOutline } from '../src/utils/outline';
 import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
 import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
@@ -205,6 +205,13 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const moved = { ...plate, ...transformBody(plate, { dx: 10, dy: 5, dz: 0, angle: 0.4, cx: 0, cy: 0 }) };
   const roundedMoved = { ...roundedCorner, ...transformBody(roundedCorner, { dx: 10, dy: 5, dz: 0, angle: 0.4, cx: 0, cy: 0 }) };
   check('moving keeps hole rounding editable', near(edgeSize(roundedMoved, corner), 8, 0.01) && !!moved.holes);
+}
+
+// A cylinder is a square rounded all the way: its walls still have to be grabbable to resize it.
+{
+  const cyl = body({ ...withOutline({ points: rect(-20, -20, 20, 20) }, { cornerRadii: [20, 20, 20, 20] }) });
+  const ends = wallEnds(cyl, 0);
+  check('a cylinder wall still has handle ends', !!ends && Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y) > 30);
 }
 
 if (failures) {

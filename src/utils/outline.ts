@@ -237,7 +237,14 @@ export function wallEnds(
     flip = true;
   } else outline = getOutline(body);
   const idx = outline.roles.map((r, k) => (r.kind === 'side' && r.index === local ? k : -1)).filter((k) => k >= 0);
-  if (!idx.length) return null;
+  const flat = idx.length ? Math.hypot(outline.points[(idx[idx.length - 1] + 1) % outline.points.length].x - outline.points[idx[0]].x, outline.points[(idx[idx.length - 1] + 1) % outline.points.length].y - outline.points[idx[0]].y) : 0;
+  const sharp = isHoleIndex(side) ? holeLoops(body)[holeOf(side)]?.base : getBase(body);
+  const sharpLen = sharp && local < sharp.length ? Math.hypot(sharp[(local + 1) % sharp.length].x - sharp[local].x, sharp[(local + 1) % sharp.length].y - sharp[local].y) : 0;
+  if (flat < 0.3 * sharpLen) {
+    // A side that is mostly rounded away (a cylinder): use the sharp side the rounding came from, whose middle sits on the curve.
+    if (!sharp || local >= sharp.length) return null;
+    return { a: sharp[local], b: sharp[(local + 1) % sharp.length], winding: (flip ? -outline.winding : outline.winding) as 1 | -1 };
+  }
   return {
     a: outline.points[idx[0]],
     b: outline.points[(idx[idx.length - 1] + 1) % outline.points.length],
