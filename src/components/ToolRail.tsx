@@ -48,7 +48,7 @@ export default function ToolRail(props: ToolRailProps) {
   return (
     <nav
       aria-label="Actions"
-      className="absolute z-30 bottom-3 left-3 right-3 md:right-auto md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:left-3 flex md:flex-col items-center gap-1 p-1.5 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto md:overflow-visible no-scrollbar"
+      className="absolute z-30 bottom-3 left-1/2 -translate-x-1/2 max-w-[calc(100%-1.5rem)] md:translate-x-0 md:right-auto md:bottom-auto md:top-1/2 md:-translate-y-1/2 md:left-3 flex md:flex-col items-center gap-1 p-1.5 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl overflow-x-auto md:overflow-visible no-scrollbar"
     >
       {groups.map((group, gi) => (
         <React.Fragment key={gi}>

@@ -20,7 +20,6 @@ import SketchCanvas, { SketchTool } from './components/SketchCanvas';
 import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
-import { EdgePanel } from './components/FloatingControls';
 import CutModal from './components/CutModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
@@ -793,11 +792,6 @@ export default function App() {
                   onUpdateRepeatConfig={setRepeatConfig}
                   onDragStateChange={history.hold}
                   onHint={setHint}
-                  floating={
-                    selectedBody && selectedBodies.length === 1 && selectedEdges.length ? (
-                      <EdgePanel key="edge" body={selectedBody} edges={selectedEdges} onEdgeChange={handleEdgeChange} onClear={() => setSelectedEdges([])} />
-                    ) : null
-                  }
                 />
 
                 {displayBodies.length === 0 && (

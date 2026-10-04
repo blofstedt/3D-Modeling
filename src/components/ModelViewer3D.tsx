@@ -6,6 +6,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnimatePresence } from 'motion/react';
+import { BevelPicker } from './FloatingControls';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
@@ -14,7 +15,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
 import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, moveBottom, sameFace } from '../utils/faces';
-import { EdgePath, edgeKey, edgeSize, listEdges } from '../utils/edges';
+import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, listEdges } from '../utils/edges';
 import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -29,6 +30,9 @@ type Hit =
 interface Drag {
   kind: 'height' | 'bottom' | 'wall' | 'edge-size' | 'move' | 'rotate';
   startClientY: number;
+  startClientX?: number;
+  /** Furthest the pointer travelled from where it went down (px): tells a tap from a drag. */
+  moved?: number;
   mmPerPixel: number;
   bodyId?: string;
   planeY?: number;
@@ -73,8 +77,6 @@ export interface ModelViewer3DProps {
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
   onHint?: (text: string) => void;
-  /** Controls for the current selection; the viewer pins them next to it and follows the camera. */
-  floating?: React.ReactNode;
 }
 
 const ACCENT = '#8b7cf6';
@@ -260,7 +262,6 @@ export default function ModelViewer3D({
   onUpdateRepeatConfig,
   onDragStateChange,
   onHint,
-  floating,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
@@ -278,6 +279,9 @@ export default function ModelViewer3D({
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
+  const mmPerPixelRef = useRef<() => number>(() => 1);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerDrag = useRef<{ startY: number; start: number; sels: EdgeSel[] } | null>(null);
   const placePanelRef = useRef<() => void>(() => {});
   /** When the handles last popped in (ms), and the selection they popped in for. */
   const popRef = useRef<{ start: number } | null>(null);
@@ -612,7 +616,7 @@ export default function ModelViewer3D({
             : hit.gizmo === 'offset-wall'
               ? 'Drag to push or pull this wall'
               : hit.gizmo === 'edge-size'
-                ? 'Drag to change the bevel size'
+                ? 'Tap to choose curved or flat · drag to change the size'
                 : 'Drag to rotate';
       } else if (hit?.type === 'edge') {
         cursor = 'pointer';
@@ -640,6 +644,7 @@ export default function ModelViewer3D({
       const dist = camera.position.distanceTo(controls.target);
       return (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / (renderer.domElement.clientHeight || 1);
     };
+    mmPerPixelRef.current = mmPerPixel;
 
     const resetPreviews = () => {
       entriesRef.current.forEach((entry) => {
@@ -710,7 +715,7 @@ export default function ModelViewer3D({
 
     const startGizmoDrag = (hit: Extract<Hit, { type: 'gizmo' }>, e: PointerEvent): Drag | null => {
       const body = bodyOf(hit.bodyId);
-      const common = { startClientY: e.clientY, mmPerPixel: mmPerPixel() };
+      const common = { startClientY: e.clientY, startClientX: e.clientX, mmPerPixel: mmPerPixel() };
       switch (hit.gizmo) {
         case 'extrude-height':
           return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
@@ -758,6 +763,7 @@ export default function ModelViewer3D({
       const rect = renderer.domElement.getBoundingClientRect();
       let text = '';
       lowerQualityWhileBusy();
+      if (d.startClientX !== undefined) d.moved = Math.max(d.moved ?? 0, Math.hypot(m.x - d.startClientX, m.y - d.startClientY));
 
       if (d.kind === 'height') {
         const next = clamp(Math.round(d.initialHeight! + (d.startClientY - m.y) * d.mmPerPixel), 2, 600);
@@ -789,6 +795,8 @@ export default function ModelViewer3D({
           text = delta === 0 ? 'Bottom unchanged' : `Bottom ${delta > 0 ? 'down' : 'up'} ${Math.abs(delta)} mm`;
         }
       } else if (d.kind === 'edge-size') {
+        if ((d.moved ?? 0) <= CLICK_SLOP_PX) return; // a tap opens the picker; only a real drag resizes
+        setPickerOpen(false);
         const raw = d.initialSize! + (d.startClientY - m.y) * d.mmPerPixel * 0.35;
         const next = clamp(Math.round(raw * 2) / 2, 0, 30);
         live.current.onEdgeChange(d.sels!, { size: next });
@@ -850,6 +858,7 @@ export default function ModelViewer3D({
       drag = null;
       controls.enabled = true;
       setDragLabel(null);
+      if (d.kind === 'edge-size' && (d.moved ?? 0) <= CLICK_SLOP_PX) setPickerOpen((open) => !open);
 
       // Commit the previewed change in one update.
       if (d.kind === 'move' && (d.dx || d.dy)) {
@@ -1384,8 +1393,6 @@ export default function ModelViewer3D({
         });
       }
 
-      if (face && heightArrowRef.current) anchorRef.current = { pos: heightArrowRef.current.position.clone(), lift: 72 };
-
       // A dot at the middle of each wall: push or pull it.
       const base = getBase(body);
       if (base.length <= MAX_WALL_HANDLES) {
@@ -1445,7 +1452,7 @@ export default function ModelViewer3D({
         knobHit.scale.setScalar(9 * s);
         handle.add(knob, knobHit);
         gizmoGroup.add(handle);
-        anchorRef.current = { pos: handle.position.clone(), lift: 36 };
+        anchorRef.current = { pos: handle.position.clone(), lift: 40 };
       }
     }
 
@@ -1494,11 +1501,13 @@ export default function ModelViewer3D({
     invalidateRef.current();
   }, [repeatConfig, isSceneReady]);
 
-  // A new panel (or new contents) needs placing even if the camera is still.
+  useEffect(() => setPickerOpen(false), [selectedEdges]);
+
+  // The picker needs placing even if the camera is still.
   useLayoutEffect(() => {
     invalidateRef.current();
     placePanelRef.current();
-  }, [floating, isSceneReady]);
+  }, [pickerOpen, isSceneReady]);
 
   // The idle hint depends on selection; hover text takes over while the pointer is over something.
   useEffect(() => {
@@ -1514,6 +1523,34 @@ export default function ModelViewer3D({
     );
   }, [selectedBodyIds, selectedFace, repeatConfig.isDrawingLine, onHint]);
 
+  const pickerBody = selectedEdges.length ? bodies.find((b) => b.id === selectedEdges[0].bodyId) : undefined;
+  const pickerStyle: BevelStyle = pickerBody ? edgeStyle(pickerBody, selectedEdges.find((e) => e.kind !== 'corner') ?? selectedEdges[0]) ?? 'round' : 'round';
+
+  // Press a picker button and drag: that profile, sized by the drag.
+  const beginPickerDrag = (style: BevelStyle, e: React.PointerEvent<HTMLElement>) => {
+    if (!pickerBody) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const start = Math.max(edgeSize(pickerBody, selectedEdges[0]), DEFAULT_BEVEL_SIZE);
+    pickerDrag.current = { startY: e.clientY, start, sels: selectedEdges };
+    onDragStateChange?.(true);
+    onEdgeChange(selectedEdges, { style, size: start });
+  };
+  const movePickerDrag = (e: React.PointerEvent<HTMLElement>) => {
+    const d = pickerDrag.current;
+    if (!d) return;
+    const size = clamp(Math.round((d.start + (d.startY - e.clientY) * mmPerPixelRef.current() * 0.35) * 2) / 2, 0, MAX_BEVEL_SIZE);
+    onEdgeChange(d.sels, { size });
+    const rect = mountRef.current?.getBoundingClientRect();
+    setDragLabel({ text: size > 0 ? `${size} mm` : 'No bevel', x: e.clientX - (rect?.left ?? 0) + 24, y: e.clientY - (rect?.top ?? 0) - 40 });
+  };
+  const endPickerDrag = () => {
+    if (!pickerDrag.current) return;
+    pickerDrag.current = null;
+    setDragLabel(null);
+    setPickerOpen(false);
+    onDragStateChange?.(false);
+  };
+
   const handleSelectCameraAngle = useCallback((face: CubeFace) => frameViewRef.current(face), []);
 
   return (
@@ -1521,7 +1558,11 @@ export default function ModelViewer3D({
       <div ref={mountRef} className="absolute inset-0" />
 
       <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
-        <AnimatePresence mode="wait">{floating}</AnimatePresence>
+        <AnimatePresence>
+          {pickerOpen && selectedEdges.length > 0 && (
+            <BevelPicker current={pickerStyle} onPress={beginPickerDrag} onMove={movePickerDrag} onRelease={endPickerDrag} />
+          )}
+        </AnimatePresence>
       </div>
 
       <ViewCube
