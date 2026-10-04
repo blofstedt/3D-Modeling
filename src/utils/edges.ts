@@ -28,6 +28,33 @@ export function listEdges(body: Body3D): EdgePath[] {
   return edges;
 }
 
+
+const effectiveSize = (body: Body3D, bevel: EdgeBevel | undefined) =>
+  bevel && bevel.size > 0 ? Math.min(bevel.size, body.extrusionHeight / 2 - 0.05) : 0;
+
+/** For an open run: where it starts and ends in the outline, and the sides that continue past each end. */
+function runEnds(outline: ReturnType<typeof getOutline>, run: number[], n: number) {
+  const inRun = new Set(run);
+  const m = outline.points.length;
+  const segIn = outline.roles.map((role) =>
+    role.kind === 'side' ? inRun.has(role.index) : inRun.has(role.index) && inRun.has((role.index - 1 + n) % n)
+  );
+  if (segIn.every(Boolean)) return null;
+  let start = segIn.findIndex((on, k) => on && !segIn[(k - 1 + m) % m]);
+  if (start < 0) return null;
+  let end = start;
+  for (let g = 0; g < m && segIn[(end + 1) % m]; g++) end++;
+  end %= m;
+  const before = outline.roles[(start - 1 + m) % m];
+  const after = outline.roles[(end + 1) % m];
+  return {
+    start,
+    end,
+    beforeSide: before.kind === 'side' ? before.index : -1,
+    afterSide: after.kind === 'side' ? after.index : -1,
+  };
+}
+
 function computeEdges(body: Body3D): EdgePath[] {
   const base = getBase(body);
   const n = base.length;
@@ -44,12 +71,18 @@ function computeEdges(body: Body3D): EdgePath[] {
     if (seen.has(id)) continue;
     seen.add(id);
     const { pts, closed } = runPath(outline, run, n);
+    const ends = closed ? null : runEnds(outline, run, n);
+    const m = outline.points.length;
+
     // Once an edge is beveled, the pickable/highlighted line lies on the bevel itself, not in the air at the old sharp edge.
     const lineFor = (kind: 'top' | 'bottom') => {
-      const bevel = findBevel(body, kind, id);
-      const inset = bevel && bevel.size > 0 ? Math.min(bevel.size, body.extrusionHeight / 2 - 0.05) * (bevel.style === 'round' ? 0.3 : 0.5) : 0;
+      const own = effectiveSize(body, findBevel(body, kind, id));
+      const ownBevel = findBevel(body, kind, id);
+      // A touch short of the true surface midpoint (0.29 round, 0.5 chamfer) so the line sits just outside it and never hides inside.
+      const inset = own > 0 ? own * (ownBevel!.style === 'round' ? 0.18 : 0.4) : 0;
       const y0 = kind === 'top' ? top : bottom;
-      return pts.map((p, i) => {
+      const sign = kind === 'top' ? -1 : 1;
+      const line = pts.map((p, i) => {
         if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
         const prev = i > 0 ? pts[i - 1] : closed ? pts[pts.length - 1] : null;
         const next = i < pts.length - 1 ? pts[i + 1] : closed ? pts[0] : null;
@@ -58,20 +91,71 @@ function computeEdges(body: Body3D): EdgePath[] {
         const nx = ((a?.x ?? b!.x) + (b?.x ?? a!.x)) / 2;
         const ny = ((a?.y ?? b!.y) + (b?.y ?? a!.y)) / 2;
         const len = Math.hypot(nx, ny) || 1;
-        return { x: p.x - (nx / len) * inset, y: y0 + (kind === 'top' ? -inset : inset), z: -(p.y - (ny / len) * inset) };
+        return { x: p.x - (nx / len) * inset, y: y0 + sign * inset, z: -(p.y - (ny / len) * inset) };
       });
+      if (!ends || own > 0) return line;
+
+      // A neighbouring edge is beveled but this one is not: stop where its bevel starts, follow the bevel's profile
+      // curve across this wall, and meet the corner line where it now ends.
+      const detour = (atStart: boolean) => {
+        const nbSide = atStart ? ends.beforeSide : ends.afterSide;
+        if (nbSide < 0) return null;
+        const nbBevel = findBevel(body, kind, runId(sideRun(outline, n, nbSide)));
+        const r = effectiveSize(body, nbBevel);
+        if (!nbBevel || r <= 0) return null;
+        const vIdx = atStart ? ends.start : (ends.end + 1) % m;
+        const V = outline.points[vIdx];
+        const far = atStart ? outline.points[(ends.start - 1 + m) % m] : outline.points[(ends.end + 2) % m];
+        const dn = { x: far.x - V.x, y: far.y - V.y };
+        const dl = Math.hypot(dn.x, dn.y) || 1;
+        dn.x /= dl;
+        dn.y /= dl;
+        const outN = atStart ? outwardNormal(far, V, outline.winding) : outwardNormal(V, far, outline.winding);
+        const nIn = { x: -outN.x, y: -outN.y };
+        const segA = atStart ? pts[0] : pts[pts.length - 2];
+        const segB = atStart ? pts[1] : pts[pts.length - 1];
+        const mOut = outwardNormal(segA, segB, outline.winding);
+        const dm = dn.x * mOut.x + dn.y * mOut.y;
+        const nm = nIn.x * mOut.x + nIn.y * mOut.y;
+        const steps = nbBevel.style === 'round' ? 8 : 1;
+        const arc: { x: number; y: number; z: number }[] = [];
+        for (let k = steps; k >= 0; k--) {
+          const phi = (k / steps) * (Math.PI / 2);
+          const [u0, w0] = nbBevel.style === 'round' ? [r * (1 - Math.cos(phi)), r * (1 - Math.sin(phi))] : [r * (k / steps), r * (1 - k / steps)];
+          const u = u0 * 0.97; // a hair toward the sharp corner: just outside the surface, so it stays visible
+          const w = w0 * 0.97;
+          const t = Math.abs(dm) < 1e-3 ? 0 : (-u * nm) / dm;
+          arc.push({ x: V.x + dn.x * t + nIn.x * u, y: y0 + sign * w, z: -(V.y + dn.y * t + nIn.y * u) });
+        }
+        return arc; // from the point on this edge (u = r) down to the corner (u = 0)
+      };
+      let out = line;
+      const startArc = detour(true);
+      if (startArc) out = [...startArc.reverse(), ...out.slice(1)];
+      const endArc = detour(false);
+      if (endArc) out = [...out.slice(0, -1), ...endArc];
+      return out;
     };
     edges.push({ kind: 'top', index: id, points: lineFor('top') });
     edges.push({ kind: 'bottom', index: id, points: lineFor('bottom') });
   }
   for (let v = 0; v < n; v++) {
     const a = outline.arcMid.get(v) ?? base[v];
+    // Where the edges above or below this corner are beveled, the corner line stops short of the sharp end.
+    const reach = (kind: 'top' | 'bottom') =>
+      Math.max(0, ...[(v - 1 + n) % n, v].map((side) => effectiveSize(body, findBevel(body, kind, runId(sideRun(outline, n, side))))));
+    let yLo = bottom + reach('bottom');
+    let yHi = top - reach('top');
+    if (yHi - yLo < 1) {
+      yLo = bottom;
+      yHi = top;
+    }
     edges.push({
       kind: 'corner',
       index: v,
       points: [
-        { x: a.x, y: bottom, z: -a.y },
-        { x: a.x, y: top, z: -a.y },
+        { x: a.x, y: yLo, z: -a.y },
+        { x: a.x, y: yHi, z: -a.y },
       ],
     });
   }

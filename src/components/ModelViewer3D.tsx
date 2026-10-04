@@ -126,6 +126,10 @@ function makeFatLine(points: { x: number; y: number; z: number }[], color: strin
     linewidth: widthPx,
     resolution: viewportSize.clone(),
   });
+  // Pull selection lines slightly toward the camera so they never fight with the surface they lie on.
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -4;
+  material.polygonOffsetUnits = -4;
   lineMaterials.add(material);
   const line = new Line2(geometry, material);
   line.computeLineDistances();
