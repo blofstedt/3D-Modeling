@@ -39,11 +39,13 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
     const m = new THREE.Matrix4();
     const e = new Array<number>(16);
     let raf = 0;
+    const last = new THREE.Quaternion(0, 0, 0, 0);
 
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const el = cubeRef.current;
-      if (!el) return;
+      if (!el || last.equals(camera.quaternion)) return; // camera is still: leave the DOM alone
+      last.copy(camera.quaternion);
       // World -> view rotation is the inverse of the camera orientation.
       q.copy(camera.quaternion).invert();
       m.makeRotationFromQuaternion(q);
@@ -97,7 +99,7 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
         onClick={onResetCamera}
         aria-label="Fit model in view"
         title="Fit model in view"
-        className="h-7 px-2.5 rounded-lg bg-slate-800/90 border border-white/10 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 text-xs transition-colors"
+        className="h-7 px-2.5 rounded-full bg-slate-800/90 border border-white/10 text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-1.5 text-xs transition-colors"
       >
         <House size={13} />
         Home

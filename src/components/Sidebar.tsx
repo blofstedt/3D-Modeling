@@ -12,18 +12,21 @@ import {
   Eye,
   EyeOff,
   FileJson,
+  Focus,
   Merge,
   RotateCcw,
   Sparkles,
   Trash2,
   Ungroup,
 } from 'lucide-react';
-import { Body3D, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
+import { Body3D, EdgeSel, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
+import { listFeatures } from '../utils/edges';
 import { getPolygonSignedArea } from '../utils/geometry';
 import { exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
 
 interface SidebarProps {
   bodies: Body3D[];
+  isolatedIds: string[] | null;
   selectedBodyId: string | null;
   selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
@@ -37,22 +40,27 @@ interface SidebarProps {
   onUngroup: (groupId: string) => void;
   onMergeSelected: () => void;
   onApplyCornerRadius: (id: string, radius: number) => void;
+  onEditEdge: (sel: EdgeSel) => void;
+  onRemoveEdge: (sel: EdgeSel) => void;
+  onIsolate: (id: string) => void;
+  onShowAll: () => void;
+  /** Show only this section, without the header and tabs (used inside the bar menus). */
+  section?: Tab;
 }
 
-type Tab = 'properties' | 'material' | 'bodies' | 'export';
+export type Tab = 'properties' | 'material' | 'export';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'properties', label: 'Properties' },
   { id: 'material', label: 'Material' },
-  { id: 'bodies', label: 'Bodies' },
   { id: 'export', label: 'Export' },
 ];
 
 const fieldClass =
-  'h-8 rounded-lg bg-white/6 border border-white/8 px-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent-400 focus:bg-white/8 transition-colors';
+  'h-8 rounded-full bg-white/6 border border-white/8 px-3 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-accent-400 focus:bg-white/8 transition-colors';
 
 const secondaryButton =
-  'h-9 px-3 rounded-xl bg-white/6 hover:bg-white/10 border border-white/8 text-sm font-medium text-slate-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none';
+  'h-9 px-3 rounded-full bg-white/6 hover:bg-white/10 border border-white/8 text-sm font-medium text-slate-100 flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none';
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -105,7 +113,8 @@ function NumberSlider({ label, value, min, max, step = 1, hardMax = max, onChang
         value={value}
         onChange={(e) => onChange(clampValue(parseFloat(e.target.value)))}
         aria-label={`${label} slider`}
-        className="w-full h-1 cursor-pointer"
+        style={{ ["--fill" as string]: `${((value - min) / Math.max(1, Math.max(max, value) - min)) * 100}%` }}
+        className="w-full h-1.5 cursor-pointer"
       />
     </div>
   );
@@ -128,7 +137,7 @@ function bodyStats(body: Body3D) {
 function EmptyState({ title, text }: { title: string; text: string }) {
   return (
     <div className="flex flex-col items-center text-center gap-2 py-12 px-4">
-      <div className="w-10 h-10 rounded-xl bg-white/6 flex items-center justify-center text-slate-400">
+      <div className="w-10 h-10 rounded-full bg-white/6 flex items-center justify-center text-slate-400">
         <Box size={20} strokeWidth={1.5} />
       </div>
       <p className="text-sm font-medium text-slate-200">{title}</p>
@@ -139,6 +148,7 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 
 export default function Sidebar({
   bodies,
+  isolatedIds,
   selectedBodyId,
   selectedBodyIds,
   onSelectBody,
@@ -152,11 +162,18 @@ export default function Sidebar({
   onUngroup,
   onMergeSelected,
   onApplyCornerRadius,
+  onEditEdge,
+  onRemoveEdge,
+  onIsolate,
+  onShowAll,
+  section,
 }: SidebarProps) {
-  const [tab, setTab] = useState<Tab>('properties');
+  const [tabState, setTab] = useState<Tab>('properties');
+  const tab = section ?? tabState;
   const [exportNote, setExportNote] = useState<string | null>(null);
   const body = bodies.find((b) => b.id === selectedBodyId) || null;
   const stats = body ? bodyStats(body) : null;
+  const features = body ? listFeatures(body) : [];
 
   const runExport = (fn: (b: Body3D[]) => boolean | void) => {
     const ok = fn(bodies);
@@ -164,7 +181,8 @@ export default function Sidebar({
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 text-slate-100">
+    <div className={`flex flex-col min-h-0 text-slate-100 ${section ? 'w-[min(20rem,calc(100vw-1.5rem))]' : 'h-full'}`}>
+      {!section && (
       <div className="px-4 pt-3.5 pr-14 md:pr-4 shrink-0">
         <h2 className="text-sm font-semibold tracking-tight">Inspector</h2>
         <p className="text-xs text-slate-500">
@@ -172,7 +190,9 @@ export default function Sidebar({
           {selectedBodyIds.length > 1 && ` · ${selectedBodyIds.length} selected`}
         </p>
       </div>
+      )}
 
+      {!section && (
       <div role="tablist" className="flex gap-1 px-3 mt-3 border-b border-white/8 shrink-0">
         {TABS.map((t) => (
           <button
@@ -190,8 +210,9 @@ export default function Sidebar({
           </button>
         ))}
       </div>
+      )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-5">
+      <div className={`min-h-0 p-4 flex flex-col gap-5 ${section ? '' : 'flex-1 overflow-y-auto'}`}>
         {/* ---------------- Properties ---------------- */}
         {tab === 'properties' &&
           (body && stats ? (
@@ -215,51 +236,47 @@ export default function Sidebar({
               />
 
               <NumberSlider
-                label="Corner radius"
-                value={body.cornerRadius || 0}
+                label="Elevation"
+                value={body.elevation ?? 0}
+                min={0}
+                max={200}
+                hardMax={1000}
+                onChange={(v) => onUpdateBody(body.id, { elevation: v })}
+              />
+
+              <NumberSlider
+                label="All corners"
+                value={Math.round(Math.max(0, ...(body.cornerRadii ?? [0])))}
                 min={0}
                 max={30}
                 onChange={(v) => onApplyCornerRadius(body.id, v)}
               />
 
-              <div className="flex flex-col gap-3">
-                <label className="flex items-center justify-between cursor-pointer">
-                  <span className="text-xs font-medium text-slate-400">Edge bevel</span>
-                  <input
-                    type="checkbox"
-                    checked={body.bevelEnabled !== false}
-                    onChange={(e) => onUpdateBody(body.id, { bevelEnabled: e.target.checked })}
-                    className="w-4 h-4 accent-accent-400"
-                  />
-                </label>
-                {body.bevelEnabled !== false && (
-                  <>
-                    <NumberSlider
-                      label="Bevel size"
-                      value={body.bevelSize ?? 1}
-                      min={0.5}
-                      max={10}
-                      step={0.5}
-                      onChange={(v) => onUpdateBody(body.id, { bevelSize: v })}
-                    />
-                    <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-white/6">
-                      {[
-                        { label: 'Chamfer', active: (body.bevelSegments ?? 3) <= 1, segments: 1 },
-                        { label: 'Round', active: (body.bevelSegments ?? 3) > 1, segments: 4 },
-                      ].map((opt) => (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          onClick={() => onUpdateBody(body.id, { bevelSegments: opt.segments })}
-                          className={`h-7 rounded-md text-xs font-medium transition-colors ${
-                            opt.active ? 'bg-white/12 text-white' : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {opt.label}
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium text-slate-400">Beveled edges</span>
+                {features.length === 0 ? (
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Nothing is beveled. Click an edge in the 3D view to bevel just that edge.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {features.map((f) => (
+                      <li key={`${f.sel.kind}:${f.sel.index}`} className="h-9 pl-3 pr-1 rounded-lg bg-white/4 flex items-center justify-between text-sm">
+                        <button type="button" onClick={() => onEditEdge(f.sel)} className="flex-1 min-w-0 text-left flex items-baseline gap-2 hover:text-white" title="Show and edit this edge">
+                          <span className="truncate">{f.label}</span>
+                          <span className="text-xs text-slate-500 shrink-0">{f.detail}</span>
                         </button>
-                      ))}
-                    </div>
-                  </>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveEdge(f.sel)}
+                          aria-label={`Remove ${f.label}`}
+                          className="w-7 h-7 rounded-full text-slate-400 hover:text-white hover:bg-white/10 flex items-center justify-center"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
 
@@ -333,7 +350,7 @@ export default function Sidebar({
                         type="button"
                         onClick={() => onUpdateBody(body.id, { materialType: m.id })}
                         aria-pressed={active}
-                        className={`h-9 px-3 rounded-lg flex items-center justify-between text-sm transition-colors ${
+                        className={`h-9 px-3 rounded-full flex items-center justify-between text-sm transition-colors ${
                           active ? 'bg-accent-500/15 text-white ring-1 ring-accent-400/60' : 'bg-white/4 text-slate-300 hover:bg-white/8'
                         }`}
                       >
@@ -387,116 +404,6 @@ export default function Sidebar({
           ))}
 
         {/* ---------------- Bodies ---------------- */}
-        {tab === 'bodies' && (
-          <>
-            {selectedBodyIds.length > 1 && (
-              <div className="flex items-center justify-between rounded-xl bg-accent-500/10 border border-accent-400/25 px-3 py-2">
-                <span className="text-xs font-medium text-accent-200">{selectedBodyIds.length} selected</span>
-                <div className="flex gap-1.5">
-                  <button type="button" onClick={onGroupSelected} className="h-7 px-2.5 rounded-md bg-white/10 hover:bg-white/16 text-xs font-medium flex items-center gap-1.5">
-                    <Boxes size={13} /> Group
-                  </button>
-                  <button type="button" onClick={onMergeSelected} className="h-7 px-2.5 rounded-md bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5">
-                    <Merge size={13} /> Union
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {groups.length > 0 && (
-              <Field label="Groups">
-                <div className="flex flex-col gap-1">
-                  {groups.map((g) => (
-                    <div key={g.id} className="h-9 px-3 rounded-lg bg-white/4 flex items-center justify-between text-sm">
-                      <span className="flex items-center gap-2 min-w-0">
-                        <Boxes size={14} className="text-slate-400 shrink-0" />
-                        <span className="truncate">{g.name}</span>
-                        <span className="text-xs text-slate-500 shrink-0">{g.bodyIds.length}</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => onUngroup(g.id)}
-                        aria-label={`Ungroup ${g.name}`}
-                        title="Ungroup"
-                        className="p-1 rounded text-slate-400 hover:text-white"
-                      >
-                        <Ungroup size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </Field>
-            )}
-
-            {bodies.length === 0 ? (
-              <EmptyState title="No bodies yet" text="Draw a sketch and pull it into a solid, or load the sample scene." />
-            ) : (
-              <Field label="All bodies">
-                <ul className="flex flex-col gap-1">
-                  {bodies.map((b) => {
-                    const selected = selectedBodyIds.includes(b.id);
-                    return (
-                      <li key={b.id}>
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => onSelectBody(b.id, e.shiftKey || e.metaKey || e.ctrlKey)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              onSelectBody(b.id, e.shiftKey);
-                            }
-                          }}
-                          className={`group h-10 pl-2.5 pr-1.5 rounded-lg flex items-center gap-2.5 text-sm cursor-pointer transition-colors ${
-                            selected ? 'bg-accent-500/15 ring-1 ring-accent-400/50' : 'hover:bg-white/6'
-                          } ${b.visible ? '' : 'opacity-50'}`}
-                        >
-                          <span
-                            className="w-3.5 h-3.5 rounded-full shrink-0 border border-white/20"
-                            style={{ backgroundColor: b.color }}
-                          />
-                          <span className="flex-1 truncate">{b.name}</span>
-                          <span className="text-xs text-slate-500 tabular-nums shrink-0">{b.extrusionHeight} mm</span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onSelectBody(b.id, true);
-                            }}
-                            aria-label={selected ? `Remove ${b.name} from selection` : `Add ${b.name} to selection`}
-                            aria-pressed={selected}
-                            title="Add to / remove from selection"
-                            className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 transition-colors ${
-                              selected ? 'bg-accent-500 border-accent-400 text-white' : 'border-white/20 text-transparent hover:border-white/40'
-                            }`}
-                          >
-                            <svg viewBox="0 0 12 12" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M2.5 6.5l2.5 2.5 4.5-5" />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onUpdateBody(b.id, { visible: !b.visible });
-                            }}
-                            aria-label={b.visible ? `Hide ${b.name}` : `Show ${b.name}`}
-                            className="p-1 rounded text-slate-400 hover:text-white shrink-0"
-                          >
-                            {b.visible ? <Eye size={14} /> : <EyeOff size={14} />}
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-                <p className="text-[11px] text-slate-600 mt-1">Shift-click to select several bodies.</p>
-              </Field>
-            )}
-          </>
-        )}
-
-        {/* ---------------- Export ---------------- */}
         {tab === 'export' && (
           <>
             <p className="text-xs text-slate-400 leading-relaxed">
@@ -507,7 +414,7 @@ export default function Sidebar({
                 type="button"
                 onClick={() => runExport(exportSTL)}
                 disabled={bodies.length === 0}
-                className="h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                className="h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
               >
                 <Download size={15} /> Export STL
               </button>

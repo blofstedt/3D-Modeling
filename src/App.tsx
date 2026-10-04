@@ -3,37 +3,38 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  BevelStyle,
   Body3D,
-  CadTool,
-  EditorMode,
+  EdgeSel,
+  FaceSel,
   Point2D,
   RepeatConfig,
   ShapeGroup,
   SWATCHES,
 } from './types';
-import SketchCanvas from './components/SketchCanvas';
-import ModelViewer3D, { EditPart } from './components/ModelViewer3D';
+import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
-import ToolRail from './components/ToolRail';
-import CutModal from './components/CutModal';
-import RoundBevelModal from './components/RoundBevelModal';
-import MoveFaceControls from './components/MoveFaceControls';
+import BottomBar from './components/BottomBar';
+import TopBar from './components/TopBar';
+import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
-import GuidanceBanner from './components/GuidanceBanner';
 import { useHistory } from './hooks/useHistory';
-import {
-  cutShape,
-  mergeShapes,
-  roundPolygonCorners,
-  calculateLinearPattern,
-  calculateCurvedPattern,
-} from './utils/geometry';
+import { cutShape, getPolygonSignedArea, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
+import { withOutline } from './utils/outline';
+import { extrudeFace, setFaceMeasure } from './utils/faces';
+import { joinBodies } from './utils/join';
+import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
+import { applyEdgeChange, edgeKey } from './utils/edges';
+import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
   Box,
+  EyeOff,
+  Focus,
   Info,
+  Trash2,
   PanelRightClose,
   PanelRightOpen,
   PenLine,
@@ -49,59 +50,26 @@ interface Doc {
   groups: ShapeGroup[];
 }
 
-const STORAGE_KEY = 'craft3d:document:v1';
+const STORAGE_KEY = 'craft3d:document:v3';
 
-const rect = (x1: number, y1: number, x2: number, y2: number): Point2D[] => [
-  { x: x1, y: y1 },
-  { x: x2, y: y1 },
-  { x: x2, y: y2 },
-  { x: x1, y: y2 },
-];
-
-// Starter solids so the workspace is never an empty void on first load.
+// The starter scene is one plain block.
 const createStarterBodies = (): Body3D[] => {
-  const bracket: Point2D[] = [
-    { x: -140, y: -90 },
-    { x: 140, y: -90 },
-    { x: 140, y: 90 },
-    { x: 50, y: 90 },
-    { x: 50, y: 40 },
-    { x: -50, y: 40 },
-    { x: -50, y: 90 },
-    { x: -140, y: 90 },
+  const outline: Point2D[] = [
+    { x: -60, y: -40 },
+    { x: 60, y: -40 },
+    { x: 60, y: 40 },
+    { x: -60, y: 40 },
   ];
-  const now = new Date().toISOString();
   return [
     {
-      id: 'body_bracket_main',
-      name: 'Mounting bracket',
-      points: bracket,
-      basePoints: bracket,
-      holes: [rect(-95, -60, -65, -30), rect(65, -60, 95, -30)],
-      extrusionHeight: 45,
-      color: '#94a3b8',
-      materialType: 'metal',
+      id: 'body_block',
+      name: 'Block',
+      points: outline,
+      extrusionHeight: 50,
+      color: '#6f7a93',
+      materialType: 'matte',
       visible: true,
-      bevelEnabled: true,
-      bevelSize: 2,
-      bevelSegments: 3,
-      cornerRadius: 0,
-      createdAt: now,
-    },
-    {
-      id: 'body_cutter_pin',
-      name: 'Boss pin',
-      points: rect(-25, -25, 25, 25),
-      basePoints: rect(-25, -25, 25, 25),
-      extrusionHeight: 65,
-      color: '#ef4444',
-      materialType: 'glossy',
-      visible: true,
-      bevelEnabled: true,
-      bevelSize: 1,
-      bevelSegments: 2,
-      cornerRadius: 0,
-      createdAt: now,
+      createdAt: new Date().toISOString(),
     },
   ];
 };
@@ -118,9 +86,6 @@ const loadInitialDoc = (): Doc => {
   }
   return { bodies: createStarterBodies(), groups: [] };
 };
-
-const offsetPoints = (pts: Point2D[], dx: number, dy: number) =>
-  pts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
 
 const isTypingTarget = (target: EventTarget | null) => {
   if (!(target instanceof HTMLElement)) return false;
@@ -161,19 +126,20 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [doc]);
 
-  const [selectedBodyId, setSelectedBodyId] = useState<string | null>(() => doc.bodies[0]?.id ?? null);
-  const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>(() =>
-    doc.bodies[0] ? [doc.bodies[0].id] : []
-  );
-  const [editorMode, setEditorMode] = useState<EditorMode>('view3d');
-  const [activeCadTool, setActiveCadTool] = useState<CadTool>('select');
-  const [existingPoints, setExistingPoints] = useState<Point2D[]>([]);
-  const [isInspectorOpen, setIsInspectorOpen] = useState(true);
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [activeEditPart, setActiveEditPart] = useState<EditPart | null>(null);
+  const [selectedBodyId, setSelectedBodyId] = useState<string | null>(null);
+  const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>([]);
+  const [selectedEdges, setSelectedEdges] = useState<EdgeSel[]>([]);
+  const [selectedFace, setSelectedFace] = useState<FaceSel | null>(null);
+  /** When set, only these bodies are shown, in both 2D and 3D. */
+  const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
+  const [hint, setHint] = useState('');
+  /** Which bar menu is open (one at a time). */
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  /** The X / Y / Z move arrows, toggled with a two-finger tap. */
+  const [moveOn, setMoveOn] = useState(false);
 
-  const [isCutModalOpen, setIsCutModalOpen] = useState(false);
-  const [isBevelModalOpen, setIsBevelModalOpen] = useState(false);
+  /** Shapes waiting on the "Delete?" confirmation. */
+  const [confirmDeleteIds, setConfirmDeleteIds] = useState<string[] | null>(null);
   const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
 
   const [repeatConfig, setRepeatConfig] = useState<RepeatConfig>({
@@ -199,44 +165,74 @@ export default function App() {
 
   const bodyCounter = useRef(bodies.length);
 
+  // Isolation hides the rest of the scene from the viewport.
+  const displayBodies = useMemo(
+    () => (isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id)) : bodies),
+    [bodies, isolatedIds]
+  );
+
   // Once the pattern path has been drawn in the viewport, bring the dialog back to finish the job.
   useEffect(() => {
-    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine && activeCadTool === 'repeat') {
-      setIsRepeatModalOpen(true);
-    }
-  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine, activeCadTool]);
+    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine) setIsRepeatModalOpen(true);
+  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine]);
 
-  // Drop selections that no longer exist (after delete / undo).
+  // Drop selections and isolation that no longer exist (after delete / undo).
   useEffect(() => {
     const ids = new Set(bodies.map((b) => b.id));
     setSelectedBodyIds((prev) => (prev.every((id) => ids.has(id)) ? prev : prev.filter((id) => ids.has(id))));
     setSelectedBodyId((prev) => (prev && !ids.has(prev) ? null : prev));
+    setSelectedEdges((prev) => (prev.every((e) => ids.has(e.bodyId)) ? prev : prev.filter((e) => ids.has(e.bodyId))));
+    setSelectedFace((prev) => (prev && !ids.has(prev.bodyId) ? null : prev));
+    setIsolatedIds((prev) => {
+      if (!prev) return prev;
+      const alive = prev.filter((id) => ids.has(id));
+      return alive.length === prev.length ? prev : alive.length ? alive : null;
+    });
   }, [bodies]);
 
-  const selectedBody = bodies.find((b) => b.id === selectedBodyId) || null;
+  const selectedBody = displayBodies.find((b) => b.id === selectedBodyId) || null;
+  const selectedBodies = selectedBodyIds.map((id) => displayBodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b);
 
   const selectOnly = (id: string | null) => {
     setSelectedBodyId(id);
     setSelectedBodyIds(id ? [id] : []);
+    setSelectedEdges([]);
+    setSelectedFace(null);
+  };
+
+  /** Selects several shapes at once (e.g. every piece of a joined shape). */
+  const selectMany = (ids: string[]) => {
+    setSelectedBodyId(ids[0] ?? null);
+    setSelectedBodyIds(ids);
+    setSelectedEdges([]);
+    setSelectedFace(null);
   };
 
   // ---- Selection ----------------------------------------------------------
   const handleSelectBody = (id: string | null, isMultiSelect?: boolean) => {
     if (id === null) {
       selectOnly(null);
-      setActiveEditPart(null);
       return;
     }
+    // Clicking a member of a group picks the whole group.
+    const group = bodies.find((b) => b.id === id)?.groupId;
+    const members = group ? bodies.filter((b) => b.groupId === group).map((b) => b.id) : [id];
+
     if (!isMultiSelect) {
-      selectOnly(id);
+      setSelectedBodyId(id);
+      setSelectedBodyIds(members);
+      setSelectedEdges((prev) => (prev.length && prev[0].bodyId !== id ? [] : prev));
+      setSelectedFace((prev) => (prev && prev.bodyId !== id ? null : prev));
       return;
     }
+    setSelectedEdges([]);
+    setSelectedFace(null);
     if (selectedBodyIds.includes(id)) {
-      const next = selectedBodyIds.filter((item) => item !== id);
+      const next = selectedBodyIds.filter((item) => !members.includes(item));
       setSelectedBodyIds(next);
       setSelectedBodyId(next.length > 0 ? next[next.length - 1] : null);
     } else {
-      setSelectedBodyIds([...selectedBodyIds, id]);
+      setSelectedBodyIds([...new Set([...selectedBodyIds, ...members])]);
       setSelectedBodyId(id);
     }
   };
@@ -249,168 +245,251 @@ export default function App() {
     [setBodies]
   );
 
-  const handleDeleteBody = (id: string) => {
-    const target = bodies.find((b) => b.id === id);
-    setBodies((prev) => prev.filter((body) => body.id !== id));
+  /** Rigid move/rotate of several bodies in one update. */
+  const transformBodies = useCallback(
+    (ids: string[], t: BodyTransform) => {
+      const set = new Set(ids);
+      setBodies((prev) => prev.map((b) => (set.has(b.id) ? { ...b, ...transformBody(b, t) } : b)));
+    },
+    [setBodies]
+  );
+
+  const requestDelete = (targets: string[] = selectedBodyIds) => {
+    if (targets.length) setConfirmDeleteIds(targets);
+  };
+
+  const moveSelection = (dx: number, dy: number, dz: number, angle = 0) => {
+    const b = selectionBounds(selectedBodies);
+    if (b) transformBodies(selectedBodyIds, { dx, dy, dz, angle, cx: b.centerX, cy: b.centerY });
+  };
+
+  const handleResize = (width: number, depth: number) => {
+    if (selectedBody) handleUpdateBody(selectedBody.id, resizeBody(selectedBody, width, depth));
+  };
+
+  const handleExtrudeFace = (face: FaceSel, delta: number) => {
+    const body = bodies.find((b) => b.id === face.bodyId);
+    const updates = body && extrudeFace(body, face, delta);
+    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
+  };
+
+  const hiddenCount = bodies.filter((b) => !b.visible).length;
+  const commonGroupId =
+    selectedBodies.length > 1 && selectedBodies[0].groupId && selectedBodies.every((b) => b.groupId === selectedBodies[0].groupId) ? selectedBodies[0].groupId : null;
+  /** A joined shape is several pieces that act as one solid; it is never shown as a loose group. */
+  const joinedSelected = !!commonGroupId && !!groups.find((g) => g.id === commonGroupId)?.joined;
+  const selectedGroupId = joinedSelected ? null : commonGroupId;
+
+  const hideSelected = () => {
+    if (!selectedBodyIds.length) return;
+    const ids = new Set(selectedBodyIds);
+    setBodies((prev) => prev.map((b) => (ids.has(b.id) ? { ...b, visible: false } : b)));
+    notify(`Hid ${ids.size === 1 ? 'the shape' : `${ids.size} shapes`}. Use Organize → Show hidden to bring back.`);
+    selectOnly(null);
+  };
+
+  const showHidden = () => setBodies((prev) => prev.map((b) => (b.visible ? b : { ...b, visible: true })));
+
+  const handleFaceValue = (face: FaceSel, mm: number) => {
+    const body = bodies.find((b) => b.id === face.bodyId);
+    const updates = body && setFaceMeasure(body, face, mm);
+    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
+  };
+
+  const handleDeleteSelected = (targets: string[] = selectedBodyIds) => {
+    if (!targets.length) return;
+    const ids = new Set(targets);
+    const label = targets.length === 1 ? bodies.find((b) => b.id === targets[0])?.name ?? 'shape' : `${ids.size} shapes`;
+    setBodies((prev) => prev.filter((body) => !ids.has(body.id)));
     setGroups((prev) =>
       prev
-        .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => bid !== id) }))
+        .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => !ids.has(bid)) }))
         .filter((g) => g.bodyIds.length > 1)
     );
-    notify(`Deleted ${target?.name ?? 'body'}. Press ⌘Z to undo.`);
+    notify(`Deleted ${label}. Press ⌘Z to undo.`);
+    setConfirmDeleteIds(null);
   };
 
   const handleCloneBody = (id: string) => {
     const target = bodies.find((b) => b.id === id);
     if (!target) return;
     const clonedId = `body_${Date.now()}`;
-    const dx = 35;
-    const dy = -35;
     const clone: Body3D = {
       ...target,
+      ...transformBody(target, { dx: 35, dy: -35, dz: 0, angle: 0, cx: 0, cy: 0 }),
       id: clonedId,
       name: `${target.name} copy`,
-      points: offsetPoints(target.points, dx, dy),
-      basePoints: target.basePoints ? offsetPoints(target.basePoints, dx, dy) : undefined,
-      holes: target.holes?.map((h) => offsetPoints(h, dx, dy)),
       groupId: undefined,
       createdAt: new Date().toISOString(),
     };
     setBodies((prev) => [...prev, clone]);
     selectOnly(clonedId);
-    notify('Duplicated body.');
+    notify('Duplicated.');
   };
 
-  const handleShapeComplete = (points: Point2D[]) => {
+  /** Drops a stock shape into the scene: on the selected top face if there is one, otherwise beside what is already there. */
+  const addShape = (kind: ShapeKind) => {
     bodyCounter.current += 1;
-    const newBodyId = `body_${Date.now()}`;
+    const id = `body_${Date.now()}`;
     const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
-    const newBody: Body3D = {
-      id: newBodyId,
-      name: `Body ${bodyCounter.current}`,
-      points: [...points],
-      basePoints: [...points],
-      extrusionHeight: 50,
+    const onTop = selectedBody && selectedFace?.kind === 'top' && selectedFace.bodyId === selectedBody.id ? selectedBody : null;
+    let cx = 0;
+    let cy = 0;
+    let elevation = 0;
+    if (onTop) {
+      const b = selectionBounds([onTop])!;
+      cx = b.centerX;
+      cy = b.centerY;
+      elevation = Math.round(((onTop.elevation ?? 0) + onTop.extrusionHeight) * 100) / 100;
+    } else {
+      const b = selectionBounds(bodies.filter((x) => x.visible));
+      if (b) {
+        cx = Math.round(b.maxX + 50);
+        cy = Math.round(b.centerY);
+      }
+    }
+    const outline = primitiveOutline(kind, cx, cy);
+    const body: Body3D = {
+      id,
+      name: `${SHAPE_LABELS[kind]} ${bodyCounter.current}`,
+      ...outline,
+      extrusionHeight: 40,
+      elevation,
       color,
       materialType: 'matte',
       visible: true,
-      bevelEnabled: true,
-      bevelSize: 1,
-      bevelSegments: 2,
-      cornerRadius: 0,
       createdAt: new Date().toISOString(),
     };
-    setBodies((prev) => [...prev, newBody]);
-    selectOnly(newBodyId);
-    setExistingPoints([]);
-    setEditorMode('view3d');
-    notify('Profile extruded to 50 mm. Drag the arrow to adjust.');
+    if (outline.cornerRadii) body.points = withOutline(body, { basePoints: outline.basePoints, cornerRadii: outline.cornerRadii }).points;
+    setBodies((prev) => [...prev, body]);
+    setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
+    selectOnly(id);
   };
 
-  const handleApplyCut = (targetId: string, cutterId: string, keepCutter: boolean) => {
-    const target = bodies.find((b) => b.id === targetId);
-    const cutter = bodies.find((b) => b.id === cutterId);
-    if (!target || !cutter) return;
-
-    const cutResults = cutShape(target.points, target.holes, cutter.points, cutter.holes);
-    if (cutResults.length === 0) {
-      notify('The cut removed the entire body.');
+  /**
+   * Subtract: the shape you picked last is cut out of the others. Only the part that overlaps in height is cut,
+   * so a short cutter leaves slabs above and below it (kept as one group).
+   */
+  const handleSubtractSelected = () => {
+    const last = bodies.find((b) => b.id === selectedBodyId);
+    if (selectedBodyIds.length < 2 || !last) {
+      notify('Select 2+ shapes first: press and hold a shape to add it. The last one you pick is cut out of the others.');
+      return;
+    }
+    const cutterIds = last.groupId ? bodies.filter((b) => b.groupId === last.groupId).map((b) => b.id) : [last.id];
+    const cutters = bodies.filter((b) => cutterIds.includes(b.id));
+    const targets = bodies.filter((b) => selectedBodyIds.includes(b.id) && !cutterIds.includes(b.id));
+    if (!targets.length) {
+      notify('Select another shape to cut from.');
       return;
     }
 
-    const [primary, ...extras] = cutResults;
-    let next = bodies.map((b) =>
-      b.id === targetId ? { ...target, points: primary.points, basePoints: primary.points, holes: primary.holes } : b
-    );
-    extras.forEach((result, i) => {
-      next.push({
-        ...target,
-        id: `body_split_${Date.now()}_${i}`,
-        name: `${target.name} (part ${i + 2})`,
-        points: result.points,
-        basePoints: result.points,
-        holes: result.holes,
-      });
-    });
-    if (!keepCutter) next = next.filter((b) => b.id !== cutterId);
+    const area = (r: { points: Point2D[]; holes?: Point2D[][] }) =>
+      Math.abs(getPolygonSignedArea(r.points)) - (r.holes ?? []).reduce((sum, h) => sum + Math.abs(getPolygonSignedArea(h)), 0);
+    const stamp = Date.now();
+    let counter = 0;
+    let changed = false;
 
-    setBodies(next);
-    selectOnly(targetId);
-    setActiveCadTool('select');
-    notify(`Cut “${cutter.name}” out of “${target.name}”.`);
+    const cutOne = (piece: Body3D, cutter: Body3D): Body3D[] => {
+      const tLo = piece.elevation ?? 0;
+      const tHi = tLo + piece.extrusionHeight;
+      const lo = Math.max(tLo, cutter.elevation ?? 0);
+      const hi = Math.min(tHi, (cutter.elevation ?? 0) + cutter.extrusionHeight);
+      if (hi <= lo) return [piece];
+      const results = cutShape(piece.points, piece.holes, cutter.points, cutter.holes);
+      if (results.length === 1 && Math.abs(area(results[0]) - area(piece)) < 0.5) return [piece]; // footprints do not touch
+      changed = true;
+
+      const full = lo <= tLo && hi >= tHi;
+      const clean = { edgeBevels: undefined, cornerBevels: undefined, cornerRadii: undefined };
+      const out: Body3D[] = [];
+      if (!full && lo > tLo) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (base)`, elevation: tLo, extrusionHeight: lo - tLo });
+      results.forEach((r, i) => {
+        out.push({
+          ...piece,
+          ...clean,
+          points: r.points,
+          basePoints: r.points,
+          holes: r.holes,
+          elevation: lo,
+          extrusionHeight: hi - lo,
+          id: i === 0 && full ? piece.id : `body_cut_${stamp}_${counter++}`,
+          name: i === 0 ? piece.name : `${piece.name} (part ${i + 1})`,
+        });
+      });
+      if (!full && hi < tHi) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (top)`, elevation: hi, extrusionHeight: tHi - hi });
+      return out;
+    };
+
+    const replaced = new Map<string, Body3D[]>();
+    targets.forEach((t) => {
+      let pieces: Body3D[] = [t];
+      cutters.forEach((c) => {
+        pieces = pieces.flatMap((p) => cutOne(p, c));
+      });
+      replaced.set(t.id, pieces);
+    });
+    if (!changed) {
+      notify("Those shapes don't overlap, so there is nothing to subtract.");
+      return;
+    }
+
+    const newGroups: ShapeGroup[] = [];
+    const next: Body3D[] = bodies
+      .filter((b) => !cutterIds.includes(b.id))
+      .flatMap((b) => {
+        const pieces = replaced.get(b.id);
+        if (!pieces) return [b];
+        if (pieces.length > 1) {
+          const gid = b.groupId ?? `group_${stamp}_${b.id}`;
+          if (!b.groupId) newGroups.push({ id: gid, name: `${b.name}`, bodyIds: [], joined: true });
+          return pieces.map((p) => ({ ...p, groupId: gid }));
+        }
+        return pieces;
+      });
+    const allGroups = [...groups, ...newGroups]
+      .map((g) => ({ ...g, bodyIds: next.filter((b) => b.groupId === g.id).map((b) => b.id) }))
+      .filter((g) => g.bodyIds.length > 1);
+    setDoc({ bodies: next, groups: allGroups });
+    setIsolatedIds((prev) => (prev ? prev.filter((id) => !cutterIds.includes(id)) : prev));
+    const resultIds = targets.flatMap((t) => (replaced.get(t.id) ?? []).map((p) => p.id));
+    if (resultIds.length) selectMany(resultIds);
+    else selectOnly(null);
+    notify(`Subtracted ${cutters.length === 1 ? `“${cutters[0].name}”` : 'the last pick'} from ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} shapes`}. ⌘Z undoes.`);
   };
 
+  /** Rounds every vertical corner of a body to the same radius. */
   const handleApplyCornerRadius = (id: string, radius: number) => {
     const target = bodies.find((b) => b.id === id);
     if (!target) return;
-    const basePts = target.basePoints || target.points;
-    handleUpdateBody(id, {
-      basePoints: basePts,
-      points: roundPolygonCorners(basePts, radius),
-      cornerRadius: radius,
-    });
+    const n = (target.basePoints ?? target.points).length;
+    handleUpdateBody(id, withOutline(target, { cornerRadii: new Array(n).fill(radius) }));
   };
 
-  const requireBody = (): string | null => {
-    if (selectedBodyId) return selectedBodyId;
-    const first = bodies[0];
-    if (!first) {
-      notify('Create or load a body first.');
-      return null;
-    }
-    selectOnly(first.id);
-    return first.id;
-  };
+  /** Size / style changes from the bevel bar, the viewport handle and the inspector. */
+  const handleEdgeChange = useCallback(
+    (sels: EdgeSel[], patch: { size?: number; style?: BevelStyle }) => {
+      if (!sels.length) return;
+      setBodies((prev) => prev.map((b) => (sels.some((s) => s.bodyId === b.id) ? { ...b, ...applyEdgeChange(b, sels, patch) } : b)));
+      if (patch.size !== undefined && patch.size <= 0) {
+        setSelectedEdges((prev) => prev.filter((e) => !sels.some((s) => edgeKey(s) === edgeKey(e))));
+      }
+    },
+    [setBodies]
+  );
 
-  const handleSelectTool = () => {
-    setActiveCadTool('select');
-    setActiveEditPart(null);
-    setRepeatConfig((prev) => (prev.isDrawingLine ? { ...prev, isDrawingLine: false, drawingStep: 'start' } : prev));
-  };
-
-  const handleOpenExtrude = () => {
-    const id = requireBody();
-    if (!id) return;
-    setActiveEditPart({ bodyId: id, type: 'face', faceType: 'top' });
-    setActiveCadTool('extrude');
-    setEditorMode('view3d');
-  };
-
-  const handleOpenMoveFace = () => {
-    const id = requireBody();
-    if (!id) return;
-    if (!activeEditPart) setActiveEditPart({ bodyId: id, type: 'face', faceType: 'top' });
-    setActiveCadTool('moveFace');
-    setEditorMode('view3d');
-  };
-
-  const handleOpenCut = () => {
-    if (bodies.filter((b) => b.visible).length < 2) {
-      notify('You need at least two bodies to cut one from another.');
+  // ---- Commands -------------------------------------------------------------
+  const handleOpenRepeat = () => {
+    if (!selectedBodyId) {
+      notify('Select the shape you want to repeat first.');
       return;
     }
-    setIsMobileSidebarOpen(false);
-    setIsCutModalOpen(true);
-    setActiveCadTool('cut');
-  };
-
-  const handleOpenBevel = () => {
-    if (!requireBody()) return;
-    setIsMobileSidebarOpen(false);
-    setIsBevelModalOpen(true);
-    setActiveCadTool('bevel');
-  };
-
-  const handleOpenRepeat = () => {
-    if (!requireBody()) return;
-    setIsMobileSidebarOpen(false);
     setIsRepeatModalOpen(true);
-    setActiveCadTool('repeat');
   };
 
   const handleGroupSelected = () => {
     if (selectedBodyIds.length < 2) {
-      notify('Select at least two bodies to group (Shift-click to add).');
+      notify('Select at least two shapes to group (Shift-click to add).');
       return;
     }
     const newGroupId = `group_${Date.now()}`;
@@ -423,8 +502,7 @@ export default function App() {
       groups: [...d.groups, newGroup],
       bodies: d.bodies.map((b) => (selectedBodyIds.includes(b.id) ? { ...b, groupId: newGroupId } : b)),
     }));
-    setActiveCadTool('select');
-    notify(`Grouped ${selectedBodyIds.length} bodies.`);
+    notify(`Grouped ${selectedBodyIds.length} shapes. They now select and move together.`);
   };
 
   const handleUngroup = (groupId: string) => {
@@ -437,31 +515,30 @@ export default function App() {
 
   const handleMergeSelected = () => {
     if (selectedBodyIds.length < 2) {
-      notify('Select at least two overlapping bodies to unite.');
+      notify('Select at least two shapes to join (press and hold a shape to add it).');
       return;
     }
     const targets = bodies.filter((b) => selectedBodyIds.includes(b.id));
     if (targets.length < 2) return;
 
-    const results = mergeShapes(targets.map((t) => ({ points: t.points, holes: t.holes })));
-    if (results.length === 0) return;
-
-    const primary = targets[0];
     const stamp = Date.now();
-    const merged: Body3D[] = results.map((r, i) => ({
-      ...primary,
-      id: `body_merged_${stamp}_${i}`,
-      name: i === 0 ? `${primary.name} (united)` : `${primary.name} (united part ${i + 1})`,
-      points: r.points,
-      basePoints: r.points,
-      holes: r.holes,
-      groupId: undefined,
-    }));
+    const merged = joinBodies(targets, stamp);
+    if (!merged.length) return;
+    // Several pieces (steps, or parts that do not touch) are grouped so they still act as one shape.
+    const groupId = merged.length > 1 ? `group_${stamp}` : undefined;
+    const pieces = merged.map((b) => ({ ...b, groupId }));
+    const gone = new Set(selectedBodyIds);
 
-    setBodies([...bodies.filter((b) => !selectedBodyIds.includes(b.id)), ...merged]);
-    selectOnly(merged[0].id);
-    setActiveCadTool('select');
-    notify(`United ${targets.length} bodies.`);
+    setDoc((d) => ({
+      bodies: [...d.bodies.filter((b) => !gone.has(b.id)), ...pieces],
+      groups: [
+        ...d.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })).filter((g) => g.bodyIds.length > 1),
+        ...(groupId ? [{ id: groupId, name: `${targets[0].name} (joined)`, bodyIds: pieces.map((b) => b.id), joined: true }] : []),
+      ],
+    }));
+    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...pieces.map((m) => m.id)] : prev));
+    selectMany(pieces.map((b) => b.id));
+    notify(`Joined ${targets.length} shapes into one.`);
   };
 
   const handleApplyPattern = (config: RepeatConfig) => {
@@ -484,35 +561,20 @@ export default function App() {
     const stamp = Date.now();
     const copies: Body3D[] = [];
     for (let i = 1; i < transforms.length; i++) {
-      const dx = transforms[i].x - cx;
-      const dy = transforms[i].y - cy;
-      // Optionally turn each copy to follow the path tangent, pivoting around the body's centre.
-      const turn = config.followCurve && config.type === 'curved' ? transforms[i].angle - transforms[0].angle : 0;
-      const rotate = (p: Point2D): Point2D => {
-        if (!turn) return p;
-        const rx = p.x - cx;
-        const ry = p.y - cy;
-        return {
-          x: cx + rx * Math.cos(turn) - ry * Math.sin(turn),
-          y: cy + rx * Math.sin(turn) + ry * Math.cos(turn),
-        };
-      };
-      const place = (pts: Point2D[]) => offsetPoints(pts.map(rotate), dx, dy).map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 }));
-      const pts = place(selectedBody.points);
+      // Optionally turn each copy to follow the path tangent, pivoting around the shape's centre.
+      const angle = config.followCurve && config.type === 'curved' ? transforms[i].angle - transforms[0].angle : 0;
       copies.push({
         ...selectedBody,
+        ...transformBody(selectedBody, { dx: transforms[i].x - cx, dy: transforms[i].y - cy, dz: 0, angle, cx, cy }),
         id: `body_repeat_${stamp}_${i}`,
         name: `${selectedBody.name} copy ${i}`,
-        points: pts,
-        basePoints: pts,
-        holes: selectedBody.holes?.map(place),
         groupId: undefined,
         createdAt: new Date().toISOString(),
       });
     }
 
     setBodies((prev) => [...prev, ...copies]);
-    setActiveCadTool('select');
+    setIsolatedIds((prev) => (prev ? [...prev, ...copies.map((c) => c.id)] : prev));
     notify(`Created ${copies.length} copies along a ${config.type} path.`);
   };
 
@@ -525,15 +587,13 @@ export default function App() {
       controlPoint: null,
       endPoint: null,
     }));
-    setActiveCadTool('repeat');
-    setEditorMode('view3d');
   };
 
   const handleClearWorkspace = () => {
-    if (window.confirm('Remove every body and start from an empty workspace?')) {
+    if (window.confirm('Remove every shape and start from an empty workspace?')) {
       setDoc({ bodies: [], groups: [] });
       selectOnly(null);
-      setExistingPoints([]);
+      setIsolatedIds(null);
       notify('Workspace cleared. Press ⌘Z to bring it back.');
     }
   };
@@ -542,15 +602,33 @@ export default function App() {
     const starter = createStarterBodies();
     setDoc({ bodies: starter, groups: [] });
     selectOnly(starter[0].id);
-    setEditorMode('view3d');
-    notify('Loaded the sample scene.');
+    setIsolatedIds(null);
+    notify('Loaded the starter block.');
   };
 
-  const handleNewSketch = () => {
-    setExistingPoints([]);
-    selectOnly(null);
-    setActiveCadTool('select');
-    setEditorMode('sketch');
+  /** Shows only the given shapes (or everything again), in 2D and 3D. */
+  const isolate = (ids: string[] | null) => {
+    if (!ids) {
+      setIsolatedIds(null);
+      return;
+    }
+    const withGroups = new Set(ids);
+    bodies.forEach((b) => {
+      if (b.groupId && bodies.some((o) => o.groupId === b.groupId && withGroups.has(o.id))) withGroups.add(b.id);
+    });
+    setIsolatedIds([...withGroups]);
+  };
+
+  const toggleIsolate = () => {
+    if (isolatedIds) {
+      isolate(null);
+      notify('Showing everything.');
+    } else if (selectedBodyIds.length) {
+      isolate(selectedBodyIds);
+      notify('Isolated. Press I again to show everything.');
+    } else {
+      notify('Select a shape to isolate it.');
+    }
   };
 
   const doUndo = () => {
@@ -568,7 +646,6 @@ export default function App() {
     const key = e.key.toLowerCase();
 
     if (mod) {
-      if (editorMode === 'sketch') return; // sketch canvas owns undo while drawing
       if (key === 'z') {
         e.preventDefault();
         if (e.shiftKey) doRedo();
@@ -585,57 +662,50 @@ export default function App() {
     if (e.altKey) return;
 
     if (key === 'escape') {
-      setIsCutModalOpen(false);
-      setIsBevelModalOpen(false);
-      setIsRepeatModalOpen(false);
-      setIsMobileSidebarOpen(false);
-      handleSelectTool();
+      // One step back each time: close dialogs, drop edge picks, deselect, show everything.
+      if (openMenu) setOpenMenu(null);
+      else if (confirmDeleteIds || isRepeatModalOpen) {
+        setConfirmDeleteIds(null);
+        setIsRepeatModalOpen(false);
+          } else if (repeatConfig.isDrawingLine) {
+        setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
+      } else if (selectedEdges.length) setSelectedEdges([]);
+      else if (selectedFace) setSelectedFace(null);
+      else if (selectedBodyIds.length) selectOnly(null);
+      else if (isolatedIds) isolate(null);
       return;
     }
-    if (isCutModalOpen || isBevelModalOpen || isRepeatModalOpen) return;
-    if (editorMode === 'sketch' && !['1', '2'].includes(key)) return;
+    if (confirmDeleteIds || isRepeatModalOpen) return;
 
     switch (key) {
-      case '1':
-        setEditorMode('sketch');
-        break;
-      case '2':
-        setEditorMode('view3d');
-        break;
-      case 'v':
-        handleSelectTool();
-        break;
-      case 'n':
-      case 's':
-        handleNewSketch();
-        break;
-      case 'e':
-        handleOpenExtrude();
-        break;
-      case 'c':
-        handleOpenCut();
-        break;
-      case 'b':
-        handleOpenBevel();
-        break;
       case 'm':
-        handleOpenMoveFace();
+        if (selectedBodyIds.length) setMoveOn((v) => !v);
+        break;
+      case 'h':
+        hideSelected();
+        break;
+      case 'i':
+        toggleIsolate();
+        break;
+      case 's':
+        handleSubtractSelected();
         break;
       case 'r':
         handleOpenRepeat();
         break;
       case 'g':
-        handleGroupSelected();
+        if (joinedSelected) notify('This is a joined shape: it already moves as one.');
+        else if (selectedGroupId) handleUngroup(selectedGroupId);
+        else handleGroupSelected();
         break;
-      case 'u':
+      case 'j':
         handleMergeSelected();
         break;
       case 'delete':
       case 'backspace':
-        if (selectedBodyId) {
-          e.preventDefault();
-          handleDeleteBody(selectedBodyId);
-        }
+        e.preventDefault();
+        if (selectedEdges.length) handleEdgeChange(selectedEdges, { size: 0 });
+        else requestDelete();
         break;
     }
   };
@@ -648,11 +718,12 @@ export default function App() {
   // ---- Render -------------------------------------------------------------
   const sidebarProps = {
     bodies,
+    isolatedIds,
     selectedBodyId,
     selectedBodyIds,
     onSelectBody: handleSelectBody,
     onUpdateBody: handleUpdateBody,
-    onDeleteBody: handleDeleteBody,
+    onDeleteBody: (id: string) => requestDelete([id]),
     onCloneBody: handleCloneBody,
     onClearWorkspace: handleClearWorkspace,
     onLoadDemo: handleLoadDemo,
@@ -661,120 +732,76 @@ export default function App() {
     onUngroup: handleUngroup,
     onMergeSelected: handleMergeSelected,
     onApplyCornerRadius: handleApplyCornerRadius,
+    onIsolate: (id: string) => {
+      isolate([id]);
+      selectOnly(id);
+    },
+    onShowAll: () => isolate(null),
+    onEditEdge: (sel: EdgeSel) => {
+      selectOnly(sel.bodyId);
+      setSelectedEdges([sel]);
+      },
+    onRemoveEdge: (sel: EdgeSel) => handleEdgeChange([sel], { size: 0 }),
   };
 
-  const modeButton = (mode: EditorMode, label: string, Icon: typeof PenLine, hotkey: string) => (
-    <button
-      type="button"
-      onClick={() => setEditorMode(mode)}
-      aria-pressed={editorMode === mode}
-      title={`${label} (${hotkey})`}
-      className={`px-3 h-8 rounded-lg text-[13px] font-medium flex items-center gap-1.5 transition-colors ${
-        editorMode === mode ? 'bg-white/12 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-      }`}
-    >
-      <Icon size={15} strokeWidth={1.75} />
-      <span>{label}</span>
-    </button>
-  );
-
-  const iconButton = (
-    label: string,
-    onClick: () => void,
-    Icon: typeof Undo2,
-    disabled = false,
-    extra = ''
-  ) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className={`w-8 h-8 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors ${extra}`}
-    >
-      <Icon size={17} strokeWidth={1.75} />
-    </button>
-  );
+  const isolatedNames = isolatedIds
+    ? bodies
+        .filter((b) => isolatedIds.includes(b.id))
+        .map((b) => b.name)
+        .slice(0, 2)
+        .join(', ') + (isolatedIds.length > 2 ? ` +${isolatedIds.length - 2}` : '')
+    : '';
 
   return (
     <div className="h-dvh flex flex-col bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
-      {/* Top bar */}
-      <header className="h-12 shrink-0 px-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2 bg-slate-900 border-b border-white/8 z-40">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-accent-500 flex items-center justify-center text-white shrink-0">
-            <Box size={16} strokeWidth={2} />
-          </div>
-          <span className="text-sm font-semibold tracking-tight hidden sm:inline">Craft3D</span>
-          <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block" />
-          {iconButton('Undo (⌘Z)', doUndo, Undo2, !history.canUndo)}
-          {iconButton('Redo (⇧⌘Z)', doRedo, Redo2, !history.canRedo)}
-        </div>
-
-        <div className="flex items-center p-0.5 rounded-xl bg-white/6 border border-white/8">
-          {modeButton('sketch', 'Sketch', PenLine, '1')}
-          {modeButton('view3d', 'Model', Rotate3d, '2')}
-        </div>
-
-        <div className="flex items-center justify-end gap-1">
-          {iconButton(
-            isInspectorOpen ? 'Hide inspector' : 'Show inspector',
-            () => setIsInspectorOpen((v) => !v),
-            isInspectorOpen ? PanelRightClose : PanelRightOpen,
-            false,
-            'hidden md:flex'
-          )}
-          {iconButton('Open inspector', () => setIsMobileSidebarOpen(true), PanelRightOpen, false, 'md:hidden')}
-        </div>
-      </header>
+      <TopBar
+        openId={openMenu}
+        setOpenId={setOpenMenu}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
+        onUndo={doUndo}
+        onRedo={doRedo}
+        selected={selectedBodies}
+        joined={joinedSelected}
+        edges={selectedEdges}
+        face={selectedFace}
+        onEdgeChange={handleEdgeChange}
+        onClearEdges={() => setSelectedEdges([])}
+        onSelectEdges={setSelectedEdges}
+        onExtrudeFace={handleExtrudeFace}
+        onClearFace={() => setSelectedFace(null)}
+        onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
+        onResize={handleResize}
+        onUpdateBody={handleUpdateBody}
+        sidebar={sidebarProps}
+      />
 
       <div className="flex-1 min-h-0 flex">
         {/* Viewport */}
         <main className="relative flex-1 min-w-0 min-h-0 bg-slate-950">
-          <AnimatePresence mode="wait" initial={false}>
-            {editorMode === 'sketch' ? (
-              <motion.div
-                key="sketch"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-                className="absolute inset-0"
-              >
-                <SketchCanvas
-                  onShapeComplete={handleShapeComplete}
-                  existingPoints={existingPoints}
-                  setExistingPoints={setExistingPoints}
-                />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="model"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-                className="absolute inset-0"
-              >
+          <div className="absolute inset-0">
                 <ModelViewer3D
-                  bodies={bodies}
+                  bodies={displayBodies}
                   selectedBodyId={selectedBodyId}
                   selectedBodyIds={selectedBodyIds}
                   onSelectBody={handleSelectBody}
                   onUpdateBody={handleUpdateBody}
+                  onTransformBodies={transformBodies}
+                  selectedEdges={selectedEdges}
+                  onSelectEdges={setSelectedEdges}
+                  selectedFace={selectedFace}
+                  onSelectFace={setSelectedFace}
+                  onEdgeChange={handleEdgeChange}
                   repeatConfig={repeatConfig}
                   onUpdateRepeatConfig={setRepeatConfig}
-                  activeCadTool={activeCadTool}
-                  activeEditPart={activeEditPart}
-                  setActiveEditPart={setActiveEditPart}
-                  onOpenCut={handleOpenCut}
-                  onOpenBevel={handleOpenBevel}
-                  onDeleteBody={handleDeleteBody}
-                  onSwitchToSketchOnFace={handleNewSketch}
                   onDragStateChange={history.hold}
+                  onHint={setHint}
+                  moveOn={moveOn}
+                  onFaceValue={handleFaceValue}
+                  onToggleMove={() => setMoveOn((v) => !v)}
                 />
 
-                {bodies.length === 0 && (
+                {displayBodies.length === 0 && (
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="pointer-events-auto max-w-xs text-center flex flex-col items-center gap-4 p-6">
                       <div className="w-12 h-12 rounded-2xl bg-white/6 border border-white/10 flex items-center justify-center text-slate-300">
@@ -782,68 +809,70 @@ export default function App() {
                       </div>
                       <div>
                         <h2 className="text-base font-semibold text-white">Start your first part</h2>
-                        <p className="mt-1 text-sm text-slate-400">
-                          Draw a 2D profile, then pull it into a solid.
-                        </p>
+                        <p className="mt-1 text-sm text-slate-400">Add a shape, then group, join or subtract.</p>
                       </div>
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={handleNewSketch}
-                          className="px-4 h-9 rounded-xl bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
+                          onClick={() => addShape('box')}
+                          className="px-4 h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
                         >
-                          <PenLine size={15} /> New sketch
+                          <Box size={15} /> Add a box
                         </button>
                         <button
                           type="button"
                           onClick={handleLoadDemo}
-                          className="px-4 h-9 rounded-xl bg-white/8 hover:bg-white/12 text-slate-200 text-sm font-medium flex items-center gap-2 transition-colors"
+                          className="px-4 h-9 rounded-full bg-white/8 hover:bg-white/12 text-slate-200 text-sm font-medium flex items-center gap-2 transition-colors"
                         >
-                          <Sparkles size={15} /> Sample
+                          <Sparkles size={15} /> Starter block
                         </button>
                       </div>
                     </div>
                   </div>
                 )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          </div>
 
-          {editorMode === 'view3d' && (
-            <ToolRail
-              activeTool={activeCadTool}
-              selectedBodyCount={selectedBodyIds.length}
-              onSelect={handleSelectTool}
-              onNewSketch={handleNewSketch}
-              onExtrude={handleOpenExtrude}
-              onCut={handleOpenCut}
-              onBevel={handleOpenBevel}
-              onMoveFace={handleOpenMoveFace}
-              onRepeat={handleOpenRepeat}
-              onGroup={handleGroupSelected}
-              onMerge={handleMergeSelected}
-            />
-          )}
-
-          {/* Bottom-center stack: contextual controls, tool guidance, toasts */}
-          <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-20 md:bottom-4 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
-            {editorMode === 'view3d' && (activeCadTool === 'moveFace' || activeCadTool === 'extrude') && selectedBody && (
-              <MoveFaceControls
-                activeEditPart={activeEditPart}
-                body={selectedBody}
-                onUpdateBody={handleUpdateBody}
-                onClose={handleSelectTool}
-              />
-            )}
-            {editorMode === 'view3d' && (
-              <GuidanceBanner
-                activeTool={activeCadTool}
-                isDrawingLine={repeatConfig.isDrawingLine}
-                drawingStep={repeatConfig.drawingStep}
-                onCancel={handleSelectTool}
-              />
-            )}
+          {/* Bottom-center stack: isolation state and toasts */}
+          <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-3 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
             <AnimatePresence>
+              {isolatedIds && (
+                <motion.div
+                  key="isolated"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  className="flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-xl bg-accent-500/20 border border-accent-400/40 backdrop-blur text-[13px] text-accent-100 shadow-xl max-w-full"
+                >
+                  <Focus size={14} className="shrink-0" />
+                  <span className="truncate">
+                    Isolated: <strong className="font-semibold text-white">{isolatedNames}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => isolate(null)}
+                    className="h-7 px-2.5 rounded-full bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0"
+                  >
+                    Show all
+                  </button>
+                </motion.div>
+              )}
+              {hiddenCount > 0 && (
+                <motion.div
+                  key="hidden"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  className="flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-full bg-slate-800/95 border border-white/12 backdrop-blur text-[13px] text-slate-200 shadow-xl max-w-full"
+                >
+                  <EyeOff size={14} className="shrink-0 text-slate-400" />
+                  <span className="truncate">
+                    {hiddenCount} hidden
+                  </span>
+                  <button type="button" onClick={showHidden} className="h-7 px-3 rounded-full bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0">
+                    Show
+                  </button>
+                </motion.div>
+              )}
               {toast && (
                 <motion.div
                   key={toast}
@@ -858,81 +887,58 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+            {hint && (
+              <p className="text-xs text-slate-500 text-center leading-snug px-3">{hint}</p>
+            )}
           </div>
         </main>
 
-        {/* Docked inspector (desktop) */}
-        {isInspectorOpen && (
-          <aside className="hidden md:flex w-80 lg:w-[22rem] shrink-0 flex-col min-h-0 bg-slate-900 border-l border-white/8">
-            <Sidebar {...sidebarProps} />
-          </aside>
-        )}
       </div>
 
-      {/* Inspector drawer (mobile) */}
-      <AnimatePresence>
-        {isMobileSidebarOpen && (
-          <div className="fixed inset-0 z-50 md:hidden flex justify-end">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsMobileSidebarOpen(false)}
-              className="absolute inset-0 bg-black/60"
-            />
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="relative w-full max-w-sm h-full bg-slate-900 border-l border-white/10 shadow-2xl flex flex-col"
-            >
-              <button
-                type="button"
-                onClick={() => setIsMobileSidebarOpen(false)}
-                aria-label="Close inspector"
-                className="absolute top-3 right-3 z-10 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
-              >
-                <X size={17} />
-              </button>
-              <Sidebar {...sidebarProps} />
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <BottomBar
+        openId={openMenu}
+        setOpenId={setOpenMenu}
+        selectedCount={selectedBodyIds.length}
+        bodyCount={displayBodies.length}
+        isolated={!!isolatedIds}
+        moveOn={moveOn && selectedBodyIds.length > 0}
+        addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
+        onAddShape={addShape}
+        onToggleMove={() => setMoveOn((v) => !v)}
+        onIsolate={toggleIsolate}
+        grouped={!!selectedGroupId}
+        hiddenCount={hiddenCount}
+        onHide={hideSelected}
+        onShowHidden={showHidden}
+        onGroup={() => {
+          if (joinedSelected) notify('This is a joined shape: it already moves as one.');
+          else if (selectedGroupId) handleUngroup(selectedGroupId);
+          else handleGroupSelected();
+        }}
+        onJoin={handleMergeSelected}
+        onSubtract={handleSubtractSelected}
+        onPattern={handleOpenRepeat}
+        onDelete={() => requestDelete()}
+      />
 
       <AnimatePresence>
-        {isCutModalOpen && (
-          <CutModal
-            key="cut"
-            onClose={() => {
-              setIsCutModalOpen(false);
-              setActiveCadTool('select');
-            }}
-            bodies={bodies}
-            initialTargetId={selectedBodyId}
-            onApplyCut={handleApplyCut}
-          />
-        )}
-        {isBevelModalOpen && selectedBody && (
-          <RoundBevelModal
-            key="bevel"
-            onClose={() => {
-              setIsBevelModalOpen(false);
-              setActiveCadTool('select');
-            }}
-            selectedBody={selectedBody}
-            onUpdateBody={handleUpdateBody}
-            onApplyCornerRadius={handleApplyCornerRadius}
+        {confirmDeleteIds && (
+          <ConfirmDeleteModal
+            key="delete"
+            names={(() => {
+              const picked = confirmDeleteIds.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b);
+              const gid = picked[0]?.groupId;
+              const oneJoined = !!gid && picked.every((b) => b.groupId === gid) && !!groups.find((g) => g.id === gid)?.joined;
+              return oneJoined ? [picked[0].name] : picked.map((b) => b.name);
+            })()}
+            onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
+            onCancel={() => setConfirmDeleteIds(null)}
           />
         )}
         {isRepeatModalOpen && selectedBody && (
           <RepeatPatternModal
             key="repeat"
-            onClose={() => {
-              setIsRepeatModalOpen(false);
-              setActiveCadTool('select');
-            }}
+            onClose={() => setIsRepeatModalOpen(false)}
             selectedBody={selectedBody}
             repeatConfig={repeatConfig}
             setRepeatConfig={setRepeatConfig}

@@ -21,33 +21,71 @@ export interface MaterialPreset {
   ior?: number;
 }
 
+export type BevelStyle = 'chamfer' | 'round';
+
+/** A bevel on one top or bottom edge loop of a body. `edge` is a side index of the body's base outline. */
+export interface EdgeBevel {
+  side: 'top' | 'bottom';
+  edge: number;
+  size: number;
+  style: BevelStyle;
+}
+
+/** A rounded or flat bevel on a vertical corner, cut so it follows any bevel on the edges above and below it. */
+export interface CornerBevel {
+  vertex: number;
+  size: number;
+  style: BevelStyle;
+}
+
 export interface Body3D {
   id: string;
   name: string;
+  /** Final outline as drawn (base outline with corner radii applied). Always derived; edit via withOutline(). */
   points: Point2D[];
-  basePoints?: Point2D[]; // original unrounded vertices for dynamic corner radius edits
-  holes?: Point2D[][]; // cutouts or inner loops
+  /** Sharp outline the user edits. Defaults to `points` when absent. */
+  basePoints?: Point2D[];
+  /** Radius of the vertical edge at each base vertex, in mm (0 = sharp). */
+  cornerRadii?: number[];
+  holes?: Point2D[][];
+  /** Sharp outlines of the holes, and the corner radius at each of their vertices, once a hole has been edited. `holes` is derived. */
+  holeBases?: Point2D[][];
+  holeRadii?: number[][];
   extrusionHeight: number;
+  /** Height of the body's underside above the ground plane. */
+  elevation?: number;
+  /** Bevels on individual top/bottom edges. Nothing is beveled by default. */
+  edgeBevels?: EdgeBevel[];
+  cornerBevels?: CornerBevel[];
   color: string;
   materialType: MaterialType;
   visible: boolean;
   createdAt: string;
-  // Edge & Corner controls
-  bevelEnabled?: boolean;
-  bevelSize?: number; // 0 to 15
-  bevelSegments?: number; // 1 (chamfer) to 5 (round fillet)
-  cornerRadius?: number; // 0 to 30 (2D corner rounding)
-  // Grouping
   groupId?: string;
+}
+
+/** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
+/** A tapped face of a shape: its top or bottom, or one of its walls (`index` = base side). */
+export interface FaceSel {
+  bodyId: string;
+  kind: 'top' | 'bottom' | 'wall';
+  index?: number;
+}
+
+export interface EdgeSel {
+  bodyId: string;
+  kind: 'top' | 'bottom' | 'corner';
+  /** Canonical side index for top/bottom, base vertex index for corner. Holes use `1000 * (hole + 1) + n` (see outline.ts). */
+  index: number;
 }
 
 export interface ShapeGroup {
   id: string;
   name: string;
   bodyIds: string[];
+  /** Made by Join or Subtract: the pieces form one solid, so it is presented as a single shape. */
+  joined?: boolean;
 }
-
-export type CadTool = 'select' | 'extrude' | 'cut' | 'bevel' | 'moveFace' | 'group' | 'repeat' | 'merge';
 
 export interface RepeatConfig {
   type: 'linear' | 'curved';
@@ -60,7 +98,6 @@ export interface RepeatConfig {
   drawingStep: 'start' | 'end' | 'curve' | 'done';
 }
 
-export type EditorMode = 'sketch' | 'view3d';
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {
