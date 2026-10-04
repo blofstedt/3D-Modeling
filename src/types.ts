@@ -48,6 +48,9 @@ export interface Body3D {
   /** Radius of the vertical edge at each base vertex, in mm (0 = sharp). */
   cornerRadii?: number[];
   holes?: Point2D[][];
+  /** Sharp outlines of the holes, and the corner radius at each of their vertices, once a hole has been edited. `holes` is derived. */
+  holeBases?: Point2D[][];
+  holeRadii?: number[][];
   extrusionHeight: number;
   /** Height of the body's underside above the ground plane. */
   elevation?: number;
@@ -72,7 +75,7 @@ export interface FaceSel {
 export interface EdgeSel {
   bodyId: string;
   kind: 'top' | 'bottom' | 'corner';
-  /** Canonical side index for top/bottom, base vertex index for corner. */
+  /** Canonical side index for top/bottom, base vertex index for corner. Holes use `1000 * (hole + 1) + n` (see outline.ts). */
   index: number;
 }
 

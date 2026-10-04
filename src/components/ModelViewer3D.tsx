@@ -14,9 +14,9 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
-import { bottomRange, faceMeasure, moveBottom, sameFace } from '../utils/faces';
+import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
-import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
+import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
 
@@ -541,7 +541,8 @@ export default function ModelViewer3D({
       let best = -1;
       let bestDist = Infinity;
       if (body) {
-        getBase(body).forEach((_, j) => {
+        const walls = [...getBase(body).map((_, j) => j), ...holeLoops(body).flatMap((l, h) => l.base.map((_, j) => holeIndex(h, j)))];
+        walls.forEach((j) => {
           const ends = wallEnds(body, j);
           if (!ends) return;
           const { distance } = distanceToSegment2D(hit.point.x, -hit.point.z, ends.a.x, ends.a.y, ends.b.x, ends.b.y);
@@ -749,7 +750,7 @@ export default function ModelViewer3D({
         kind: 'wall',
         bodyId: body.id,
         index,
-        initialBase: getBase(body).map((p) => ({ ...p })),
+        initialBase: wallBase(body, index).map((p) => ({ ...p })),
         normal: outwardNormal(ends.a, ends.b, ends.winding),
         planeY,
         startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
@@ -904,13 +905,10 @@ export default function ModelViewer3D({
         if (!body || !cur || !d.normal || !d.startPoint) return;
         const n = d.normal;
         const dist = Math.round((cur.x - d.startPoint.x) * n.x - (cur.z - d.startPoint.z) * n.y);
-        const base = d.initialBase!.map((p) => ({ ...p }));
-        [d.index!, (d.index! + 1) % base.length].forEach((i) => {
-          base[i] = { x: Math.round(base[i].x + n.x * dist), y: Math.round(base[i].y + n.y * dist) };
-        });
-        live.current.onUpdateBody(body.id, withOutline(body, { basePoints: base }));
+        const update = offsetWall(body, d.index!, dist, d.initialBase);
+        if (update) live.current.onUpdateBody(body.id, update);
         text = `Wall ${signed(dist)} mm`;
-        if (d.measure0 !== undefined) showReadout(`${d.bodyId}:wall:${d.index}`, d.measureLabel ?? 'Size', d.measure0 + dist);
+        if (d.measure0 !== undefined) showReadout(`${d.bodyId}:wall:${d.index}`, d.measureLabel ?? 'Size', d.measure0 + (isHoleIndex(d.index!) ? -dist : dist));
       } else if (d.kind === 'move') {
         const cur = intersectPlane(m.x, m.y, d.planeY!);
         if (!cur) return;
@@ -1652,9 +1650,9 @@ export default function ModelViewer3D({
       }
 
       // A dot at the middle of each wall: push or pull it.
-      const base = getBase(body);
-      if (base.length <= MAX_WALL_HANDLES) {
-        for (let j = 0; j < base.length; j++) {
+      const wallIds = [...getBase(body).map((_, j) => j), ...holeLoops(body).flatMap((l, h) => l.base.map((_, j) => holeIndex(h, j)))];
+      if (wallIds.length <= MAX_WALL_HANDLES) {
+        for (const j of wallIds) {
           const ends = wallEnds(body, j);
           if (!ends) continue;
           const len = Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y);

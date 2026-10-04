@@ -4,7 +4,7 @@
  */
 
 import { Body3D, Point2D } from '../types';
-import { withOutline } from './outline';
+import { holeLoops, withHoles, withOutline } from './outline';
 
 export interface BodyTransform {
   dx: number;
@@ -34,6 +34,7 @@ export function transformBody(body: Body3D, t: BodyTransform): Partial<Body3D> {
     points: body.points.map(move),
     basePoints: body.basePoints?.map(move),
     holes: body.holes?.map((h) => h.map(move)),
+    holeBases: body.holeBases?.map((h) => h.map(move)),
     elevation: Math.max(0, round2((body.elevation ?? 0) + t.dz)),
   };
 }
@@ -85,6 +86,6 @@ export function resizeBody(body: Body3D, width: number, depth: number): Partial<
   const base = (body.basePoints ?? body.points).map(scale);
   return {
     ...withOutline(body, { basePoints: base }),
-    holes: body.holes?.map((h) => h.map(scale)),
+    ...(body.holeBases ? withHoles(body, { holeBases: holeLoops(body).map((l) => l.base.map(scale)) }) : { holes: body.holes?.map((h) => h.map(scale)) }),
   };
 }

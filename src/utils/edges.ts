@@ -4,7 +4,7 @@
  */
 
 import { BevelStyle, Body3D, CornerBevel, EdgeBevel, EdgeSel, FaceSel } from '../types';
-import { getBase, getOutline, outwardNormal, runId, runPath, sideRun, withOutline } from './outline';
+import { getBase, getOutline, holeIndex, holeLocal, holeLoops, holeOf, isHoleIndex, outwardNormal, runId, runPath, sideRun, withHoles, withOutline } from './outline';
 
 export const DEFAULT_BEVEL_SIZE = 2;
 export const MAX_BEVEL_SIZE = 30;
@@ -173,7 +173,60 @@ function computeEdges(body: Body3D): EdgePath[] {
       ],
     });
   }
+  edges.push(...holeEdges(body, bottom, top));
   return edges;
+}
+
+/** Edges of the cutouts: the rim around each hole at the top and at the bottom, and its vertical corner lines. */
+function holeEdges(body: Body3D, bottom: number, top: number): EdgePath[] {
+  const out: EdgePath[] = [];
+  holeLoops(body).forEach((loop, h) => {
+    const { outline, base } = loop;
+    const m = outline.points.length;
+    if (m < 3) return;
+    const ring = [...outline.points, outline.points[0]];
+    const rim = (kind: 'top' | 'bottom') => {
+      const bevel = findBevel(body, kind, holeIndex(h));
+      const own = effectiveSize(body, bevel);
+      const inset = own > 0 ? own * (bevel!.style === 'round' ? 0.18 : 0.4) : 0;
+      const y0 = kind === 'top' ? top : bottom;
+      const sign = kind === 'top' ? -1 : 1;
+      // Away from the material is into the hole, so the line sits on the bevel, a little way out into it.
+      const away = (-outline.winding) as 1 | -1;
+      return ring.map((p, i) => {
+        if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
+        const k = i % m;
+        const a = outwardNormal(outline.points[(k - 1 + m) % m], p, away);
+        const b = outwardNormal(p, outline.points[(k + 1) % m], away);
+        const nx = a.x + b.x;
+        const ny = a.y + b.y;
+        const len = Math.hypot(nx, ny) || 1;
+        return { x: p.x - (nx / len) * inset, y: y0 + sign * inset, z: -(p.y - (ny / len) * inset) };
+      });
+    };
+    out.push({ kind: 'top', index: holeIndex(h), points: rim('top') });
+    out.push({ kind: 'bottom', index: holeIndex(h), points: rim('bottom') });
+    const reachTop = effectiveSize(body, findBevel(body, 'top', holeIndex(h)));
+    const reachBottom = effectiveSize(body, findBevel(body, 'bottom', holeIndex(h)));
+    base.forEach((_, v) => {
+      const a = outline.arcMid.get(v) ?? base[v];
+      let yLo = bottom + reachBottom;
+      let yHi = top - reachTop;
+      if (yHi - yLo < 1) {
+        yLo = bottom;
+        yHi = top;
+      }
+      out.push({
+        kind: 'corner',
+        index: holeIndex(h, v),
+        points: [
+          { x: a.x, y: yLo, z: -a.y },
+          { x: a.x, y: yHi, z: -a.y },
+        ],
+      });
+    });
+  });
+  return out;
 }
 
 const sameRun = (body: Body3D, a: number, b: number) => {
@@ -183,18 +236,24 @@ const sameRun = (body: Body3D, a: number, b: number) => {
 };
 
 export function findBevel(body: Body3D, side: 'top' | 'bottom', id: number): EdgeBevel | undefined {
-  return (body.edgeBevels ?? []).find((b) => b.side === side && sameRun(body, b.edge, id));
+  // A hole's rim is one edge all the way round; everything else is matched by the run of sides it belongs to.
+  if (isHoleIndex(id)) return (body.edgeBevels ?? []).find((b) => b.side === side && b.edge === id);
+  return (body.edgeBevels ?? []).find((b) => b.side === side && !isHoleIndex(b.edge) && sameRun(body, b.edge, id));
 }
 
 /** Current size (bevel) or radius (corner) of an edge; 0 when untouched. */
 const cornerBevelAt = (body: Body3D, v: number) => (body.cornerBevels ?? []).find((c) => c.vertex === v);
 
+const holeRadius = (body: Body3D, index: number) => body.holeRadii?.[holeOf(index)]?.[holeLocal(index)] ?? 0;
+
 export function edgeSize(body: Body3D, sel: EdgeSel): number {
+  if (sel.kind === 'corner' && isHoleIndex(sel.index)) return holeRadius(body, sel.index);
   if (sel.kind === 'corner') return cornerBevelAt(body, sel.index)?.size ?? body.cornerRadii?.[sel.index] ?? 0;
   return findBevel(body, sel.kind, sel.index)?.size ?? 0;
 }
 
 export function edgeStyle(body: Body3D, sel: EdgeSel): BevelStyle | undefined {
+  if (sel.kind === 'corner' && isHoleIndex(sel.index)) return holeRadius(body, sel.index) > 0 ? 'round' : undefined;
   return sel.kind === 'corner' ? cornerBevelAt(body, sel.index)?.style : findBevel(body, sel.kind, sel.index)?.style;
 }
 
@@ -210,9 +269,20 @@ export function applyEdgeChange(
   let cornersChanged = false;
   const radii = getBase(body).map((_, i) => body.cornerRadii?.[i] ?? 0);
   let radiiChanged = false;
+  const holeRadiiNext = holeLoops(body).map((l) => [...l.radii]);
+  let holeRadiiChanged = false;
 
   for (const sel of sels) {
     if (sel.bodyId !== body.id) continue;
+    if (sel.kind === 'corner' && isHoleIndex(sel.index)) {
+      // A hole's corners are rounded in plan, unless they were picked together with its rims (then they just stay as they are).
+      const row = holeRadiiNext[holeOf(sel.index)];
+      const local = holeLocal(sel.index);
+      if (!row || local >= row.length || patch.size === undefined || hasRim) continue;
+      row[local] = Math.max(0, Math.min(MAX_BEVEL_SIZE * 2, patch.size));
+      holeRadiiChanged = true;
+      continue;
+    }
     if (sel.kind === 'corner') {
       const v = sel.index;
       const cb = corners.find((c) => c.vertex === v);
@@ -256,6 +326,7 @@ export function applyEdgeChange(
     edgeBevels: bevels,
     ...(cornersChanged ? { cornerBevels: corners } : {}),
     ...(radiiChanged ? withOutline(body, { cornerRadii: radii }) : {}),
+    ...(holeRadiiChanged ? withHoles(body, { holeRadii: holeRadiiNext }) : {}),
   };
 }
 
@@ -317,6 +388,19 @@ export function edgesAroundFace(body: Body3D, face: FaceSel): EdgeSel[] {
   if (face.kind === 'top') return edgesOfKind(body, 'top');
   if (face.kind === 'bottom') return edgesOfKind(body, 'bottom');
   if (face.index === undefined) return [];
+  if (isHoleIndex(face.index)) {
+    const h = holeOf(face.index);
+    const loop = holeLoops(body)[h];
+    if (!loop) return [];
+    const k = loop.base.length;
+    const side = holeLocal(face.index);
+    return [
+      { bodyId: body.id, kind: 'top', index: holeIndex(h) },
+      { bodyId: body.id, kind: 'bottom', index: holeIndex(h) },
+      { bodyId: body.id, kind: 'corner', index: holeIndex(h, side) },
+      { bodyId: body.id, kind: 'corner', index: holeIndex(h, (side + 1) % k) },
+    ];
+  }
   const n = getBase(body).length;
   const id = runId(sideRun(getOutline(body), n, face.index));
   // The wall's top and bottom edge, plus the vertical corner line at each end (a rounded corner counts too).

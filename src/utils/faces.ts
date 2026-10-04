@@ -3,21 +3,33 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Body3D, FaceSel } from '../types';
-import { getBase, outwardNormal, wallEnds, withOutline } from './outline';
+import { Body3D, FaceSel, Point2D } from '../types';
+import { getBase, holeLocal, holeLoops, holeOf, isHoleIndex, outwardNormal, wallEnds, withHoles, withOutline } from './outline';
 
 export const MIN_HEIGHT = 2;
 export const MAX_HEIGHT = 600;
 
-/** Slides one wall along its outward normal; positive pushes it out. */
-export function offsetWall(body: Body3D, index: number, dist: number): Partial<Body3D> | null {
+/** The sharp outline a wall belongs to: the shape's own, or one hole's. */
+export const wallBase = (body: Body3D, index: number) => (isHoleIndex(index) ? holeLoops(body)[holeOf(index)]?.base ?? [] : getBase(body));
+
+/**
+ * Slides one wall along its outward normal (away from the material); positive pushes it out.
+ * `from` is the outline to start from, so a drag can be re-applied to where it began.
+ */
+export function offsetWall(body: Body3D, index: number, dist: number, from?: Point2D[]): Partial<Body3D> | null {
   const ends = wallEnds(body, index);
   if (!ends) return null;
   const n = outwardNormal(ends.a, ends.b, ends.winding);
-  const base = getBase(body).map((p) => ({ ...p }));
-  [index, (index + 1) % base.length].forEach((i) => {
+  const base = (from ?? wallBase(body, index)).map((p) => ({ ...p }));
+  const side = isHoleIndex(index) ? holeLocal(index) : index;
+  [side, (side + 1) % base.length].forEach((i) => {
     base[i] = { x: Math.round(base[i].x + n.x * dist), y: Math.round(base[i].y + n.y * dist) };
   });
+  if (isHoleIndex(index)) {
+    const bases = holeLoops(body).map((l) => l.base);
+    bases[holeOf(index)] = base;
+    return withHoles(body, { holeBases: bases });
+  }
   return withOutline(body, { basePoints: base });
 }
 
@@ -52,7 +64,8 @@ export function faceMeasure(body: Body3D, face: FaceSel): { label: string; value
   const ends = wallEnds(body, face.index);
   if (!ends) return null;
   const n = outwardNormal(ends.a, ends.b, ends.winding);
-  const d = body.points.map((p) => p.x * n.x + p.y * n.y);
+  const ring = isHoleIndex(face.index) ? holeLoops(body)[holeOf(face.index)].outline.points : body.points;
+  const d = ring.map((p) => p.x * n.x + p.y * n.y);
   const label = Math.abs(n.x) > 0.7 ? 'Width' : Math.abs(n.y) > 0.7 ? 'Depth' : 'Size';
   return { label, value: Math.max(...d) - Math.min(...d) };
 }
@@ -60,5 +73,7 @@ export function faceMeasure(body: Body3D, face: FaceSel): { label: string; value
 /** Changes made by typing a new value for a face's number. */
 export function setFaceMeasure(body: Body3D, face: FaceSel, value: number): Partial<Body3D> | null {
   const m = faceMeasure(body, face);
-  return m ? extrudeFace(body, face, value - m.value) : null;
+  // Pushing a hole's wall out of the material makes the hole smaller.
+  const sign = face.index !== undefined && isHoleIndex(face.index) ? -1 : 1;
+  return m ? extrudeFace(body, face, (value - m.value) * sign) : null;
 }

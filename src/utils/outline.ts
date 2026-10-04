@@ -170,17 +170,77 @@ export function outwardNormal(a: Point2D, b: Point2D, winding: 1 | -1): Point2D 
   return winding > 0 ? { x: dy / len, y: -dx / len } : { x: -dy / len, y: dx / len };
 }
 
-/** The flat part of one base side of the outline: its endpoints and the outline winding. */
+// ---------------------------------------------------------------------------
+// Holes (cutouts)
+// ---------------------------------------------------------------------------
+
+/** Edge, corner and wall indices at or above this belong to a hole: `HOLE * (hole + 1) + side-or-vertex`. */
+export const HOLE = 1000;
+export const isHoleIndex = (i: number) => i >= HOLE;
+export const holeIndex = (hole: number, i = 0) => HOLE * (hole + 1) + i;
+export const holeOf = (i: number) => Math.floor(i / HOLE) - 1;
+export const holeLocal = (i: number) => i % HOLE;
+
+export interface HoleLoop {
+  base: Point2D[];
+  radii: number[];
+  outline: Outline;
+}
+
+const loopCache = new WeakMap<Body3D, HoleLoop[]>();
+
+const sameRing = (a: Point2D[], b: Point2D[]) =>
+  a.length === b.length && a.every((p, i) => Math.abs(p.x - b[i].x) < 0.2 && Math.abs(p.y - b[i].y) < 0.2);
+
+/** Every hole of a body with its sharp outline, corner radii and the outline they produce. */
+export function holeLoops(body: Body3D): HoleLoop[] {
+  let loops = loopCache.get(body);
+  if (loops) return loops;
+  loops = (body.holes ?? []).map((points, h) => {
+    const base = body.holeBases?.[h];
+    const radii = body.holeRadii?.[h];
+    // Edited holes keep their sharp outline; if the final outline no longer matches it (a cut redrew the hole), start over.
+    if (base && radii && base.length === radii.length) {
+      const outline = buildOutline(base, radii);
+      if (sameRing(outline.points, points)) return { base, radii, outline };
+    }
+    return { base: points, radii: points.map(() => 0), outline: buildOutline(points) };
+  });
+  loopCache.set(body, loops);
+  return loops;
+}
+
+/** Applies edited hole outlines and radii; `holes` is rebuilt to match. Spread the result into an update. */
+export function withHoles(
+  body: Body3D,
+  patch: { holeBases?: Point2D[][]; holeRadii?: number[][] }
+): Pick<Body3D, 'holes' | 'holeBases' | 'holeRadii'> {
+  const loops = holeLoops(body);
+  const holeBases = loops.map((l, h) => patch.holeBases?.[h] ?? l.base);
+  const holeRadii = loops.map((l, h) => patch.holeRadii?.[h] ?? l.radii);
+  return { holeBases, holeRadii, holes: holeBases.map((b, h) => buildOutline(b, holeRadii[h]).points) };
+}
+
+/** The flat part of one base side of the outline (or of a hole, by hole index): its endpoints and a winding whose outward normal points away from the material. */
 export function wallEnds(
-  body: Pick<Body3D, 'points' | 'basePoints' | 'cornerRadii'>,
+  body: Body3D,
   side: number
 ): { a: Point2D; b: Point2D; winding: 1 | -1 } | null {
-  const outline = getOutline(body);
-  const idx = outline.roles.map((r, k) => (r.kind === 'side' && r.index === side ? k : -1)).filter((k) => k >= 0);
+  let outline: Outline;
+  let local = side;
+  let flip = false;
+  if (isHoleIndex(side)) {
+    const loop = holeLoops(body)[holeOf(side)];
+    if (!loop) return null;
+    outline = loop.outline;
+    local = holeLocal(side);
+    flip = true;
+  } else outline = getOutline(body);
+  const idx = outline.roles.map((r, k) => (r.kind === 'side' && r.index === local ? k : -1)).filter((k) => k >= 0);
   if (!idx.length) return null;
   return {
     a: outline.points[idx[0]],
     b: outline.points[(idx[idx.length - 1] + 1) % outline.points.length],
-    winding: outline.winding,
+    winding: (flip ? -outline.winding : outline.winding) as 1 | -1,
   };
 }

@@ -6,7 +6,8 @@ import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, withOutline } from '../src/utils/outline';
-import { applyEdgeChange, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
+import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
+import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
 
@@ -162,6 +163,43 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
     if (d < R && h > 40 - R && Math.hypot(R - d, h - (40 - R)) > R + 0.05) fins++;
   }
   check('round on a rotated box leaves no end-wall slivers', fins === 0, `${fins} sliver triangles`);
+}
+
+// A shape with a square cutout: its edges can be picked, beveled and rounded, and its walls pushed.
+{
+  const hole = rect(-20, -20, 20, 20);
+  const plate = body({ id: 'p', points: rect(-60, -60, 60, 60), holes: [hole], extrusionHeight: 20 });
+  const holeEdges = listEdges(plate).filter((e) => e.index >= 1000);
+  check('hole has top and bottom rims and four corners', holeEdges.filter((e) => e.kind === 'top').length === 1 && holeEdges.filter((e) => e.kind === 'bottom').length === 1 && holeEdges.filter((e) => e.kind === 'corner').length === 4, holeEdges.map((e) => e.kind + e.index).join(' '));
+  const flat = volume(buildBodyGeometry(plate)!);
+  check('plate with a hole volume', near(flat, (120 * 120 - 40 * 40) * 20, 1), String(flat));
+
+  const rimSel = { bodyId: 'p', kind: 'top' as const, index: 1000 };
+  const rounded = { ...plate, ...applyEdgeChange(plate, [rimSel], { size: 5, style: 'round' }) };
+  const cutRim = flat - volume(buildBodyGeometry(rounded)!);
+  // Rounding a 160 mm loop with r = 5 removes (1 - pi/4) * r^2 per mm of length, a bit more at the mitred corners.
+  check('rounding a hole rim removes material from the rim', cutRim > 200 && cutRim < 1200, String(cutRim));
+  const g = buildBodyGeometry(rounded)!;
+  check('bevelled hole is a closed solid', g.attributes.position.count > 0);
+
+  const corner = { bodyId: 'p', kind: 'corner' as const, index: 1000 };
+  const roundedCorner = { ...plate, ...applyEdgeChange(plate, [corner], { size: 8 }) };
+  check('hole corner rounds in plan', (roundedCorner.holes?.[0].length ?? 0) > 4 && volume(buildBodyGeometry(roundedCorner)!) > flat);
+  check('rounded hole corner reads back its radius', near(edgeSize(roundedCorner, corner), 8, 0.01));
+  const both = { ...roundedCorner, ...applyEdgeChange(roundedCorner, [{ bodyId: 'p', kind: 'bottom' as const, index: 1000 }], { size: 3, style: 'chamfer' }) };
+  check('rim bevel on a rounded hole builds', volume(buildBodyGeometry(both)!) < volume(buildBodyGeometry(roundedCorner)!));
+
+  const wall = { bodyId: 'p', kind: 'wall' as const, index: 1000 };
+  const around = edgesAroundFace(plate, wall);
+  check('hole wall edges are its rims and two corners', around.length === 4 && around.every((e) => e.index >= 1000));
+  const m = faceMeasure(plate, wall)!;
+  check('hole wall measures the hole', near(m.value, 40, 0.01), String(m.value));
+  const widened = { ...plate, ...setFaceMeasure(plate, wall, 60)! };
+  const xs = widened.holes!.flat().map((p) => p.y);
+  check('typing a bigger size grows the hole', near(Math.max(...xs) - Math.min(...xs), 60, 1.01), xs.join(','));
+  const moved = { ...plate, ...transformBody(plate, { dx: 10, dy: 5, dz: 0, angle: 0.4, cx: 0, cy: 0 }) };
+  const roundedMoved = { ...roundedCorner, ...transformBody(roundedCorner, { dx: 10, dy: 5, dz: 0, angle: 0.4, cx: 0, cy: 0 }) };
+  check('moving keeps hole rounding editable', near(edgeSize(roundedMoved, corner), 8, 0.01) && !!moved.holes);
 }
 
 if (failures) {
