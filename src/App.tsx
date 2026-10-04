@@ -31,6 +31,7 @@ import { applyEdgeChange, edgeKey } from './utils/edges';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
   Box,
+  EyeOff,
   Focus,
   Info,
   Trash2,
@@ -264,6 +265,20 @@ export default function App() {
     const updates = body && extrudeFace(body, face, delta);
     if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
   };
+
+  const hiddenCount = bodies.filter((b) => !b.visible).length;
+  const selectedGroupId =
+    selectedBodies.length > 1 && selectedBodies[0].groupId && selectedBodies.every((b) => b.groupId === selectedBodies[0].groupId) ? selectedBodies[0].groupId : null;
+
+  const hideSelected = () => {
+    if (!selectedBodyIds.length) return;
+    const ids = new Set(selectedBodyIds);
+    setBodies((prev) => prev.map((b) => (ids.has(b.id) ? { ...b, visible: false } : b)));
+    notify(`Hid ${ids.size === 1 ? 'the shape' : `${ids.size} shapes`}. Use Organize → Show hidden to bring back.`);
+    selectOnly(null);
+  };
+
+  const showHidden = () => setBodies((prev) => prev.map((b) => (b.visible ? b : { ...b, visible: true })));
 
   const handleFaceValue = (face: FaceSel, mm: number) => {
     const body = bodies.find((b) => b.id === face.bodyId);
@@ -612,6 +627,9 @@ export default function App() {
       case 'm':
         if (selectedBodyIds.length) setMoveOn((v) => !v);
         break;
+      case 'h':
+        hideSelected();
+        break;
       case 'i':
         toggleIsolate();
         break;
@@ -622,7 +640,8 @@ export default function App() {
         handleOpenRepeat();
         break;
       case 'g':
-        handleGroupSelected();
+        if (selectedGroupId) handleUngroup(selectedGroupId);
+        else handleGroupSelected();
         break;
       case 'j':
         handleMergeSelected();
@@ -780,6 +799,23 @@ export default function App() {
                   </button>
                 </motion.div>
               )}
+              {hiddenCount > 0 && (
+                <motion.div
+                  key="hidden"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  className="flex items-center gap-2.5 pl-3 pr-1.5 py-1.5 rounded-full bg-slate-800/95 border border-white/12 backdrop-blur text-[13px] text-slate-200 shadow-xl max-w-full"
+                >
+                  <EyeOff size={14} className="shrink-0 text-slate-400" />
+                  <span className="truncate">
+                    {hiddenCount} hidden
+                  </span>
+                  <button type="button" onClick={showHidden} className="h-7 px-3 rounded-full bg-white/12 hover:bg-white/20 text-xs font-medium text-white shrink-0">
+                    Show
+                  </button>
+                </motion.div>
+              )}
               {toast && (
                 <motion.div
                   key={toast}
@@ -813,7 +849,11 @@ export default function App() {
         onAddShape={addShape}
         onToggleMove={() => setMoveOn((v) => !v)}
         onIsolate={toggleIsolate}
-        onGroup={handleGroupSelected}
+        grouped={!!selectedGroupId}
+        hiddenCount={hiddenCount}
+        onHide={hideSelected}
+        onShowHidden={showHidden}
+        onGroup={() => (selectedGroupId ? handleUngroup(selectedGroupId) : handleGroupSelected())}
         onJoin={handleMergeSelected}
         onSubtract={handleOpenCut}
         onPattern={handleOpenRepeat}

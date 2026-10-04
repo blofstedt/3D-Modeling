@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Box, FileDown, Layers, Move, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
+import { Box, FileDown, Move, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
 import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
 import { edgeSize, edgeStyle, MAX_BEVEL_SIZE } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
@@ -194,10 +194,7 @@ export default function TopBar(props: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">
-        <MenuButton id="bodies" openId={openId} setOpenId={setOpenId} label="Scene" icon={Layers} placement="down" title="All shapes in the scene">
-          <Sidebar {...props.sidebar} section="bodies" />
-        </MenuButton>
-        <MenuButton id="file" openId={openId} setOpenId={setOpenId} icon={FileDown} placement="down" title="Export and scene">
+        <MenuButton id="file" openId={openId} setOpenId={setOpenId} icon={FileDown} placement="down" title="Export and file">
           <Sidebar {...props.sidebar} section="export" />
         </MenuButton>
       </div>
