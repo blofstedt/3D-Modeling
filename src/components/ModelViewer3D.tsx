@@ -1081,7 +1081,10 @@ export default function ModelViewer3D({
       const armShape = hit.type === 'body' && held.length >= 1 && !(held.length === 1 && held[0] === hit.bodyId);
       // Holding an edge of the selected shape adds that edge (or drops it, if it is already in).
       const armEdge = hit.type === 'edge' && held.includes(hit.sel.bodyId);
-      if (armShape || armEdge) {
+      // Holding another face of the shape while edges are selected keeps those edges and picks that face too.
+      const armFace =
+        hit.type === 'body' && held.length === 1 && held[0] === hit.bodyId && live.current.selectedEdges.length > 0 && !sameFace(live.current.selectedFace, hit.face);
+      if (armShape || armEdge || armFace) {
         const pressed = candidate;
         const rect = renderer.domElement.getBoundingClientRect();
         setHold({ x: e.clientX - rect.left, y: e.clientY - rect.top });
@@ -1093,7 +1096,8 @@ export default function ModelViewer3D({
           if (hit.type === 'edge') {
             live.current.onSelectFace(null);
             live.current.onSelectEdges(toggleEdge(live.current.selectedEdges, hit.sel));
-          } else if (hit.type === 'body') live.current.onSelectBody(hit.bodyId, true);
+          } else if (hit.type === 'body' && armFace) live.current.onSelectFace(hit.face);
+          else if (hit.type === 'body') live.current.onSelectBody(hit.bodyId, true);
         }, 420);
       }
       // Pressing on a shape never orbits: it either selects it or starts moving it.
@@ -1863,7 +1867,9 @@ export default function ModelViewer3D({
               onEdges={
                 faceBody
                   ? () => {
-                      onSelectEdges(edgesAroundFace(faceBody, selectedFace));
+                      // Edges already picked on this shape stay selected; this face's edges join them.
+                      const kept = selectedEdges.filter((e) => e.bodyId === faceBody.id);
+                      onSelectEdges(edgesAroundFace(faceBody, selectedFace).reduce((all, e) => (all.some((k) => edgeKey(k) === edgeKey(e)) ? all : [...all, e]), kept));
                       onSelectFace(null);
                     }
                   : undefined
