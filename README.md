@@ -45,7 +45,7 @@ Tools (bottom bar): Move `M`, Isolate `I`, Group `G`, Join `J` (merge overlappin
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
 
-Export STL (Z-up, slicer-ready), OBJ or JSON from the Inspector's **Export** tab. Exports use the
+Export STL (Z-up, slicer-ready), OBJ or JSON from the file menu at the top right. Exports use the
 same geometry you see in the viewport, including cutouts and bevels.
 
 ### Performance notes
@@ -64,7 +64,7 @@ src/
     ModelViewer3D.tsx     three.js scene, direct-manipulation handles, hit-testing, edge picking, camera
     TopBar.tsx / BottomBar.tsx / Menu.tsx   the properties bar, the tools bar and their round pop-up menus
     FloatingControls.tsx  edge bevel panel pinned to the selected edge
-    Sidebar.tsx           inspector: properties, material, bodies, export
+    Sidebar.tsx           content of the bar menus: properties, material, scene list, export
     ViewCube.tsx          orientation cube
     *Modal.tsx            cut and pattern dialogs
   utils/
