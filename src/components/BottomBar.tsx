@@ -85,8 +85,8 @@ export default function BottomBar(props: BottomBarProps) {
   ];
 
   return (
-    <nav aria-label="Tools" className="shrink-0 h-16 bg-slate-900 border-t border-white/8 z-40 flex items-center justify-start sm:justify-center gap-1.5 px-3 overflow-x-auto no-scrollbar">
-      <MenuButton id="shapes" openId={props.openId} setOpenId={props.setOpenId} label="Shape" icon={Shapes} placement="up" title="Add a shape">
+    <nav aria-label="Tools" className="shrink-0 h-16 bg-slate-900 border-t border-white/8 z-40 flex items-center justify-evenly sm:justify-center sm:gap-1.5 px-2 sm:px-3">
+      <MenuButton id="shapes" openId={props.openId} setOpenId={props.setOpenId} label="Shape" icon={Shapes} placement="up" title="Add a shape" iconOnlyOnMobile>
         <div className="p-3 w-[min(19rem,calc(100vw-1.5rem))]">
           <p className="px-2 pb-2 text-xs text-slate-400">{props.addOnTop ? 'Adds on top of the selected face' : 'Add a shape'}</p>
           <div className="grid grid-cols-3 gap-2">
@@ -116,7 +116,7 @@ export default function BottomBar(props: BottomBarProps) {
         </div>
       </MenuButton>
 
-      <div className="shrink-0 w-px h-6 bg-white/10 mx-1" />
+      <div className="hidden sm:block shrink-0 w-px h-6 bg-white/10 mx-1" />
 
       {tools.map((t) => {
         const Icon = t.icon;
@@ -132,7 +132,7 @@ export default function BottomBar(props: BottomBarProps) {
             whileHover={t.disabled ? undefined : { scale: 1.05 }}
             whileTap={t.disabled ? undefined : { scale: 0.92 }}
             transition={spring}
-            className={`shrink-0 h-9 px-3 sm:px-3.5 rounded-full flex items-center gap-1.5 text-[13px] font-medium transition-colors ${
+            className={`shrink-0 h-10 w-10 sm:h-9 sm:w-auto sm:px-3.5 rounded-full flex items-center justify-center gap-1.5 text-[13px] font-medium transition-colors ${
               t.active
                 ? 'bg-accent-500 text-white shadow-md shadow-accent-500/30'
                 : t.danger
