@@ -1421,6 +1421,27 @@ export default function ModelViewer3D({
         arrow.add(base, shaft, head, hit);
         gizmoGroup.add(arrow);
       };
+      // The three axes meet at one point: a dot at the middle of the selection, with a line out to each arrow.
+      const hub = new THREE.Group();
+      hub.position.set(bounds.centerX, midY, -bounds.centerY);
+      const spoke = (to: { x: number; y: number; z: number }, color: string) => {
+        const line = makeFatLine([{ x: 0, y: 0, z: 0 }, to], color, 2.5);
+        const m = line.material as LineMaterial;
+        m.depthTest = false;
+        m.transparent = true;
+        line.renderOrder = 29;
+        line.raycast = () => {};
+        hub.add(line);
+      };
+      spoke({ x: bounds.maxX + 6 - bounds.centerX, y: 0, z: 0 }, '#fb7185');
+      spoke({ x: 0, y: 0, z: -(bounds.maxY + 6 - bounds.centerY) }, '#34d399');
+      spoke({ x: 0, y: top + 6 - midY, z: 0 }, '#60a5fa');
+      const origin = new THREE.Mesh(HANDLE.dot, handleMaterial('#ffffff'));
+      origin.scale.setScalar(3.2 * s);
+      origin.renderOrder = 31;
+      origin.raycast = () => {};
+      hub.add(origin);
+      gizmoGroup.add(hub);
       axisArrow('x', '#fb7185', new THREE.Vector3(bounds.maxX + 6, midY, -bounds.centerY), new THREE.Vector3(1, 0, 0));
       axisArrow('y', '#34d399', new THREE.Vector3(bounds.centerX, midY, -(bounds.maxY + 6)), new THREE.Vector3(0, 0, -1));
       axisArrow('z', '#60a5fa', new THREE.Vector3(bounds.centerX, top + 6, -bounds.centerY), up);
