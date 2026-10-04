@@ -200,6 +200,14 @@ export default function App() {
     setSelectedFace(null);
   };
 
+  /** Selects several shapes at once (e.g. every piece of a joined shape). */
+  const selectMany = (ids: string[]) => {
+    setSelectedBodyId(ids[0] ?? null);
+    setSelectedBodyIds(ids);
+    setSelectedEdges([]);
+    setSelectedFace(null);
+  };
+
   // ---- Selection ----------------------------------------------------------
   const handleSelectBody = (id: string | null, isMultiSelect?: boolean) => {
     if (id === null) {
@@ -266,8 +274,11 @@ export default function App() {
   };
 
   const hiddenCount = bodies.filter((b) => !b.visible).length;
-  const selectedGroupId =
+  const commonGroupId =
     selectedBodies.length > 1 && selectedBodies[0].groupId && selectedBodies.every((b) => b.groupId === selectedBodies[0].groupId) ? selectedBodies[0].groupId : null;
+  /** A joined shape is several pieces that act as one solid; it is never shown as a loose group. */
+  const joinedSelected = !!commonGroupId && !!groups.find((g) => g.id === commonGroupId)?.joined;
+  const selectedGroupId = joinedSelected ? null : commonGroupId;
 
   const hideSelected = () => {
     if (!selectedBodyIds.length) return;
@@ -431,7 +442,7 @@ export default function App() {
         if (!pieces) return [b];
         if (pieces.length > 1) {
           const gid = b.groupId ?? `group_${stamp}_${b.id}`;
-          if (!b.groupId) newGroups.push({ id: gid, name: `${b.name}`, bodyIds: [] });
+          if (!b.groupId) newGroups.push({ id: gid, name: `${b.name}`, bodyIds: [], joined: true });
           return pieces.map((p) => ({ ...p, groupId: gid }));
         }
         return pieces;
@@ -441,9 +452,9 @@ export default function App() {
       .filter((g) => g.bodyIds.length > 1);
     setDoc({ bodies: next, groups: allGroups });
     setIsolatedIds((prev) => (prev ? prev.filter((id) => !cutterIds.includes(id)) : prev));
-    const firstPieces = replaced.get(targets[0].id);
-    const firstTarget = firstPieces?.find((p) => p.id === targets[0].id) ?? firstPieces?.[0];
-    selectOnly(firstTarget ? firstTarget.id : null);
+    const resultIds = targets.flatMap((t) => (replaced.get(t.id) ?? []).map((p) => p.id));
+    if (resultIds.length) selectMany(resultIds);
+    else selectOnly(null);
     notify(`Subtracted ${cutters.length === 1 ? `“${cutters[0].name}”` : 'the last pick'} from ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} shapes`}. ⌘Z undoes.`);
   };
 
@@ -522,11 +533,11 @@ export default function App() {
       bodies: [...d.bodies.filter((b) => !gone.has(b.id)), ...pieces],
       groups: [
         ...d.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })).filter((g) => g.bodyIds.length > 1),
-        ...(groupId ? [{ id: groupId, name: `${targets[0].name} (joined)`, bodyIds: pieces.map((b) => b.id) }] : []),
+        ...(groupId ? [{ id: groupId, name: `${targets[0].name} (joined)`, bodyIds: pieces.map((b) => b.id), joined: true }] : []),
       ],
     }));
     setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...pieces.map((m) => m.id)] : prev));
-    selectOnly(pieces[0].id);
+    selectMany(pieces.map((b) => b.id));
     notify(`Joined ${targets.length} shapes into one.`);
   };
 
@@ -683,7 +694,8 @@ export default function App() {
         handleOpenRepeat();
         break;
       case 'g':
-        if (selectedGroupId) handleUngroup(selectedGroupId);
+        if (joinedSelected) notify('This is a joined shape: it already moves as one.');
+        else if (selectedGroupId) handleUngroup(selectedGroupId);
         else handleGroupSelected();
         break;
       case 'j':
@@ -750,6 +762,7 @@ export default function App() {
         onUndo={doUndo}
         onRedo={doRedo}
         selected={selectedBodies}
+        joined={joinedSelected}
         edges={selectedEdges}
         face={selectedFace}
         onEdgeChange={handleEdgeChange}
@@ -896,7 +909,11 @@ export default function App() {
         hiddenCount={hiddenCount}
         onHide={hideSelected}
         onShowHidden={showHidden}
-        onGroup={() => (selectedGroupId ? handleUngroup(selectedGroupId) : handleGroupSelected())}
+        onGroup={() => {
+          if (joinedSelected) notify('This is a joined shape: it already moves as one.');
+          else if (selectedGroupId) handleUngroup(selectedGroupId);
+          else handleGroupSelected();
+        }}
         onJoin={handleMergeSelected}
         onSubtract={handleSubtractSelected}
         onPattern={handleOpenRepeat}
@@ -907,7 +924,12 @@ export default function App() {
         {confirmDeleteIds && (
           <ConfirmDeleteModal
             key="delete"
-            names={confirmDeleteIds.map((id) => bodies.find((b) => b.id === id)?.name ?? 'shape')}
+            names={(() => {
+              const picked = confirmDeleteIds.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b);
+              const gid = picked[0]?.groupId;
+              const oneJoined = !!gid && picked.every((b) => b.groupId === gid) && !!groups.find((g) => g.id === gid)?.joined;
+              return oneJoined ? [picked[0].name] : picked.map((b) => b.name);
+            })()}
             onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
             onCancel={() => setConfirmDeleteIds(null)}
           />

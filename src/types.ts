@@ -72,6 +72,8 @@ export interface ShapeGroup {
   id: string;
   name: string;
   bodyIds: string[];
+  /** Made by Join or Subtract: the pieces form one solid, so it is presented as a single shape. */
+  joined?: boolean;
 }
 
 export interface RepeatConfig {

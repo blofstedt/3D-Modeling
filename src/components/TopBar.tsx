@@ -23,6 +23,8 @@ interface TopBarProps {
   onUndo: () => void;
   onRedo: () => void;
   selected: Body3D[];
+  /** The selection is one joined shape made of several pieces. */
+  joined: boolean;
   edges: EdgeSel[];
   face: FaceSel | null;
   onEdgeChange: (edges: EdgeSel[], patch: { size?: number; style?: BevelStyle }) => void;
@@ -158,7 +160,7 @@ export default function TopBar(props: TopBarProps) {
     if (mode === 'multi') {
       return (
         <>
-          <Chip sub="Drag one to move them all">{selected.length} shapes</Chip>
+          <Chip sub={props.joined ? 'Joined · moves as one' : 'Drag one to move them all'}>{props.joined ? selected[0].name : `${selected.length} shapes`}</Chip>
           <MenuButton id="size" openId={openId} setOpenId={setOpenId} label="Position" icon={Move} placement="down">
             <SizePositionPanel {...props} />
           </MenuButton>
