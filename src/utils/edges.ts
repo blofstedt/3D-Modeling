@@ -189,16 +189,19 @@ export function applyEdgeChange(
   patch: { size?: number; style?: BevelStyle }
 ): Partial<Body3D> {
   let bevels = [...(body.edgeBevels ?? [])];
+  const hasRim = sels.some((e) => e.bodyId === body.id && e.kind !== 'corner');
   const radii = getBase(body).map((_, i) => body.cornerRadii?.[i] ?? 0);
   let radiiChanged = false;
 
   for (const sel of sels) {
     if (sel.bodyId !== body.id) continue;
     if (sel.kind === 'corner') {
-      if (patch.size !== undefined) {
-        radii[sel.index] = Math.max(0, Math.min(MAX_BEVEL_SIZE * 2, patch.size));
-        radiiChanged = true;
-      }
+      if (patch.size === undefined) continue;
+      // Picked together with top/bottom edges, a vertical corner keeps the curve it already has: the bevel follows it.
+      // Only a sharp corner is rounded to match, and removing bevels never flattens a curve.
+      if (hasRim && ((radii[sel.index] ?? 0) > 0 || patch.size <= 0)) continue;
+      radii[sel.index] = Math.max(0, Math.min(MAX_BEVEL_SIZE * 2, patch.size));
+      radiiChanged = true;
       continue;
     }
     const existing = findBevel(body, sel.kind, sel.index);
@@ -315,3 +318,6 @@ export function toggleEdge(current: EdgeSel[], sel: EdgeSel): EdgeSel[] {
   const k = edgeKey(sel);
   return current.some((c) => edgeKey(c) === k) ? current.filter((c) => edgeKey(c) !== k) : [...current, sel];
 }
+
+/** The edge whose size and style the controls show: a top or bottom edge if there is one, else the first. */
+export const primaryEdge = (sels: EdgeSel[]): EdgeSel => sels.find((e) => e.kind !== 'corner') ?? sels[0];

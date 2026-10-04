@@ -103,6 +103,15 @@ check('rim selection counts', edgesOfKind(box, 'top').length === 4 && edgesOfKin
 check('top face selects the whole top rim', isWholeGroup(box, edgesAroundFace(box, { bodyId: box.id, kind: 'top' }), 'top'));
 check('a wall borders four edges: top, bottom and both corners', edgesAroundFace(box, { bodyId: box.id, kind: 'wall', index: 0 }).length === 4);
 
+// A bevel picked together with a rounded corner keeps that curve (it used to be overwritten with the bevel size).
+const curved = { ...box, ...withOutline(box, { cornerRadii: [0, 25, 0, 0] }) } as Body3D;
+const wallEdges = edgesAroundFace(curved, { bodyId: curved.id, kind: 'wall', index: 0 });
+const bevelled = { ...curved, ...applyEdgeChange(curved, wallEdges, { size: 8 }) } as Body3D;
+check('bevel keeps an existing curved corner', near(bevelled.cornerRadii![1], 25, 0.01), JSON.stringify(bevelled.cornerRadii));
+check('bevel rounds a sharp corner to match', near(bevelled.cornerRadii![0], 8, 0.01));
+const removed = { ...bevelled, ...applyEdgeChange(bevelled, wallEdges, { size: 0 }) } as Body3D;
+check('removing the bevel keeps the curve', near(removed.cornerRadii![1], 25, 0.01) && !(removed.edgeBevels ?? []).length);
+
 // Join keeps each shape's own height: a tall block beside a short one stays tall where it is tall.
 const tall = body({ id: 'a', points: rect(0, 0, 40, 40), extrusionHeight: 80 });
 const short = body({ id: 'b', points: rect(40, 0, 100, 40), extrusionHeight: 20 });

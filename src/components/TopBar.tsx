@@ -7,7 +7,7 @@ import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Box, FileDown, Move, SquareDashed, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
 import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
-import { describeEdges, edgeSize, edgesOfKind, edgeStyle, isWholeGroup, MAX_BEVEL_SIZE, type EdgeGroup } from '../utils/edges';
+import { describeEdges, edgeSize, edgesOfKind, edgeStyle, isWholeGroup, MAX_BEVEL_SIZE, primaryEdge, type EdgeGroup } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
 import MenuButton from './Menu';
 import Sidebar from './Sidebar';
@@ -95,7 +95,7 @@ export default function TopBar(props: TopBarProps) {
   const dynamic = (() => {
     if (mode === 'edge' && body) {
       const onlyCorners = edges.every((e) => e.kind === 'corner');
-      const size = edgeSize(body, edges[0]);
+      const size = edgeSize(body, primaryEdge(edges));
       const style = edgeStyle(body, edges.find((e) => e.kind !== 'corner') ?? edges[0]) ?? 'round';
       const set = (v: number) => props.onEdgeChange(edges, { size: Math.max(0, Math.min(MAX_BEVEL_SIZE, v)) });
       return (

@@ -15,7 +15,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, sameFace } from '../utils/faces';
-import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, toggleEdge } from '../utils/edges';
+import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -801,7 +801,7 @@ export default function ModelViewer3D({
         case 'edge-size': {
           const sels = live.current.selectedEdges;
           const first = sels[0] && bodyOf(sels[0].bodyId);
-          return first ? { ...common, kind: 'edge-size', sels, initialSize: edgeSize(first, sels[0]) } : null;
+          return first ? { ...common, kind: 'edge-size', sels, initialSize: edgeSize(first, primaryEdge(sels)) } : null;
         }
         default: {
           const ids = live.current.selectedBodyIds;
@@ -1803,7 +1803,7 @@ export default function ModelViewer3D({
   const beginPickerDrag = (style: BevelStyle, e: React.PointerEvent<HTMLElement>) => {
     if (!pickerBody) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const start = Math.max(edgeSize(pickerBody, selectedEdges[0]), DEFAULT_BEVEL_SIZE);
+    const start = Math.max(edgeSize(pickerBody, primaryEdge(selectedEdges)), DEFAULT_BEVEL_SIZE);
     pickerDrag.current = { startY: e.clientY, start, sels: selectedEdges };
     onDragStateChange?.(true);
     onEdgeChange(selectedEdges, { style, size: start });
