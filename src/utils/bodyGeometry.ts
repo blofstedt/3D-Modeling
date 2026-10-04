@@ -265,11 +265,130 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
   }
 
   geometry.deleteAttribute('uv');
+  if (bevels.length || cornerCutters.length) {
+    // Boolean cuts leave slivers and T-junctions behind: drop the one, close the other so no dark specks show.
+    const clean = cleanMesh(geometry);
+    geometry.dispose();
+    geometry = clean;
+  }
   const smooth = toCreasedNormals(geometry, THREE.MathUtils.degToRad(32));
   if (smooth !== geometry) geometry.dispose();
   smooth.translate(0, body.elevation ?? 0, 0);
   return smooth;
 }
+/**
+ * Tidies a boolean result for shading: welds coincident vertices, drops zero-area triangles (their normals come out
+ * blank and render black), and splits triangles where another triangle's vertex sits on their edge, so the surface
+ * has no hairline cracks for the background to show through.
+ */
+export function cleanMesh(source: THREE.BufferGeometry): THREE.BufferGeometry {
+  const pos = source.getAttribute('position');
+  const idx = source.getIndex();
+  const count = idx ? idx.count : pos.count;
+  const Q = 1000;
+  const vertexId = new Map<string, number>();
+  const coords: number[] = [];
+  const weld = (i: number) => {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const k = `${Math.round(x * Q)},${Math.round(y * Q)},${Math.round(z * Q)}`;
+    let id = vertexId.get(k);
+    if (id === undefined) {
+      id = coords.length / 3;
+      vertexId.set(k, id);
+      coords.push(x, y, z);
+    }
+    return id;
+  };
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const area2 = (i: number, j: number, k: number) => {
+    a.fromArray(coords, i * 3);
+    b.fromArray(coords, j * 3);
+    c.fromArray(coords, k * 3);
+    return b.sub(a).cross(c.sub(a)).length();
+  };
+
+  const tris: number[][] = [];
+  for (let t = 0; t + 2 < count; t += 3) {
+    const ids = [0, 1, 2].map((k) => weld(idx ? idx.getX(t + k) : t + k));
+    if (ids[0] === ids[1] || ids[1] === ids[2] || ids[2] === ids[0] || area2(ids[0], ids[1], ids[2]) < 1e-6) continue;
+    tris.push(ids);
+  }
+
+  const edgeUses = new Map<string, number>();
+  const ek = (u: number, v: number) => (u < v ? `${u}_${v}` : `${v}_${u}`);
+  tris.forEach((t) => t.forEach((u, k) => edgeUses.set(ek(u, t[(k + 1) % 3]), (edgeUses.get(ek(u, t[(k + 1) % 3])) ?? 0) + 1)));
+
+  const cell = 8;
+  const grid = new Map<string, number[]>();
+  for (let i = 0; i < coords.length / 3; i++) {
+    const k = `${Math.floor(coords[i * 3] / cell)},${Math.floor(coords[i * 3 + 1] / cell)},${Math.floor(coords[i * 3 + 2] / cell)}`;
+    const list = grid.get(k);
+    if (list) list.push(i);
+    else grid.set(k, [i]);
+  }
+  /** Vertices lying inside the edge u→v, in order from u. */
+  const onEdge = (u: number, v: number): number[] => {
+    if (edgeUses.get(ek(u, v)) !== 1) return [];
+    const p = new THREE.Vector3().fromArray(coords, u * 3);
+    const q = new THREE.Vector3().fromArray(coords, v * 3);
+    const dir = q.clone().sub(p);
+    const len2 = dir.lengthSq();
+    const found: { id: number; t: number }[] = [];
+    const w = new THREE.Vector3();
+    for (let cx = Math.floor(Math.min(p.x, q.x) / cell); cx <= Math.floor(Math.max(p.x, q.x) / cell); cx++)
+      for (let cy = Math.floor(Math.min(p.y, q.y) / cell); cy <= Math.floor(Math.max(p.y, q.y) / cell); cy++)
+        for (let cz = Math.floor(Math.min(p.z, q.z) / cell); cz <= Math.floor(Math.max(p.z, q.z) / cell); cz++)
+          for (const id of grid.get(`${cx},${cy},${cz}`) ?? []) {
+            if (id === u || id === v) continue;
+            w.fromArray(coords, id * 3);
+            const t = w.clone().sub(p).dot(dir) / len2;
+            if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+            if (p.clone().addScaledVector(dir, t).distanceToSquared(w) < 4e-6) found.push({ id, t });
+          }
+    return found.sort((m, n) => m.t - n.t).map((f) => f.id);
+  };
+
+  const out: number[] = [];
+  const emit = (i: number, j: number, k: number) => {
+    if (area2(i, j, k) < 1e-6) return;
+    for (const id of [i, j, k]) out.push(coords[id * 3], coords[id * 3 + 1], coords[id * 3 + 2]);
+  };
+  for (const [p0, p1, p2] of tris) {
+    const splits = [onEdge(p0, p1), onEdge(p1, p2), onEdge(p2, p0)];
+    const total = splits[0].length + splits[1].length + splits[2].length;
+    if (!total) {
+      emit(p0, p1, p2);
+      continue;
+    }
+    const corners = [p0, p1, p2];
+    const only = splits.filter((s) => s.length).length === 1 ? splits.findIndex((s) => s.length) : -1;
+    if (only >= 0) {
+      // Fan from the corner facing the split edge.
+      const apex = corners[(only + 2) % 3];
+      const chain = [corners[only], ...splits[only], corners[(only + 1) % 3]];
+      for (let k = 0; k + 1 < chain.length; k++) emit(chain[k], chain[k + 1], apex);
+      continue;
+    }
+    // Several edges split: fan around the middle of the triangle.
+    const ring = [p0, ...splits[0], p1, ...splits[1], p2, ...splits[2]];
+    const mid = coords.length / 3;
+    coords.push(
+      (coords[p0 * 3] + coords[p1 * 3] + coords[p2 * 3]) / 3,
+      (coords[p0 * 3 + 1] + coords[p1 * 3 + 1] + coords[p2 * 3 + 1]) / 3,
+      (coords[p0 * 3 + 2] + coords[p1 * 3 + 2] + coords[p2 * 3 + 2]) / 3
+    );
+    for (let k = 0; k < ring.length; k++) emit(ring[k], ring[(k + 1) % ring.length], mid);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
 const edgesOf = (ring: { x: number; y: number }[]) =>
   ring.map((p, i) => [p, ring[(i + 1) % ring.length]] as const);
 
