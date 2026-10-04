@@ -142,6 +142,28 @@ check('join of a stack is one taller shape', stacked.length === 1 && stacked[0].
 const overlap = joinBodies([body({ id: 'e', points: rect(0, 0, 60, 40) }), body({ id: 'f', points: rect(40, 0, 100, 40) })], 3);
 check('join of overlapping boxes is one polygon', overlap.length === 1 && near(Math.abs(getPolygonSignedArea(overlap[0].points)), 100 * 40, 1));
 
+// A rotated box: the round must not leave slivers of the end walls standing outside the curve.
+{
+  const ang = 0.3;
+  const R = 15;
+  const turn = (q: Point2D) => ({ x: q.x * Math.cos(ang) - q.y * Math.sin(ang), y: q.x * Math.sin(ang) + q.y * Math.cos(ang) });
+  const tilted = buildBodyGeometry(body({ elevation: 0, points: rect(-50, -30, 50, 30).map(turn), edgeBevels: [{ side: 'top', edge: 0, size: R, style: 'round' }] }))!;
+  const pos = tilted.getAttribute('position');
+  let fins = 0;
+  for (let i = 0; i < pos.count; i += 3) {
+    const loc = [0, 1, 2].map((k) => {
+      const x = pos.getX(i + k);
+      const y = -pos.getZ(i + k);
+      return { u: x * Math.cos(ang) + y * Math.sin(ang), d: -x * Math.sin(ang) + y * Math.cos(ang) + 30, h: pos.getY(i + k) };
+    });
+    if (!loc.every((l) => Math.abs(Math.abs(l.u) - 50) < 0.05)) continue;
+    const d = (loc[0].d + loc[1].d + loc[2].d) / 3;
+    const h = (loc[0].h + loc[1].h + loc[2].h) / 3;
+    if (d < R && h > 40 - R && Math.hypot(R - d, h - (40 - R)) > R + 0.05) fins++;
+  }
+  check('round on a rotated box leaves no end-wall slivers', fins === 0, `${fins} sliver triangles`);
+}
+
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);
