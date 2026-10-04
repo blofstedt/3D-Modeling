@@ -62,7 +62,7 @@ export default function CutModal({
             </div>
             <div>
               <h2 className="text-sm font-semibold text-white tracking-wide">
-                Cut Shape Out Of Another
+                Subtract One Shape From Another
               </h2>
               <p className="text-[11px] text-white/50 ">
                 Boolean Subtraction &amp; Interior Cutouts
@@ -82,7 +82,7 @@ export default function CutModal({
           {availableBodies.length < 2 ? (
             <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 flex items-center gap-3 text-amber-300 text-xs">
               <AlertCircle size={18} className="shrink-0" />
-              <span>You need at least two solid bodies in your scene to perform a cut. Draw another shape first!</span>
+              <span>You need at least two solid bodies in your scene to subtract. Add another shape first!</span>
             </div>
           ) : (
             <>
@@ -203,7 +203,7 @@ export default function CutModal({
             className="px-5 py-2.5 bg-rose-500 hover:bg-rose-400 disabled:opacity-30 disabled:pointer-events-none text-white rounded-full text-xs font-semibold transition-all shadow-lg shadow-rose-500/20 cursor-pointer flex items-center gap-2 active:scale-95"
           >
             <Scissors size={14} />
-            <span>Cut Shape Out</span>
+            <span>Subtract</span>
           </button>
         </div>
       </motion.div>

@@ -9,14 +9,12 @@ import {
   BevelStyle,
   Body3D,
   EdgeSel,
-  EditorMode,
   FaceSel,
   Point2D,
   RepeatConfig,
   ShapeGroup,
   SWATCHES,
 } from './types';
-import SketchCanvas, { SketchTool } from './components/SketchCanvas';
 import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
@@ -26,8 +24,9 @@ import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
+import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
 import { applyEdgeChange, edgeKey } from './utils/edges';
-import { BodyTransform, transformBody } from './utils/transform';
+import { BodyTransform, selectionBounds, transformBody } from './utils/transform';
 import {
   Box,
   Focus,
@@ -130,10 +129,6 @@ export default function App() {
   const [selectedFace, setSelectedFace] = useState<FaceSel | null>(null);
   /** When set, only these bodies are shown, in both 2D and 3D. */
   const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
-  const [editorMode, setEditorMode] = useState<EditorMode>('view3d');
-  const [existingPoints, setExistingPoints] = useState<Point2D[]>([]);
-  const [sketchElevation, setSketchElevation] = useState(0);
-  const [sketchTool, setSketchTool] = useState<SketchTool>('box');
   const [hint, setHint] = useState('');
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -166,7 +161,7 @@ export default function App() {
 
   const bodyCounter = useRef(bodies.length);
 
-  // Isolation hides the rest of the scene from the viewport and the sketch view.
+  // Isolation hides the rest of the scene from the viewport.
   const displayBodies = useMemo(
     () => (isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id)) : bodies),
     [bodies, isolatedIds]
@@ -282,27 +277,43 @@ export default function App() {
     notify('Duplicated.');
   };
 
-  const handleShapeComplete = (points: Point2D[]) => {
+  /** Drops a stock shape into the scene: on the selected top face if there is one, otherwise beside what is already there. */
+  const addShape = (kind: ShapeKind) => {
     bodyCounter.current += 1;
-    const newBodyId = `body_${Date.now()}`;
+    const id = `body_${Date.now()}`;
     const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
-    const newBody: Body3D = {
-      id: newBodyId,
-      name: `Shape ${bodyCounter.current}`,
-      points: [...points],
-      extrusionHeight: 50,
-      elevation: sketchElevation,
+    const onTop = selectedBody && selectedFace?.kind === 'top' && selectedFace.bodyId === selectedBody.id ? selectedBody : null;
+    let cx = 0;
+    let cy = 0;
+    let elevation = 0;
+    if (onTop) {
+      const b = selectionBounds([onTop])!;
+      cx = b.centerX;
+      cy = b.centerY;
+      elevation = Math.round(((onTop.elevation ?? 0) + onTop.extrusionHeight) * 100) / 100;
+    } else {
+      const b = selectionBounds(bodies.filter((x) => x.visible));
+      if (b) {
+        cx = Math.round(b.maxX + 50);
+        cy = Math.round(b.centerY);
+      }
+    }
+    const outline = primitiveOutline(kind, cx, cy);
+    const body: Body3D = {
+      id,
+      name: `${SHAPE_LABELS[kind]} ${bodyCounter.current}`,
+      ...outline,
+      extrusionHeight: 40,
+      elevation,
       color,
       materialType: 'matte',
       visible: true,
       createdAt: new Date().toISOString(),
     };
-    setBodies((prev) => [...prev, newBody]);
-    setIsolatedIds((prev) => (prev ? [...prev, newBodyId] : prev));
-    selectOnly(newBodyId);
-    setExistingPoints([]);
-    setEditorMode('view3d');
-    notify('Extruded to 50 mm. Drag the arrow on top to change the height.');
+    if (outline.cornerRadii) body.points = withOutline(body, { basePoints: outline.basePoints, cornerRadii: outline.cornerRadii }).points;
+    setBodies((prev) => [...prev, body]);
+    setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
+    selectOnly(id);
   };
 
   const handleApplyCut = (targetId: string, cutterId: string, keepCutter: boolean) => {
@@ -312,7 +323,7 @@ export default function App() {
 
     const cutResults = cutShape(target.points, target.holes, cutter.points, cutter.holes);
     if (cutResults.length === 0) {
-      notify('The cut removed the entire shape.');
+      notify('Subtracting removed the entire shape.');
       return;
     }
 
@@ -338,7 +349,7 @@ export default function App() {
 
     setBodies(next);
     selectOnly(targetId);
-    notify(`Cut “${cutter.name}” out of “${target.name}”.`);
+    notify(`Subtracted “${cutter.name}” from “${target.name}”.`);
   };
 
   /** Rounds every vertical corner of a body to the same radius. */
@@ -364,7 +375,7 @@ export default function App() {
   // ---- Commands -------------------------------------------------------------
   const handleOpenCut = () => {
     if (displayBodies.filter((b) => b.visible).length < 2) {
-      notify('You need at least two shapes to cut one from another.');
+      notify('You need at least two shapes to subtract one from another.');
       return;
     }
     setIsMobileSidebarOpen(false);
@@ -483,7 +494,6 @@ export default function App() {
       controlPoint: null,
       endPoint: null,
     }));
-    setEditorMode('view3d');
   };
 
   const handleClearWorkspace = () => {
@@ -491,7 +501,6 @@ export default function App() {
       setDoc({ bodies: [], groups: [] });
       selectOnly(null);
       setIsolatedIds(null);
-      setExistingPoints([]);
       notify('Workspace cleared. Press ⌘Z to bring it back.');
     }
   };
@@ -501,7 +510,6 @@ export default function App() {
     setDoc({ bodies: starter, groups: [] });
     selectOnly(starter[0].id);
     setIsolatedIds(null);
-    setEditorMode('view3d');
     notify('Loaded the starter block.');
   };
 
@@ -530,28 +538,6 @@ export default function App() {
     }
   };
 
-  /** Opens the sketch view on the ground, or on a given height (e.g. the top of a shape). */
-  const openSketch = (elevation = 0, tool: SketchTool = 'box') => {
-    setExistingPoints([]);
-    setSketchElevation(elevation);
-    setSketchTool(tool);
-    setEditorMode('sketch');
-  };
-
-  const topOf = (b: Body3D) => Math.round(((b.elevation ?? 0) + b.extrusionHeight) * 100) / 100;
-
-  /** New sketch: on the top face when that face is selected, otherwise on the ground. */
-  const newSketch = () => {
-    if (selectedBody && selectedFace?.kind === 'top' && selectedFace.bodyId === selectedBody.id) sketchOnTopOfSelection();
-    else openSketch(0);
-  };
-
-  const sketchOnTopOfSelection = () => {
-    if (!selectedBody) return;
-    openSketch(topOf(selectedBody));
-    notify(`Sketching on top of ${selectedBody.name}.`);
-  };
-
   const doUndo = () => {
     if (!history.undo()) notify('Nothing to undo.');
   };
@@ -567,7 +553,6 @@ export default function App() {
     const key = e.key.toLowerCase();
 
     if (mod) {
-      if (editorMode === 'sketch') return; // sketch canvas owns undo while drawing
       if (key === 'z') {
         e.preventDefault();
         if (e.shiftKey) doRedo();
@@ -599,22 +584,12 @@ export default function App() {
       return;
     }
     if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) return;
-    if (editorMode === 'sketch' && !['1', '2', 'i'].includes(key)) return;
 
     switch (key) {
-      case '1':
-        openSketch(sketchElevation, selectedBodyId ? 'select' : 'box');
-        break;
-      case '2':
-        setEditorMode('view3d');
-        break;
-      case 'n':
-        newSketch();
-        break;
       case 'i':
         toggleIsolate();
         break;
-      case 'c':
+      case 's':
         handleOpenCut();
         break;
       case 'r':
@@ -623,7 +598,7 @@ export default function App() {
       case 'g':
         handleGroupSelected();
         break;
-      case 'u':
+      case 'j':
         handleMergeSelected();
         break;
       case 'delete':
@@ -663,28 +638,12 @@ export default function App() {
     },
     onShowAll: () => isolate(null),
     onEditEdge: (sel: EdgeSel) => {
-      setEditorMode('view3d');
       selectOnly(sel.bodyId);
       setSelectedEdges([sel]);
       setIsMobileSidebarOpen(false);
     },
     onRemoveEdge: (sel: EdgeSel) => handleEdgeChange([sel], { size: 0 }),
   };
-
-  const modeButton = (mode: EditorMode, label: string, Icon: typeof PenLine, hotkey: string) => (
-    <button
-      type="button"
-      onClick={() => (mode === 'sketch' ? openSketch(sketchElevation, selectedBodyId ? 'select' : 'box') : setEditorMode(mode))}
-      aria-pressed={editorMode === mode}
-      title={`${label} (${hotkey})`}
-      className={`px-3 h-8 rounded-full text-[13px] font-medium flex items-center gap-1.5 transition-colors ${
-        editorMode === mode ? 'bg-white/12 text-white shadow-sm' : 'text-slate-400 hover:text-white'
-      }`}
-    >
-      <Icon size={15} strokeWidth={1.75} />
-      <span>{label}</span>
-    </button>
-  );
 
   const iconButton = (
     label: string,
@@ -727,10 +686,7 @@ export default function App() {
           {iconButton('Redo (⇧⌘Z)', doRedo, Redo2, !history.canRedo)}
         </div>
 
-        <div className="flex items-center p-0.5 rounded-full bg-white/6 border border-white/8">
-          {modeButton('sketch', 'Sketch', PenLine, '1')}
-          {modeButton('view3d', 'Model', Rotate3d, '2')}
-        </div>
+        <div />
 
         <div className="flex items-center justify-end gap-1">
           {iconButton(
@@ -747,40 +703,7 @@ export default function App() {
       <div className="flex-1 min-h-0 flex">
         {/* Viewport */}
         <main className="relative flex-1 min-w-0 min-h-0 bg-slate-950">
-          <AnimatePresence mode="wait" initial={false}>
-            {editorMode === 'sketch' ? (
-              <motion.div
-                key="sketch"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-                className="absolute inset-0"
-              >
-                <SketchCanvas
-                  onShapeComplete={handleShapeComplete}
-                  existingPoints={existingPoints}
-                  setExistingPoints={setExistingPoints}
-                  bodies={displayBodies}
-                  selectedBodyIds={selectedBodyIds}
-                  selectedBodyId={selectedBodyId}
-                  onSelectBody={handleSelectBody}
-                  onEditBody={handleUpdateBody}
-                  onEditStateChange={history.hold}
-                  planeElevation={sketchElevation}
-                  onPlaneChange={setSketchElevation}
-                  initialTool={sketchTool}
-                />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="model"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-                className="absolute inset-0"
-              >
+          <div className="absolute inset-0">
                 <ModelViewer3D
                   bodies={displayBodies}
                   selectedBodyId={selectedBodyId}
@@ -807,15 +730,15 @@ export default function App() {
                       </div>
                       <div>
                         <h2 className="text-base font-semibold text-white">Start your first part</h2>
-                        <p className="mt-1 text-sm text-slate-400">Draw a 2D profile, then pull it into a solid.</p>
+                        <p className="mt-1 text-sm text-slate-400">Add a shape, then group, join or subtract.</p>
                       </div>
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => openSketch(0)}
+                          onClick={() => addShape('box')}
                           className="px-4 h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center gap-2 transition-colors"
                         >
-                          <PenLine size={15} /> New sketch
+                          <Box size={15} /> Add a box
                         </button>
                         <button
                           type="button"
@@ -828,16 +751,15 @@ export default function App() {
                     </div>
                   </div>
                 )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          </div>
 
-          {editorMode === 'view3d' && (
+          {(
             <ToolRail
               selectedCount={selectedBodyIds.length}
               bodyCount={displayBodies.length}
               isolated={!!isolatedIds}
-              onSketch={newSketch}
+              addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
+              onAddShape={addShape}
               onIsolate={toggleIsolate}
               onGroup={handleGroupSelected}
               onUnion={handleMergeSelected}
@@ -847,7 +769,7 @@ export default function App() {
           )}
 
           <AnimatePresence>
-            {editorMode === 'view3d' && selectedBodyIds.length > 0 && (
+            {selectedBodyIds.length > 0 && (
               <motion.button
                 key="delete"
                 type="button"
@@ -905,7 +827,7 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
-            {editorMode === 'view3d' && hint && (
+            {hint && (
               <p className="hidden md:block text-xs text-slate-500 text-center leading-snug px-3">{hint}</p>
             )}
           </div>

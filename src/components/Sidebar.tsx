@@ -407,7 +407,7 @@ export default function Sidebar({
                     <Boxes size={13} /> Group
                   </button>
                   <button type="button" onClick={onMergeSelected} className="h-7 px-2.5 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-xs font-medium flex items-center gap-1.5">
-                    <Merge size={13} /> Union
+                    <Merge size={13} /> Join
                   </button>
                 </div>
               </div>
@@ -439,7 +439,7 @@ export default function Sidebar({
             )}
 
             {bodies.length === 0 ? (
-              <EmptyState title="No bodies yet" text="Draw a sketch and pull it into a solid, or load the sample scene." />
+              <EmptyState title="No bodies yet" text="Add a shape from the left toolbar, or load the sample scene." />
             ) : (
               <Field label="All bodies">
                 {isolatedIds && (

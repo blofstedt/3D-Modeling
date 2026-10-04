@@ -4,13 +4,16 @@
  */
 
 import React from 'react';
-import { Boxes, Focus, Merge, PenLine, Repeat, Scissors, type LucideIcon } from 'lucide-react';
+import { Boxes, Circle, Focus, Hexagon, Merge, Repeat, Scissors, Square, Triangle, type LucideIcon } from 'lucide-react';
+import { SHAPE_LABELS, ShapeKind } from '../utils/primitives';
 
 interface ToolRailProps {
   selectedCount: number;
   bodyCount: number;
   isolated: boolean;
-  onSketch: () => void;
+  /** True when the next shape will be placed on the selected top face. */
+  addOnTop: boolean;
+  onAddShape: (kind: ShapeKind) => void;
   onIsolate: () => void;
   onGroup: () => void;
   onUnion: () => void;
@@ -35,12 +38,17 @@ interface Action {
 export default function ToolRail(props: ToolRailProps) {
   const { selectedCount, bodyCount } = props;
   const groups: Action[][] = [
-    [{ label: 'New sketch', shortcut: 'N', icon: PenLine, onClick: props.onSketch }],
+    (['box', 'cylinder', 'triangle', 'hexagon'] as ShapeKind[]).map((kind) => ({
+      label: `${SHAPE_LABELS[kind]}${props.addOnTop ? ' · on top' : ''}`,
+      shortcut: '',
+      icon: { box: Square, cylinder: Circle, triangle: Triangle, hexagon: Hexagon }[kind],
+      onClick: () => props.onAddShape(kind),
+    })),
     [
       { label: 'Isolate', shortcut: 'I', icon: Focus, onClick: props.onIsolate, active: props.isolated, disabled: !props.isolated && selectedCount < 1, hint: 'Select a shape' },
       { label: 'Group', shortcut: 'G', icon: Boxes, onClick: props.onGroup, disabled: selectedCount < 2, hint: 'Select 2+ shapes' },
-      { label: 'Union', shortcut: 'U', icon: Merge, onClick: props.onUnion, disabled: selectedCount < 2, hint: 'Select 2+ overlapping shapes' },
-      { label: 'Cut', shortcut: 'C', icon: Scissors, onClick: props.onCut, disabled: bodyCount < 2, hint: 'Needs 2+ shapes' },
+      { label: 'Join', shortcut: 'J', icon: Merge, onClick: props.onUnion, disabled: selectedCount < 2, hint: 'Select 2+ shapes' },
+      { label: 'Subtract', shortcut: 'S', icon: Scissors, onClick: props.onCut, disabled: bodyCount < 2, hint: 'Needs 2+ shapes' },
       { label: 'Repeat', shortcut: 'R', icon: Repeat, onClick: props.onPattern, disabled: selectedCount < 1, hint: 'Select a shape' },
     ],
   ];
@@ -74,9 +82,9 @@ export default function ToolRail(props: ToolRailProps) {
                   {a.label}
                   {a.disabled && a.hint ? (
                     <span className="text-slate-500">· {a.hint}</span>
-                  ) : (
+                  ) : a.shortcut ? (
                     <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-[11px] text-slate-300 font-sans">{a.shortcut}</kbd>
-                  )}
+                  ) : null}
                 </span>
               </button>
             );

@@ -289,7 +289,8 @@ export default function ModelViewer3D({
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
-  const frameViewRef = useRef<(face: CubeFace, instant?: boolean) => void>(() => {});
+  const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean) => void>(() => {});
+  const knownIdsRef = useRef<Set<string> | null>(null);
   const tweenRef = useRef<{
     start: number;
     fromPos: THREE.Vector3;
@@ -1055,7 +1056,7 @@ export default function ModelViewer3D({
     });
 
     // ---- Camera framing ---------------------------------------------------
-    const frameView = (face: CubeFace, instant = false) => {
+    const frameView = (face: CubeFace | 'keep', instant = false) => {
       const box = new THREE.Box3();
       let any = false;
       live.current.bodies.forEach((b) => {
@@ -1084,7 +1085,8 @@ export default function ModelViewer3D({
         right: new THREE.Vector3(1, 0.08, 0),
         left: new THREE.Vector3(-1, 0.08, 0),
       };
-      const toPos = center.clone().add(directions[face].normalize().multiplyScalar(distance));
+      const dir = face === 'keep' ? camera.position.clone().sub(controls.target) : directions[face].clone();
+      const toPos = center.clone().add(dir.normalize().multiplyScalar(distance));
 
       if (instant) {
         camera.position.copy(toPos);
@@ -1269,6 +1271,12 @@ export default function ModelViewer3D({
     });
     refreshOutlinesRef.current();
     invalidateRef.current(true);
+
+    // A newly added shape may land outside the view: bring everything back into frame, keeping the angle.
+    const known = knownIdsRef.current;
+    const added = known ? [...visible.keys()].some((id) => !known.has(id)) : false;
+    knownIdsRef.current = new Set(visible.keys());
+    if (added) frameViewRef.current('keep');
   }, [bodies, isSceneReady, fastId]);
 
   useEffect(() => {

@@ -85,7 +85,6 @@ export interface RepeatConfig {
   drawingStep: 'start' | 'end' | 'curve' | 'done';
 }
 
-export type EditorMode = 'sketch' | 'view3d';
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {
