@@ -21,6 +21,7 @@ import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
 import CutModal from './components/CutModal';
+import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
@@ -31,6 +32,7 @@ import {
   Box,
   Focus,
   Info,
+  Trash2,
   PanelRightClose,
   PanelRightOpen,
   PenLine,
@@ -137,6 +139,8 @@ export default function App() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   const [isCutModalOpen, setIsCutModalOpen] = useState(false);
+  /** Shapes waiting on the "Delete?" confirmation. */
+  const [confirmDeleteIds, setConfirmDeleteIds] = useState<string[] | null>(null);
   const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
 
   const [repeatConfig, setRepeatConfig] = useState<RepeatConfig>({
@@ -243,10 +247,14 @@ export default function App() {
     [setBodies]
   );
 
-  const handleDeleteSelected = () => {
-    if (!selectedBodyIds.length) return;
-    const ids = new Set(selectedBodyIds);
-    const label = selectedBodyIds.length === 1 ? bodies.find((b) => b.id === selectedBodyIds[0])?.name ?? 'shape' : `${ids.size} shapes`;
+  const requestDelete = (targets: string[] = selectedBodyIds) => {
+    if (targets.length) setConfirmDeleteIds(targets);
+  };
+
+  const handleDeleteSelected = (targets: string[] = selectedBodyIds) => {
+    if (!targets.length) return;
+    const ids = new Set(targets);
+    const label = targets.length === 1 ? bodies.find((b) => b.id === targets[0])?.name ?? 'shape' : `${ids.size} shapes`;
     setBodies((prev) => prev.filter((body) => !ids.has(body.id)));
     setGroups((prev) =>
       prev
@@ -254,6 +262,7 @@ export default function App() {
         .filter((g) => g.bodyIds.length > 1)
     );
     notify(`Deleted ${label}. Press ⌘Z to undo.`);
+    setConfirmDeleteIds(null);
   };
 
   const handleCloneBody = (id: string) => {
@@ -576,7 +585,8 @@ export default function App() {
 
     if (key === 'escape') {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
-      if (isCutModalOpen || isRepeatModalOpen || isMobileSidebarOpen) {
+      if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen || isMobileSidebarOpen) {
+        setConfirmDeleteIds(null);
         setIsCutModalOpen(false);
         setIsRepeatModalOpen(false);
         setIsMobileSidebarOpen(false);
@@ -588,7 +598,7 @@ export default function App() {
       else if (isolatedIds) isolate(null);
       return;
     }
-    if (isCutModalOpen || isRepeatModalOpen) return;
+    if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) return;
     if (editorMode === 'sketch' && !['1', '2', 'i'].includes(key)) return;
 
     switch (key) {
@@ -620,7 +630,7 @@ export default function App() {
       case 'backspace':
         e.preventDefault();
         if (selectedEdges.length) handleEdgeChange(selectedEdges, { size: 0 });
-        else handleDeleteSelected();
+        else requestDelete();
         break;
     }
   };
@@ -638,12 +648,7 @@ export default function App() {
     selectedBodyIds,
     onSelectBody: handleSelectBody,
     onUpdateBody: handleUpdateBody,
-    onDeleteBody: (id: string) => {
-      setSelectedBodyIds([id]);
-      setSelectedBodyId(id);
-      setBodies((prev) => prev.filter((b) => b.id !== id));
-      notify('Deleted. Press ⌘Z to undo.');
-    },
+    onDeleteBody: (id: string) => requestDelete([id]),
     onCloneBody: handleCloneBody,
     onClearWorkspace: handleClearWorkspace,
     onLoadDemo: handleLoadDemo,
@@ -841,6 +846,27 @@ export default function App() {
             />
           )}
 
+          <AnimatePresence>
+            {editorMode === 'view3d' && selectedBodyIds.length > 0 && (
+              <motion.button
+                key="delete"
+                type="button"
+                onClick={() => requestDelete()}
+                aria-label={selectedBodyIds.length > 1 ? `Delete ${selectedBodyIds.length} shapes` : 'Delete shape'}
+                title="Delete (Del)"
+                initial={{ opacity: 0, scale: 0.4 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.4 }}
+                whileHover={{ scale: 1.08 }}
+                whileTap={{ scale: 0.9 }}
+                transition={{ type: 'spring', stiffness: 460, damping: 26 }}
+                className="absolute z-30 right-3 bottom-20 md:bottom-3 w-12 h-12 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl shadow-black/50 flex items-center justify-center text-slate-300 hover:text-rose-300 hover:border-rose-400/40 transition-colors"
+              >
+                <Trash2 size={19} strokeWidth={1.75} />
+              </motion.button>
+            )}
+          </AnimatePresence>
+
           {/* Bottom-center stack: isolation state and toasts */}
           <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-20 md:bottom-4 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
             <AnimatePresence>
@@ -926,6 +952,14 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {confirmDeleteIds && (
+          <ConfirmDeleteModal
+            key="delete"
+            names={confirmDeleteIds.map((id) => bodies.find((b) => b.id === id)?.name ?? 'shape')}
+            onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
+            onCancel={() => setConfirmDeleteIds(null)}
+          />
+        )}
         {isCutModalOpen && (
           <CutModal
             key="cut"
