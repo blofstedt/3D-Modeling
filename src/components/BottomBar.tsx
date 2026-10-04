@@ -86,11 +86,11 @@ export default function BottomBar(props: BottomBarProps) {
   const tools: Tool[] = [
     { label: 'Move', key: 'M', icon: Move3d, onClick: props.onToggleMove, active: props.moveOn, disabled: selectedCount < 1, hint: 'Select a shape' },
     { label: props.grouped ? 'Ungroup' : 'Group', key: 'G', icon: props.grouped ? Ungroup : Boxes, onClick: props.onGroup, disabled: !props.grouped && selectedCount < 2, hint: 'Hold a shape to add it' },
-    { label: 'Subtract', key: 'S', icon: SquareMinus, onClick: props.onSubtract, disabled: selectedCount < 2, hint: 'Hold a shape to add it, then Subtract' },
     { label: 'Repeat', key: 'R', icon: Repeat, onClick: props.onPattern, disabled: selectedCount < 1, hint: 'Select a shape' },
   ];
   const organize: Tool[] = [
-    { label: 'Join', key: 'J', icon: Combine, onClick: props.onJoin, disabled: selectedCount < 2, hint: 'Select 2+ shapes' },
+    { label: 'Join', key: 'J', icon: Combine, onClick: props.onJoin, disabled: selectedCount < 2, hint: 'Hold a shape to add it' },
+    { label: 'Subtract', key: 'S', icon: SquareMinus, onClick: props.onSubtract, disabled: selectedCount < 2, hint: 'Hold a shape to add it' },
     { label: props.isolated ? 'Show everything' : 'Isolate', key: 'I', icon: Focus, onClick: props.onIsolate, active: props.isolated, disabled: !props.isolated && selectedCount < 1, hint: 'Select a shape' },
     { label: 'Hide', key: 'H', icon: EyeOff, onClick: props.onHide, disabled: selectedCount < 1, hint: 'Select a shape' },
     ...(props.hiddenCount > 0 ? [{ label: `Show hidden (${props.hiddenCount})`, key: '', icon: Eye, onClick: props.onShowHidden } as Tool] : []),

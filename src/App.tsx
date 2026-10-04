@@ -25,6 +25,7 @@ import { useHistory } from './hooks/useHistory';
 import { cutShape, getPolygonSignedArea, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
+import { joinBodies } from './utils/join';
 import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
 import { applyEdgeChange, edgeKey } from './utils/edges';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
@@ -503,33 +504,30 @@ export default function App() {
 
   const handleMergeSelected = () => {
     if (selectedBodyIds.length < 2) {
-      notify('Select at least two overlapping shapes to unite.');
+      notify('Select at least two shapes to join (press and hold a shape to add it).');
       return;
     }
     const targets = bodies.filter((b) => selectedBodyIds.includes(b.id));
     if (targets.length < 2) return;
 
-    const results = mergeShapes(targets.map((t) => ({ points: t.points, holes: t.holes })));
-    if (results.length === 0) return;
-
-    const primary = targets[0];
     const stamp = Date.now();
-    const merged: Body3D[] = results.map((r, i) => ({
-      ...primary,
-      id: `body_merged_${stamp}_${i}`,
-      name: i === 0 ? `${primary.name} (united)` : `${primary.name} (united part ${i + 1})`,
-      points: r.points,
-      basePoints: r.points,
-      cornerRadii: undefined,
-      edgeBevels: undefined,
-      holes: r.holes,
-      groupId: undefined,
-    }));
+    const merged = joinBodies(targets, stamp);
+    if (!merged.length) return;
+    // Several pieces (steps, or parts that do not touch) are grouped so they still act as one shape.
+    const groupId = merged.length > 1 ? `group_${stamp}` : undefined;
+    const pieces = merged.map((b) => ({ ...b, groupId }));
+    const gone = new Set(selectedBodyIds);
 
-    setBodies([...bodies.filter((b) => !selectedBodyIds.includes(b.id)), ...merged]);
-    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !selectedBodyIds.includes(id)), ...merged.map((m) => m.id)] : prev));
-    selectOnly(merged[0].id);
-    notify(`United ${targets.length} shapes.`);
+    setDoc((d) => ({
+      bodies: [...d.bodies.filter((b) => !gone.has(b.id)), ...pieces],
+      groups: [
+        ...d.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })).filter((g) => g.bodyIds.length > 1),
+        ...(groupId ? [{ id: groupId, name: `${targets[0].name} (joined)`, bodyIds: pieces.map((b) => b.id) }] : []),
+      ],
+    }));
+    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...pieces.map((m) => m.id)] : prev));
+    selectOnly(pieces[0].id);
+    notify(`Joined ${targets.length} shapes into one.`);
   };
 
   const handleApplyPattern = (config: RepeatConfig) => {

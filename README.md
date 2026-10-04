@@ -35,13 +35,13 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 **Two bars.** The top bar is for *properties* and changes with what you have selected: a shape shows its
 name (properties, corner rounding, bevels), *Size & position* (width, depth, height, X, Y, Z) and *Material*; a face or an
 edge shows its own numbers. The file button exports and clears. The bottom bar is for
-*tools*: Shape, Move, Group (Ungroup when a group is selected), Subtract, Repeat, Organize (Join, Isolate, Hide) and Delete.
+*tools*: Shape, Move, Group (Ungroup when a group is selected), Repeat, Organize (Join, Subtract, Isolate, Hide) and Delete.
 
 **Isolating.** Select a shape (or a group) and press `I`, or use the focus button on its row in the Bodies
 list. Everything else disappears from the 3D view until you press `I` or *Show all*.
 Escape steps back one level at a time: edge, face, selection, isolation.
 
-Tools (bottom bar): Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (merge overlapping shapes into one), Subtract `S`
+Tools (bottom bar): Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (stick the selected shapes together into one solid, each keeping its own height), Subtract `S`
 (select 2+ shapes; the one you picked last is cut out of the others, but only where they overlap in height), Repeat `R`. Grouped shapes select and move together.
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).

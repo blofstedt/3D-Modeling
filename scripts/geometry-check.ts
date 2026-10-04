@@ -8,6 +8,7 @@ import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, withOutline } from '../src/utils/outline';
 import { applyEdgeChange, findBevel, listEdges } from '../src/utils/edges';
 import { resizeBody, transformBody } from '../src/utils/transform';
+import { joinBodies } from '../src/utils/join';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -95,6 +96,25 @@ check('edge list for a box', listEdges(body({})).length === 4 * 2 + 4);
 // Rigid moves keep bevel/radius indices valid and rotate about the given centre.
 const moved = transformBody(body({}), { dx: 10, dy: 0, dz: 5, angle: Math.PI / 2, cx: 0, cy: 0 });
 check('rotate 90° then move', near(moved.points![0].x, 30 + 10, 0.01) && near(moved.points![0].y, -50, 0.01) && moved.elevation === 5);
+
+// Join keeps each shape's own height: a tall block beside a short one stays tall where it is tall.
+const tall = body({ id: 'a', points: rect(0, 0, 40, 40), extrusionHeight: 80 });
+const short = body({ id: 'b', points: rect(40, 0, 100, 40), extrusionHeight: 20 });
+const joined = joinBodies([tall, short], 1);
+const area = (b: Body3D) => Math.abs(getPolygonSignedArea(b.points));
+const base = joined.find((b) => b.elevation === 0);
+const upper = joined.find((b) => b.elevation === 20);
+check(
+  'join keeps each shape height',
+  joined.length === 2 && !!base && !!upper && base.extrusionHeight === 20 && near(area(base), 100 * 40, 1) && upper.extrusionHeight === 60 && near(area(upper), 40 * 40, 1),
+  joined.map((b) => `${b.elevation}+${b.extrusionHeight}`).join(' ')
+);
+const stackA = body({ id: 'c', points: rect(0, 0, 40, 40), extrusionHeight: 30 });
+const stackB = body({ id: 'd', points: rect(0, 0, 40, 40), extrusionHeight: 20, elevation: 30 });
+const stacked = joinBodies([stackA, stackB], 2);
+check('join of a stack is one taller shape', stacked.length === 1 && stacked[0].extrusionHeight === 50);
+const overlap = joinBodies([body({ id: 'e', points: rect(0, 0, 60, 40) }), body({ id: 'f', points: rect(40, 0, 100, 40) })], 3);
+check('join of overlapping boxes is one polygon', overlap.length === 1 && near(Math.abs(getPolygonSignedArea(overlap[0].points)), 100 * 40, 1));
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
