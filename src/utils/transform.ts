@@ -71,21 +71,24 @@ export function selectionBounds(bodies: Body3D[]): SelectionBounds | null {
   return { minX, maxX, minY, maxY, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2, minElevation, maxTop };
 }
 
-/** Resizes a body's footprint about its centre, keeping corner radii and bevel indices valid. */
-export function resizeBody(body: Body3D, width: number, depth: number): Partial<Body3D> {
-  const b = selectionBounds([body]);
-  if (!b) return {};
-  const w = Math.max(1, b.maxX - b.minX);
-  const d = Math.max(1, b.maxY - b.minY);
-  const sx = Math.max(1, width) / w;
-  const sy = Math.max(1, depth) / d;
+/** Scales a body's footprint by (sx, sy) about the point (ax, ay), keeping corner radii and bevel indices valid. */
+export function scaleBodyAbout(body: Body3D, ax: number, ay: number, sx: number, sy: number): Partial<Body3D> {
   const scale = (p: Point2D): Point2D => ({
-    x: round2(b.centerX + (p.x - b.centerX) * sx),
-    y: round2(b.centerY + (p.y - b.centerY) * sy),
+    x: round2(ax + (p.x - ax) * sx),
+    y: round2(ay + (p.y - ay) * sy),
   });
   const base = (body.basePoints ?? body.points).map(scale);
   return {
     ...withOutline(body, { basePoints: base }),
     ...(body.holeBases ? withHoles(body, { holeBases: holeLoops(body).map((l) => l.base.map(scale)) }) : { holes: body.holes?.map((h) => h.map(scale)) }),
   };
+}
+
+/** Resizes a body's footprint about its centre, keeping corner radii and bevel indices valid. */
+export function resizeBody(body: Body3D, width: number, depth: number): Partial<Body3D> {
+  const b = selectionBounds([body]);
+  if (!b) return {};
+  const w = Math.max(1, b.maxX - b.minX);
+  const d = Math.max(1, b.maxY - b.minY);
+  return scaleBodyAbout(body, b.centerX, b.centerY, Math.max(1, width) / w, Math.max(1, depth) / d);
 }

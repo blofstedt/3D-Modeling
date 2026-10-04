@@ -17,10 +17,10 @@ import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } fr
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
-import { BodyTransform, selectionBounds } from '../utils/transform';
+import { BodyTransform, scaleBodyAbout, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
 
-type GizmoKind = 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'edge-size' | 'rotate' | 'move-axis';
+type GizmoKind = 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'scale-corner' | 'edge-size' | 'rotate' | 'move-axis';
 type Axis = 'x' | 'y' | 'z';
 
 type Hit =
@@ -29,7 +29,7 @@ type Hit =
   | { type: 'body'; bodyId: string; point: THREE.Vector3; face: FaceSel };
 
 interface Drag {
-  kind: 'height' | 'bottom' | 'wall' | 'edge-size' | 'move' | 'rotate' | 'axis';
+  kind: 'height' | 'bottom' | 'wall' | 'corner' | 'edge-size' | 'move' | 'rotate' | 'axis';
   startClientY: number;
   startClientX?: number;
   /** Furthest the pointer travelled from where it went down (px): tells a tap from a drag. */
@@ -55,6 +55,10 @@ interface Drag {
   index?: number;
   initialBase?: Point2D[];
   normal?: Point2D;
+  // corner resize
+  initialBody?: Body3D;
+  anchor?: Point2D;
+  corner0?: Point2D;
   // edge size
   sels?: EdgeSel[];
   initialSize?: number;
@@ -663,6 +667,8 @@ export default function ModelViewer3D({
             ? 'Drag to change the height'
             : hit.gizmo === 'extrude-bottom'
               ? 'Drag to extend the bottom face'
+            : hit.gizmo === 'scale-corner'
+              ? 'Drag to resize the shape · hold Shift to keep its proportions'
             : hit.gizmo === 'offset-wall'
               ? 'Drag to push or pull this wall'
               : hit.gizmo === 'edge-size'
@@ -731,7 +737,7 @@ export default function ModelViewer3D({
       helperGroup.visible = d.kind === 'edge-size';
       if (d.kind === 'height' || d.kind === 'bottom') gizmoGroup.children.forEach((c) => (c.visible = c === heightArrowRef.current));
       setHoverEdge(null);
-      if (d.kind === 'wall') setFastId(d.bodyId ?? null);
+      if (d.kind === 'wall' || d.kind === 'corner') setFastId(d.bodyId ?? null);
       if (d.kind === 'height' || d.kind === 'bottom' || d.kind === 'wall') holdReadout(true);
       live.current.onDragStateChange?.(true);
       invalidate(true);
@@ -753,6 +759,27 @@ export default function ModelViewer3D({
         initialBase: wallBase(body, index).map((p) => ({ ...p })),
         normal: outwardNormal(ends.a, ends.b, ends.winding),
         planeY,
+        startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+      };
+    };
+
+    /** Corner handles sit at the corners of the footprint's bounding box; the opposite corner stays put. */
+    const cornerDrag = (body: Body3D, index: number, e: { clientX: number; clientY: number }): Drag | null => {
+      const b = selectionBounds([body]);
+      if (!b) return null;
+      const xs = [b.minX, b.maxX, b.maxX, b.minX];
+      const ys = [b.minY, b.minY, b.maxY, b.maxY];
+      const planeY = body.elevation ?? 0;
+      return {
+        startClientY: e.clientY,
+        mmPerPixel: mmPerPixel(),
+        kind: 'corner',
+        bodyId: body.id,
+        index,
+        planeY,
+        initialBody: body,
+        corner0: { x: xs[index], y: ys[index] },
+        anchor: { x: xs[(index + 2) % 4], y: ys[(index + 2) % 4] },
         startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
       };
     };
@@ -800,6 +827,8 @@ export default function ModelViewer3D({
           return body ? { ...common, kind: 'bottom', bodyId: body.id, initialElevation: body.elevation ?? 0, initialHeight: body.extrusionHeight, nextDelta: 0 } : null;
         case 'offset-wall':
           return body && hit.index !== undefined ? wallDrag(body, hit.index, e) : null;
+        case 'scale-corner':
+          return body && hit.index !== undefined ? cornerDrag(body, hit.index, e) : null;
         case 'edge-size': {
           const sels = live.current.selectedEdges;
           const first = sels[0] && bodyOf(sels[0].bodyId);
@@ -899,6 +928,21 @@ export default function ModelViewer3D({
         const next = clamp(Math.round(raw * 2) / 2, 0, 30);
         live.current.onEdgeChange(d.sels!, { size: next });
         text = next > 0 ? `Size ${next} mm` : 'No bevel';
+      } else if (d.kind === 'corner') {
+        const body = bodyOf(d.bodyId);
+        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        if (!body || !cur || !d.startPoint || !d.initialBody || !d.anchor || !d.corner0) return;
+        const w0 = Math.max(1, Math.abs(d.corner0.x - d.anchor.x));
+        const h0 = Math.max(1, Math.abs(d.corner0.y - d.anchor.y));
+        const sgnX = d.corner0.x >= d.anchor.x ? 1 : -1;
+        const sgnY = d.corner0.y >= d.anchor.y ? 1 : -1;
+        const nw = Math.max(2, Math.round(w0 + sgnX * (cur.x - d.startPoint.x)));
+        const nh = Math.max(2, Math.round(h0 - sgnY * (cur.z - d.startPoint.z)));
+        let sx = nw / w0;
+        let sy = nh / h0;
+        if (m.shift) sx = sy = Math.max(sx, sy);
+        live.current.onUpdateBody(body.id, scaleBodyAbout(d.initialBody, d.anchor.x, d.anchor.y, sx, sy));
+        text = `${Math.round(w0 * sx)} × ${Math.round(h0 * sy)} mm`;
       } else if (d.kind === 'wall') {
         const body = bodyOf(d.bodyId);
         const cur = intersectPlane(m.x, m.y, d.planeY!);
@@ -1668,6 +1712,31 @@ export default function ModelViewer3D({
           knobHit.scale.setScalar(7 * s);
           dot.add(knob, knobHit);
           gizmoGroup.add(dot);
+        }
+      }
+
+      // A dot at each corner of the footprint: drag to resize the shape from the opposite corner.
+      {
+        const bb = selectionBounds([body]);
+        if (bb) {
+          const xs = [bb.minX, bb.maxX, bb.maxX, bb.minX];
+          const ys = [bb.minY, bb.minY, bb.maxY, bb.maxY];
+          const out = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+          for (let k = 0; k < 4; k++) {
+            const dot = new THREE.Group();
+            dot.position.set(xs[k] + out[k][0] * 5 * s, elev + 0.4, -(ys[k] + out[k][1] * 5 * s));
+            dot.userData = { gizmo: 'scale-corner', bodyId: body.id, index: k };
+            const knob = new THREE.Mesh(HANDLE.dot, handleMaterial('#6e5bff'));
+            knob.scale.setScalar(3 * s);
+            knob.renderOrder = 30;
+            const ring = new THREE.Mesh(HANDLE.dot, handleMaterial('#ffffff'));
+            ring.scale.setScalar(3.9 * s);
+            ring.renderOrder = 29;
+            const knobHit = new THREE.Mesh(HANDLE.dot, hiddenMaterial);
+            knobHit.scale.setScalar(8 * s);
+            dot.add(ring, knob, knobHit);
+            gizmoGroup.add(dot);
+          }
         }
       }
 
