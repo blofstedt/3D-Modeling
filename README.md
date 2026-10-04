@@ -24,6 +24,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | Select a shape | Click it. `Shift`-click to add more |
 | Move it | Drag the shape itself (`Shift` locks to one axis). For exact X / Y / Z motion, **two-finger tap** (or `M`, or the Move tool) shows red / green / blue arrows: drag one to move along that axis. Tap again to hide them |
 | Extrude a face | Tap a face (top, bottom or a wall): it lights up with an arrow. Drag the face or its arrow to pull it out or push it in |
+| Type an exact number | Tapping a face shows its number (Height, or Width / Depth for a wall) next to the arrow, and it stays while you drag. Tap it to type a value; add a unit if you like (`12cm`, `1.2m`, `5in`), a bare number is mm. It fades after 3 seconds |
 | Push or pull a wall | Drag the white dot on that wall |
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°) |
 | Bevel an edge | Click an edge, tap the yellow dot, then press Curved or Flat and drag to set the size |

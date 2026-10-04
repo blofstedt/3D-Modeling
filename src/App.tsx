@@ -25,7 +25,7 @@ import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
-import { extrudeFace } from './utils/faces';
+import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
 import { applyEdgeChange, edgeKey } from './utils/edges';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
@@ -262,6 +262,12 @@ export default function App() {
   const handleExtrudeFace = (face: FaceSel, delta: number) => {
     const body = bodies.find((b) => b.id === face.bodyId);
     const updates = body && extrudeFace(body, face, delta);
+    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
+  };
+
+  const handleFaceValue = (face: FaceSel, mm: number) => {
+    const body = bodies.find((b) => b.id === face.bodyId);
+    const updates = body && setFaceMeasure(body, face, mm);
     if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
   };
 
@@ -715,6 +721,7 @@ export default function App() {
                   onDragStateChange={history.hold}
                   onHint={setHint}
                   moveOn={moveOn}
+                  onFaceValue={handleFaceValue}
                   onToggleMove={() => setMoveOn((v) => !v)}
                 />
 

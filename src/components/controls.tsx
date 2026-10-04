@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
+import { parseLength } from '../utils/units';
 import type { LucideIcon } from 'lucide-react';
 
 export const stepClass =
@@ -32,19 +33,20 @@ export function NumberBox({
   const [draft, setDraft] = useState<string | null>(null);
 
   const commit = () => {
-    const v = parseFloat(draft ?? '');
+    let v = parseLength(draft ?? '');
     setDraft(null);
-    if (!Number.isNaN(v) && v !== shown) onCommit(v);
+    if (v === null) return;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    if (v !== shown) onCommit(v);
   };
 
   return (
     <label className="flex flex-col gap-0.5">
       <span className="text-[11px] leading-none text-slate-400">{label}</span>
       <input
-        type="number"
-        step={step}
-        min={min}
-        max={max}
+        type="text"
+        inputMode="decimal"
         value={draft ?? String(shown)}
         onFocus={(e) => {
           setDraft(String(shown));

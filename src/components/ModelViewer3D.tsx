@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnimatePresence } from 'motion/react';
-import { BevelPicker } from './FloatingControls';
+import { BevelPicker, MeasureReadout } from './FloatingControls';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
@@ -14,7 +14,7 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
 import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
-import { bottomRange, moveBottom, sameFace } from '../utils/faces';
+import { bottomRange, faceMeasure, moveBottom, sameFace } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, listEdges } from '../utils/edges';
 import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
@@ -41,6 +41,9 @@ interface Drag {
   // height
   initialHeight?: number;
   nextHeight?: number;
+  // face number shown while dragging
+  measure0?: number;
+  measureLabel?: string;
   // axis move
   axis?: Axis;
   dz?: number;
@@ -82,6 +85,8 @@ export interface ModelViewer3DProps {
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
   onHint?: (text: string) => void;
+  /** Typing an exact number for the selected face (millimetres). */
+  onFaceValue?: (face: FaceSel, mm: number) => void;
   /** Show the X / Y / Z move arrows on the selection. */
   moveOn?: boolean;
   /** Two-finger tap asks to show or hide the move arrows. */
@@ -273,6 +278,7 @@ export default function ModelViewer3D({
   onHint,
   moveOn,
   onToggleMove,
+  onFaceValue,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
@@ -291,7 +297,22 @@ export default function ModelViewer3D({
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
   const mmPerPixelRef = useRef<() => number>(() => 1);
+  const tipRef = useRef(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** The number for the face being worked on; it fades 3 seconds after the last change. */
+  const [readout, setReadout] = useState<{ key: string; label: string; value: number } | null>(null);
+  const readoutTimer = useRef(0);
+  const readoutHold = useRef(false);
+  const showReadout = useCallback((key: string, label: string, value: number) => {
+    setReadout({ key, label, value });
+    window.clearTimeout(readoutTimer.current);
+    if (!readoutHold.current) readoutTimer.current = window.setTimeout(() => setReadout(null), 3000);
+  }, []);
+  const holdReadout = useCallback((hold: boolean) => {
+    readoutHold.current = hold;
+    window.clearTimeout(readoutTimer.current);
+    if (!hold) readoutTimer.current = window.setTimeout(() => setReadout(null), 3000);
+  }, []);
   const pickerDrag = useRef<{ startY: number; start: number; sels: EdgeSel[] } | null>(null);
   const placePanelRef = useRef<() => void>(() => {});
   /** When the handles last popped in (ms), and the selection they popped in for. */
@@ -330,6 +351,7 @@ export default function ModelViewer3D({
     onHint,
     moveOn,
     onToggleMove,
+    onFaceValue,
   };
 
   // ---- Scene setup (once) -------------------------------------------------
@@ -697,6 +719,7 @@ export default function ModelViewer3D({
       if (d.kind === 'height' || d.kind === 'bottom') gizmoGroup.children.forEach((c) => (c.visible = c === heightArrowRef.current));
       setHoverEdge(null);
       if (d.kind === 'wall') setFastId(d.bodyId ?? null);
+      if (d.kind === 'height' || d.kind === 'bottom' || d.kind === 'wall') holdReadout(true);
       live.current.onDragStateChange?.(true);
       invalidate(true);
     };
@@ -705,7 +728,10 @@ export default function ModelViewer3D({
       const ends = wallEnds(body, index);
       if (!ends) return null;
       const planeY = (body.elevation ?? 0) + body.extrusionHeight / 2;
+      const m0 = faceMeasure(body, { bodyId: body.id, kind: 'wall', index });
       return {
+        measure0: m0?.value,
+        measureLabel: m0?.label,
         startClientY: e.clientY,
         mmPerPixel: mmPerPixel(),
         kind: 'wall',
@@ -817,6 +843,8 @@ export default function ModelViewer3D({
           heightArrowRef.current?.position.setY(elev + next + 0.2);
         }
         text = `Height ${next} mm`;
+        showReadout(`${d.bodyId}:top:`, 'Height', next);
+        if (anchorRef.current && body) anchorRef.current.pos.y = (body.elevation ?? 0) + next + 0.2 + tipRef.current;
       } else if (d.kind === 'bottom') {
         const body = bodyOf(d.bodyId);
         const entry = entriesRef.current.get(d.bodyId!);
@@ -830,6 +858,7 @@ export default function ModelViewer3D({
           entry.group.scale.y = s;
           entry.group.position.y = top * (1 - s);
           heightArrowRef.current?.position.setY(d.initialElevation! - delta - 0.2);
+          showReadout(`${d.bodyId}:bottom:`, 'Height', d.initialHeight! + delta);
           text = delta === 0 ? 'Bottom unchanged' : `Bottom ${delta > 0 ? 'down' : 'up'} ${Math.abs(delta)} mm`;
         }
       } else if (d.kind === 'axis') {
@@ -869,6 +898,7 @@ export default function ModelViewer3D({
         });
         live.current.onUpdateBody(body.id, withOutline(body, { basePoints: base }));
         text = `Wall ${signed(dist)} mm`;
+        if (d.measure0 !== undefined) showReadout(`${d.bodyId}:wall:${d.index}`, d.measureLabel ?? 'Size', d.measure0 + dist);
       } else if (d.kind === 'move') {
         const cur = intersectPlane(m.x, m.y, d.planeY!);
         if (!cur) return;
@@ -904,7 +934,8 @@ export default function ModelViewer3D({
         });
         text = `Rotate ${deg}°`;
       }
-      setDragLabel({ text, x: m.x - rect.left + 16, y: m.y - rect.top - 28 });
+      // The anchored number already shows these; the floating label would repeat it.
+      if (d.kind !== 'height' && d.kind !== 'bottom' && d.kind !== 'wall') setDragLabel({ text, x: m.x - rect.left + 16, y: m.y - rect.top - 28 });
       invalidate(d.kind === 'move' || d.kind === 'rotate' || d.kind === 'height' || d.kind === 'bottom' || d.kind === 'axis');
     };
 
@@ -934,12 +965,14 @@ export default function ModelViewer3D({
       }
       setFastId(null);
       restoreGizmos();
+      if (d.kind === 'height' || d.kind === 'bottom' || d.kind === 'wall') holdReadout(false);
       live.current.onDragStateChange?.(false);
       invalidate(true);
     };
 
     const cancelDrag = () => {
       if (!drag) return;
+      holdReadout(false);
       drag = null;
       resetPreviews();
       controls.enabled = true;
@@ -1218,7 +1251,7 @@ export default function ModelViewer3D({
       const el = panelRef.current;
       const anchor = anchorRef.current;
       if (!el) return;
-      if (drag) {
+      if (drag && drag.kind !== 'height' && drag.kind !== 'bottom' && drag.kind !== 'wall') {
         el.style.visibility = 'hidden';
         return;
       }
@@ -1551,6 +1584,14 @@ export default function ModelViewer3D({
         });
       }
 
+      if (face && heightArrowRef.current) {
+        // Pin the number just past the arrow's tip so it never covers the arrow.
+        const arrow = heightArrowRef.current;
+        const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(arrow.quaternion);
+        tipRef.current = 28 * arrow.scale.x;
+        anchorRef.current = { pos: arrow.position.clone().addScaledVector(dir, tipRef.current), lift: 14 };
+      }
+
       // A dot at the middle of each wall: push or pull it.
       const base = getBase(body);
       if (base.length <= MAX_WALL_HANDLES) {
@@ -1661,11 +1702,29 @@ export default function ModelViewer3D({
 
   useEffect(() => setPickerOpen(false), [selectedEdges]);
 
+  // Tapping a face shows its number; so does editing it by any other route.
+  const faceId = selectedFace ? `${selectedFace.bodyId}:${selectedFace.kind === 'wall' ? 'wall' : selectedFace.kind}:${selectedFace.index ?? ''}` : null;
+  const faceBody = selectedFace && selectedBodyIds.length === 1 ? bodies.find((b) => b.id === selectedFace.bodyId) : undefined;
+  const measureNow = selectedFace && faceBody ? faceMeasure(faceBody, selectedFace) : null;
+  useEffect(() => {
+    if (faceId && measureNow) showReadout(faceId, measureNow.label, measureNow.value);
+    else {
+      window.clearTimeout(readoutTimer.current);
+      setReadout(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceId]);
+  useEffect(() => {
+    if (measureNow) setReadout((r) => (r && r.key === faceId && r.value !== measureNow.value ? { ...r, value: measureNow.value } : r));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measureNow?.value]);
+  useEffect(() => () => window.clearTimeout(readoutTimer.current), []);
+
   // The picker needs placing even if the camera is still.
   useLayoutEffect(() => {
     invalidateRef.current();
     placePanelRef.current();
-  }, [pickerOpen, isSceneReady]);
+  }, [pickerOpen, readout?.key, isSceneReady]);
 
   // The idle hint depends on selection; hover text takes over while the pointer is over something.
   useEffect(() => {
@@ -1718,7 +1777,17 @@ export default function ModelViewer3D({
       <div ref={mountRef} className="absolute inset-0" />
 
       <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
+          {readout && selectedFace && !pickerOpen && (
+            <MeasureReadout
+              key={readout.key}
+              label={readout.label}
+              value={readout.value}
+              onEditStart={() => holdReadout(true)}
+              onEditEnd={() => holdReadout(false)}
+              onCommit={(mm) => onFaceValue?.(selectedFace, mm)}
+            />
+          )}
           {pickerOpen && selectedEdges.length > 0 && (
             <BevelPicker current={pickerStyle} onPress={beginPickerDrag} onMove={movePickerDrag} onRelease={endPickerDrag} />
           )}
