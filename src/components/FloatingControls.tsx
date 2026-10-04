@@ -5,10 +5,10 @@
 
 import React from 'react';
 import { motion } from 'motion/react';
-import { PenLine, Trash2, X } from 'lucide-react';
-import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
+import { Trash2, X } from 'lucide-react';
+import { BevelStyle, Body3D, EdgeSel } from '../types';
 import { edgeSize, edgeStyle, MAX_BEVEL_SIZE } from '../utils/edges';
-import { IconButton, NumberBox, Segmented, StepButton, signed, spring } from './controls';
+import { IconButton, NumberBox, Segmented, spring } from './controls';
 
 /** Rounded card the viewer pins next to the selection; it springs in from the selection and shrinks back out. */
 function PanelShell({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
@@ -78,46 +78,6 @@ export function EdgePanel({
         )}
         <div className="flex items-center gap-0.5 ml-auto">
           <IconButton icon={Trash2} label="Remove bevel (Del)" onClick={() => onEdgeChange(edges, { size: 0 })} danger />
-          <IconButton icon={X} label="Done (Esc)" onClick={onClear} />
-        </div>
-      </div>
-    </PanelShell>
-  );
-}
-
-export function FacePanel({
-  body,
-  face,
-  onExtrudeFace,
-  onSketchOnTop,
-  onClear,
-}: {
-  body: Body3D;
-  face: FaceSel;
-  onExtrudeFace: (face: FaceSel, delta: number) => void;
-  onSketchOnTop: () => void;
-  onClear: () => void;
-}) {
-  const elev = body.elevation ?? 0;
-  const title = face.kind === 'top' ? 'Top face' : face.kind === 'bottom' ? 'Bottom face' : `Wall ${(face.index ?? 0) + 1}`;
-  return (
-    <PanelShell title={title}>
-      <div className="flex items-end gap-2">
-        {face.kind === 'top' && (
-          <NumberBox label="Height" value={body.extrusionHeight} min={2} max={600} onCommit={(v) => onExtrudeFace(face, v - body.extrusionHeight)} />
-        )}
-        {face.kind === 'bottom' && (
-          <NumberBox label="Bottom at" value={elev} min={0} onCommit={(v) => onExtrudeFace(face, elev - Math.max(0, v))} />
-        )}
-        <div className="flex items-center gap-1 h-7" role="group" aria-label="Extrude by">
-          {[-10, -1, 1, 10].map((n) => (
-            <StepButton key={n} onClick={() => onExtrudeFace(face, n)} title={`${n > 0 ? 'Pull out' : 'Push in'} ${Math.abs(n)} mm`}>
-              {signed(n)}
-            </StepButton>
-          ))}
-        </div>
-        <div className="flex items-center gap-0.5">
-          {face.kind === 'top' && <IconButton icon={PenLine} label="Sketch on this face (N)" onClick={onSketchOnTop} />}
           <IconButton icon={X} label="Done (Esc)" onClick={onClear} />
         </div>
       </div>

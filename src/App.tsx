@@ -21,13 +21,12 @@ import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import ToolRail from './components/ToolRail';
 import ContextBar from './components/ContextBar';
-import { EdgePanel, FacePanel } from './components/FloatingControls';
+import { EdgePanel } from './components/FloatingControls';
 import CutModal from './components/CutModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
-import { extrudeFace } from './utils/faces';
 import { applyEdgeChange, edgeKey } from './utils/edges';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
@@ -230,12 +229,6 @@ export default function App() {
   };
 
   // ---- Body operations ----------------------------------------------------
-  const handleExtrudeFace = (face: FaceSel, delta: number) => {
-    const body = bodies.find((b) => b.id === face.bodyId);
-    const updates = body && extrudeFace(body, face, delta);
-    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
-  };
-
   const handleUpdateBody = useCallback(
     (id: string, updates: Partial<Body3D>) => {
       setBodies((prev) => prev.map((body) => (body.id === id ? { ...body, ...updates } : body)));
@@ -812,15 +805,6 @@ export default function App() {
                   floating={
                     selectedBody && selectedBodies.length === 1 && selectedEdges.length ? (
                       <EdgePanel key="edge" body={selectedBody} edges={selectedEdges} onEdgeChange={handleEdgeChange} onClear={() => setSelectedEdges([])} />
-                    ) : selectedBody && selectedBodies.length === 1 && selectedFace ? (
-                      <FacePanel
-                        key={`face-${selectedFace.kind}`}
-                        body={selectedBody}
-                        face={selectedFace}
-                        onExtrudeFace={handleExtrudeFace}
-                        onSketchOnTop={sketchOnTopOfSelection}
-                        onClear={() => setSelectedFace(null)}
-                      />
                     ) : null
                   }
                 />
@@ -828,9 +812,6 @@ export default function App() {
                 <ContextBar
                   selected={selectedBodies}
                   edges={selectedEdges}
-                  face={selectedFace}
-                  onExtrudeFace={handleExtrudeFace}
-                  onClearFace={() => setSelectedFace(null)}
                   bodyCount={displayBodies.length}
                   isolated={!!isolatedIds}
                   onUpdateBody={handleUpdateBody}

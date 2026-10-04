@@ -21,16 +21,13 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
+import { BevelStyle, Body3D, EdgeSel } from '../types';
 import { edgeSize, edgeStyle } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
 
 interface ContextBarProps {
   selected: Body3D[];
   edges: EdgeSel[];
-  face: FaceSel | null;
-  onExtrudeFace: (face: FaceSel, delta: number) => void;
-  onClearFace: () => void;
   bodyCount: number;
   isolated: boolean;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
@@ -79,14 +76,14 @@ function Title({ label, sub }: { label: string; sub?: string }) {
 
 /** Appears for whatever is selected and shows exactly what can be typed or done with it. */
 export default function ContextBar(props: ContextBarProps) {
-  const { selected, edges, face, onUpdateBody } = props;
+  const { selected, edges, onUpdateBody } = props;
   if (!selected.length) return null;
 
   const body = selected.length === 1 ? selected[0] : null;
   const bounds = selectionBounds(selected)!;
 
-  // Edge and face edits live in a panel next to the selection (see FloatingControls).
-  if (edges.length || face) return null;
+  // Edge edits live in a panel next to the edge (see FloatingControls).
+  if (edges.length) return null;
 
   // ---- One shape: type any number you see ---------------------------------
   if (body) {
