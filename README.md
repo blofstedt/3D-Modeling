@@ -27,7 +27,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | Type an exact number | Tapping a face shows its number (Height, or Width / Depth for a wall) next to the arrow, and it stays while you drag. Tap it to type a value; add a unit if you like (`12cm`, `1.2m`, `5in`), a bare number is mm. It fades after 3 seconds |
 | Push or pull a wall | Drag the white dot on that wall |
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°) |
-| Bevel an edge | Click an edge, tap the yellow dot, then press Curved or Flat and drag to set the size |
+| Bevel an edge | Tap an edge (it lights up, and the touch area is generous). **Tap it again** to widen to the whole rim, once more to go back to one edge. **Press and hold** another edge to add it (hold a selected one to drop it); `Shift`-click works on a desktop. Or tap a face and press **Edges** to select every edge around it. The top bar's **Select** menu picks all top edges, bottom edges, vertical corners or every edge. Then tap the yellow dot, press Curved or Flat and drag: every selected edge gets the same bevel and size |
 | Round one corner | Click the vertical corner line the same way |
 | Delete | Delete in the bottom bar (asks first), or `Del` |
 | Look around | Drag empty space to orbit, right-drag to pan, scroll to zoom |

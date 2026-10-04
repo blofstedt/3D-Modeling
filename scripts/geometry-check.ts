@@ -6,7 +6,7 @@ import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, withOutline } from '../src/utils/outline';
-import { applyEdgeChange, findBevel, listEdges } from '../src/utils/edges';
+import { applyEdgeChange, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
 
@@ -96,6 +96,12 @@ check('edge list for a box', listEdges(body({})).length === 4 * 2 + 4);
 // Rigid moves keep bevel/radius indices valid and rotate about the given centre.
 const moved = transformBody(body({}), { dx: 10, dy: 0, dz: 5, angle: Math.PI / 2, cx: 0, cy: 0 });
 check('rotate 90° then move', near(moved.points![0].x, 30 + 10, 0.01) && near(moved.points![0].y, -50, 0.01) && moved.elevation === 5);
+
+// Bulk edge selection on a box: 4 top, 4 bottom, 4 vertical.
+const box = body({});
+check('rim selection counts', edgesOfKind(box, 'top').length === 4 && edgesOfKind(box, 'bottom').length === 4 && edgesOfKind(box, 'corner').length === 4 && edgesOfKind(box, 'all').length === 12);
+check('top face selects the whole top rim', isWholeGroup(box, edgesAroundFace(box, { bodyId: box.id, kind: 'top' }), 'top'));
+check('a wall borders its top and bottom edge', edgesAroundFace(box, { bodyId: box.id, kind: 'wall', index: 0 }).length === 2);
 
 // Join keeps each shape's own height: a tall block beside a short one stays tall where it is tall.
 const tall = body({ id: 'a', points: rect(0, 0, 40, 40), extrusionHeight: 80 });

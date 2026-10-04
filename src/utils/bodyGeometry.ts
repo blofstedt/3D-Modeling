@@ -308,3 +308,123 @@ export function getInteriorAnchor(body: Body3D): { x: number; y: number } {
   }
   return avg;
 }
+
+
+/**
+ * Feature edges of a mesh for the selection outline: the lines where two faces meet at more than `angleDeg`.
+ * Unlike THREE.EdgesGeometry this heals T-junctions (a long edge facing two short ones, which boolean cuts leave
+ * behind) so flat faces do not get stray diagonal lines drawn across them.
+ */
+export function featureEdges(source: THREE.BufferGeometry, angleDeg: number): THREE.BufferGeometry {
+  const pos = source.getAttribute('position');
+  const idx = source.getIndex();
+  const triCount = (idx ? idx.count : pos.count) / 3;
+  const Q = 1000;
+  const keyOf = (x: number, y: number, z: number) => `${Math.round(x * Q)},${Math.round(y * Q)},${Math.round(z * Q)}`;
+
+  const vertexId = new Map<string, number>();
+  const coords: number[] = [];
+  const weld = (i: number) => {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const k = keyOf(x, y, z);
+    let id = vertexId.get(k);
+    if (id === undefined) {
+      id = coords.length / 3;
+      vertexId.set(k, id);
+      coords.push(x, y, z);
+    }
+    return id;
+  };
+
+  type Half = { u: number; v: number; n: THREE.Vector3 };
+  const edgeMap = new Map<string, Half[]>();
+  const add = (u: number, v: number, n: THREE.Vector3) => {
+    if (u === v) return;
+    const k = u < v ? `${u}_${v}` : `${v}_${u}`;
+    const list = edgeMap.get(k);
+    if (list) list.push({ u, v, n });
+    else edgeMap.set(k, [{ u, v, n }]);
+  };
+
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++) {
+    const ids = [0, 1, 2].map((k) => weld(idx ? idx.getX(t * 3 + k) : t * 3 + k));
+    a.fromArray(coords, ids[0] * 3);
+    b.fromArray(coords, ids[1] * 3);
+    c.fromArray(coords, ids[2] * 3);
+    const n = new THREE.Vector3().subVectors(c, b).cross(new THREE.Vector3().subVectors(a, b));
+    if (n.lengthSq() < 1e-12) continue;
+    n.normalize();
+    add(ids[0], ids[1], n);
+    add(ids[1], ids[2], n);
+    add(ids[2], ids[0], n);
+  }
+
+  // Split edges that have vertices of other triangles sitting on them, so both sides line up.
+  const cell = 8;
+  const grid = new Map<string, number[]>();
+  const cellKey = (x: number, y: number, z: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+  for (let i = 0; i < coords.length / 3; i++) {
+    const k = cellKey(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]);
+    const list = grid.get(k);
+    if (list) list.push(i);
+    else grid.set(k, [i]);
+  }
+  const pieces: { u: number; v: number; n: THREE.Vector3 }[] = [];
+  const done: Half[][] = [];
+  edgeMap.forEach((list) => {
+    if (list.length !== 1) {
+      done.push(list);
+      return;
+    }
+    const { u, v, n } = list[0];
+    a.fromArray(coords, u * 3);
+    b.fromArray(coords, v * 3);
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const len2 = dir.lengthSq();
+    const on: { id: number; t: number }[] = [];
+    const lo = [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.min(a.z, b.z)];
+    const hi = [Math.max(a.x, b.x), Math.max(a.y, b.y), Math.max(a.z, b.z)];
+    for (let cx = Math.floor(lo[0] / cell); cx <= Math.floor(hi[0] / cell); cx++)
+      for (let cy = Math.floor(lo[1] / cell); cy <= Math.floor(hi[1] / cell); cy++)
+        for (let cz = Math.floor(lo[2] / cell); cz <= Math.floor(hi[2] / cell); cz++) {
+          for (const w of grid.get(`${cx},${cy},${cz}`) ?? []) {
+            if (w === u || w === v) continue;
+            c.fromArray(coords, w * 3);
+            const t = new THREE.Vector3().subVectors(c, a).dot(dir) / len2;
+            if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+            const closest = a.clone().addScaledVector(dir, t);
+            if (closest.distanceToSquared(c) < 4e-6) on.push({ id: w, t });
+          }
+        }
+    on.sort((p, q) => p.t - q.t);
+    let prev = u;
+    for (const o of on) {
+      pieces.push({ u: prev, v: o.id, n });
+      prev = o.id;
+    }
+    pieces.push({ u: prev, v, n });
+  });
+  const second = new Map<string, Half[]>();
+  const push = (h: Half) => {
+    const k = h.u < h.v ? `${h.u}_${h.v}` : `${h.v}_${h.u}`;
+    const list = second.get(k);
+    if (list) list.push(h);
+    else second.set(k, [h]);
+  };
+  done.forEach((l) => l.forEach(push));
+  pieces.forEach(push);
+
+  const cos = Math.cos(THREE.MathUtils.degToRad(angleDeg));
+  const out: number[] = [];
+  second.forEach((list) => {
+    if (list.length !== 2) return;
+    if (list[0].n.dot(list[1].n) > cos) return; // nearly flat: not a feature
+    out.push(coords[list[0].u * 3], coords[list[0].u * 3 + 1], coords[list[0].u * 3 + 2], coords[list[0].v * 3], coords[list[0].v * 3 + 1], coords[list[0].v * 3 + 2]);
+  });
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+}

@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BevelStyle, Body3D, EdgeBevel, EdgeSel } from '../types';
-import { getBase, getOutline, runId, runPath, sideRun, withOutline } from './outline';
+import { BevelStyle, Body3D, EdgeBevel, EdgeSel, FaceSel } from '../types';
+import { getBase, getOutline, outwardNormal, runId, runPath, sideRun, withOutline } from './outline';
 
 export const DEFAULT_BEVEL_SIZE = 2;
 export const MAX_BEVEL_SIZE = 30;
@@ -43,9 +43,26 @@ function computeEdges(body: Body3D): EdgePath[] {
     const id = runId(run);
     if (seen.has(id)) continue;
     seen.add(id);
-    const { pts } = runPath(outline, run, n);
-    edges.push({ kind: 'top', index: id, points: pts.map((p) => ({ x: p.x, y: top, z: -p.y })) });
-    edges.push({ kind: 'bottom', index: id, points: pts.map((p) => ({ x: p.x, y: bottom, z: -p.y })) });
+    const { pts, closed } = runPath(outline, run, n);
+    // Once an edge is beveled, the pickable/highlighted line lies on the bevel itself, not in the air at the old sharp edge.
+    const lineFor = (kind: 'top' | 'bottom') => {
+      const bevel = findBevel(body, kind, id);
+      const inset = bevel && bevel.size > 0 ? Math.min(bevel.size, body.extrusionHeight / 2 - 0.05) * (bevel.style === 'round' ? 0.3 : 0.5) : 0;
+      const y0 = kind === 'top' ? top : bottom;
+      return pts.map((p, i) => {
+        if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
+        const prev = i > 0 ? pts[i - 1] : closed ? pts[pts.length - 1] : null;
+        const next = i < pts.length - 1 ? pts[i + 1] : closed ? pts[0] : null;
+        const a = prev ? outwardNormal(prev, p, outline.winding) : null;
+        const b = next ? outwardNormal(p, next, outline.winding) : null;
+        const nx = ((a?.x ?? b!.x) + (b?.x ?? a!.x)) / 2;
+        const ny = ((a?.y ?? b!.y) + (b?.y ?? a!.y)) / 2;
+        const len = Math.hypot(nx, ny) || 1;
+        return { x: p.x - (nx / len) * inset, y: y0 + (kind === 'top' ? -inset : inset), z: -(p.y - (ny / len) * inset) };
+      });
+    };
+    edges.push({ kind: 'top', index: id, points: lineFor('top') });
+    edges.push({ kind: 'bottom', index: id, points: lineFor('bottom') });
   }
   for (let v = 0; v < n; v++) {
     const a = outline.arcMid.get(v) ?? base[v];
@@ -157,3 +174,53 @@ export function listFeatures(body: Body3D): FeatureRow[] {
 }
 
 export const edgeKey = (s: EdgeSel) => `${s.bodyId}:${s.kind}:${s.index}`;
+
+// ---------------------------------------------------------------------------
+// Selecting edges in bulk
+// ---------------------------------------------------------------------------
+
+export type EdgeGroup = 'top' | 'bottom' | 'corner' | 'all';
+
+/** Every edge of one kind on a body: the whole top rim, the whole bottom rim, the vertical corner lines, or all of them. */
+export function edgesOfKind(body: Body3D, group: EdgeGroup): EdgeSel[] {
+  return listEdges(body)
+    .filter((e) => group === 'all' || e.kind === group)
+    .map((e) => ({ bodyId: body.id, kind: e.kind, index: e.index }));
+}
+
+/** The edges that border a face: its whole rim for the top or bottom, the top and bottom edge of that side for a wall. */
+export function edgesAroundFace(body: Body3D, face: FaceSel): EdgeSel[] {
+  if (face.kind === 'top') return edgesOfKind(body, 'top');
+  if (face.kind === 'bottom') return edgesOfKind(body, 'bottom');
+  if (face.index === undefined) return [];
+  const id = runId(sideRun(getOutline(body), getBase(body).length, face.index));
+  return (['top', 'bottom'] as const).map((kind) => ({ bodyId: body.id, kind, index: id }));
+}
+
+const keyset = (sels: EdgeSel[]) => new Set(sels.map(edgeKey));
+
+/** True when `sels` is exactly every edge in `group` of the body. */
+export function isWholeGroup(body: Body3D, sels: EdgeSel[], group: EdgeGroup): boolean {
+  const all = edgesOfKind(body, group);
+  if (!all.length || all.length !== sels.length) return false;
+  const have = keyset(sels);
+  return all.every((e) => have.has(edgeKey(e)));
+}
+
+/** Short words for what is selected: "Edge", "5 edges", with "Top loop" etc. when it is a whole rim. */
+export function describeEdges(body: Body3D, sels: EdgeSel[]): { title: string; sub: string } {
+  const onlyCorners = sels.every((e) => e.kind === 'corner');
+  const noun = onlyCorners ? 'corner' : 'edge';
+  const title = sels.length === 1 ? (onlyCorners ? 'Corner' : 'Edge') : `${sels.length} ${noun}s`;
+  if (sels.length > 1 && isWholeGroup(body, sels, 'top')) return { title, sub: 'Top loop' };
+  if (sels.length > 1 && isWholeGroup(body, sels, 'bottom')) return { title, sub: 'Bottom loop' };
+  if (sels.length > 1 && isWholeGroup(body, sels, 'corner')) return { title, sub: 'All corners' };
+  if (sels.length > 1 && isWholeGroup(body, sels, 'all')) return { title, sub: 'Every edge' };
+  return { title, sub: body.name };
+}
+
+/** Adds the edge to the selection, or removes it when it is already in. */
+export function toggleEdge(current: EdgeSel[], sel: EdgeSel): EdgeSel[] {
+  const k = edgeKey(sel);
+  return current.some((c) => edgeKey(c) === k) ? current.filter((c) => edgeKey(c) !== k) : [...current, sel];
+}

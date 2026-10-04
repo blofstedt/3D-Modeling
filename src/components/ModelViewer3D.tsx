@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { BevelPicker, MeasureReadout } from './FloatingControls';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -13,9 +13,9 @@ import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
-import { buildBodyGeometry, buildBodyShape, getInteriorAnchor } from '../utils/bodyGeometry';
+import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, sameFace } from '../utils/faces';
-import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, listEdges } from '../utils/edges';
+import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, toggleEdge } from '../utils/edges';
 import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline';
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -98,7 +98,9 @@ const ACCENT_LIGHT = '#a99dff';
 const WARN = '#fbbf24';
 const BACKGROUND = '#08090d';
 const CLICK_SLOP_PX = 5;
-const EDGE_PICK_PX = 7;
+const EDGE_PICK_PX = 9;
+/** Fingers are less exact than a mouse: touch gets a wider catch area around every edge. */
+const EDGE_PICK_TOUCH_PX = 18;
 const MAX_WALL_HANDLES = 16;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -299,6 +301,8 @@ export default function ModelViewer3D({
   const mmPerPixelRef = useRef<() => number>(() => 1);
   const tipRef = useRef(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** Where a press-and-hold is filling its ring, in viewer pixels. */
+  const [hold, setHold] = useState<{ x: number; y: number } | null>(null);
   /** The number for the face being worked on; it fades 3 seconds after the last change. */
   const [readout, setReadout] = useState<{ key: string; label: string; value: number } | null>(null);
   const readoutTimer = useRef(0);
@@ -471,6 +475,7 @@ export default function ModelViewer3D({
     };
 
     // ---- Edge picking (screen-space distance to each edge's polyline) -----
+    let pickPx = EDGE_PICK_PX;
     const pickEdge = (clientX: number, clientY: number): EdgeSel | null => {
       const rect = renderer.domElement.getBoundingClientRect();
       const px = clientX - rect.left;
@@ -496,15 +501,15 @@ export default function ModelViewer3D({
             const bx = (b.x * 0.5 + 0.5) * rect.width;
             const by = (-b.y * 0.5 + 0.5) * rect.height;
             // Cheap reject before the exact distance.
-            if (Math.min(ax, bx) - EDGE_PICK_PX > px || Math.max(ax, bx) + EDGE_PICK_PX < px) continue;
-            if (Math.min(ay, by) - EDGE_PICK_PX > py || Math.max(ay, by) + EDGE_PICK_PX < py) continue;
+            if (Math.min(ax, bx) - pickPx > px || Math.max(ax, bx) + pickPx < px) continue;
+            if (Math.min(ay, by) - pickPx > py || Math.max(ay, by) + pickPx < py) continue;
             const { distance, t } = distanceToSegment2D(px, py, ax, ay, bx, by);
             if (distance < best) {
               best = distance;
               bestPoint = new THREE.Vector3(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t, p.z + (q.z - p.z) * t);
             }
           }
-          if (bestPoint && best <= EDGE_PICK_PX) {
+          if (bestPoint && best <= pickPx) {
             candidates.push({ sel: { bodyId: body.id, kind: edge.kind, index: edge.index }, dist: best, point: bestPoint });
           }
         }
@@ -711,6 +716,8 @@ export default function ModelViewer3D({
 
     const beginDrag = (d: Drag, pointerId: number) => {
       drag = d;
+      window.clearTimeout(longPress);
+      setHold(null);
       controls.enabled = false;
       renderer.domElement.setPointerCapture(pointerId);
       // Show only the handle being dragged; the rest would be stale until the edit lands.
@@ -1041,6 +1048,7 @@ export default function ModelViewer3D({
 
     const onPointerDown = (e: PointerEvent) => {
       trackTouchDown(e);
+      pickPx = e.pointerType === 'touch' ? EDGE_PICK_TOUCH_PX : EDGE_PICK_PX;
       // A second finger means the user wants to orbit/pinch: abandon any one-finger drag.
       if (!e.isPrimary) {
         cancelDrag();
@@ -1065,13 +1073,22 @@ export default function ModelViewer3D({
       longFired = false;
       window.clearTimeout(longPress);
       const held = live.current.selectedBodyIds;
-      if (hit.type === 'body' && held.length >= 1 && !(held.length === 1 && held[0] === hit.bodyId)) {
+      const armShape = hit.type === 'body' && held.length >= 1 && !(held.length === 1 && held[0] === hit.bodyId);
+      // Holding an edge of the selected shape adds that edge (or drops it, if it is already in).
+      const armEdge = hit.type === 'edge' && held.includes(hit.sel.bodyId);
+      if (armShape || armEdge) {
         const pressed = candidate;
+        const rect = renderer.domElement.getBoundingClientRect();
+        setHold({ x: e.clientX - rect.left, y: e.clientY - rect.top });
         longPress = window.setTimeout(() => {
           if (candidate !== pressed) return; // it turned into a drag, or the finger lifted
           longFired = true;
+          setHold(null);
           navigator.vibrate?.(15);
-          live.current.onSelectBody(hit.bodyId, true);
+          if (hit.type === 'edge') {
+            live.current.onSelectFace(null);
+            live.current.onSelectEdges(toggleEdge(live.current.selectedEdges, hit.sel));
+          } else if (hit.type === 'body') live.current.onSelectBody(hit.bodyId, true);
         }, 420);
       }
       // Pressing on a shape never orbits: it either selects it or starts moving it.
@@ -1122,6 +1139,7 @@ export default function ModelViewer3D({
     const finishPointer = (e: PointerEvent, cancelled: boolean) => {
       if (!e.isPrimary) return;
       window.clearTimeout(longPress);
+      setHold(null);
       if (pending) {
         const m = pending;
         pending = null;
@@ -1161,9 +1179,16 @@ export default function ModelViewer3D({
         const already = current.some((s) => edgeKey(s) === edgeKey(hit.sel));
         live.current.onSelectBody(hit.sel.bodyId);
         live.current.onSelectFace(null);
-        live.current.onSelectEdges(
-          multi && sameBody ? (already ? current.filter((s) => edgeKey(s) !== edgeKey(hit.sel)) : [...current, hit.sel]) : [hit.sel]
-        );
+        // Tapping the only selected edge again widens it to the whole rim; tapping the rim narrows it back to that edge.
+        const body = bodyOf(hit.sel.bodyId);
+        const rim = body && hit.sel.kind !== 'corner' ? edgesOfKind(body, hit.sel.kind) : [];
+        const justThis = current.length === 1 && already;
+        const isRim = rim.length > 1 && current.length === rim.length && rim.every((r) => current.some((c) => edgeKey(c) === edgeKey(r)));
+        let next: EdgeSel[] = [hit.sel];
+        if (multi && sameBody) next = toggleEdge(current, hit.sel);
+        else if (justThis && rim.length > 1) next = rim;
+        else if (isRim && already) next = [hit.sel];
+        live.current.onSelectEdges(next);
       } else if (hit.type === 'body') {
         live.current.onSelectBody(hit.bodyId, multi);
         // A tap on a face selects that face; a shift-tap is about picking shapes, not faces.
@@ -1409,7 +1434,7 @@ export default function ModelViewer3D({
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const outline = new THREE.LineSegments(
-        new THREE.EdgesGeometry(geometry, 30),
+        featureEdges(geometry, 30),
         new THREE.LineBasicMaterial({ color: ACCENT, transparent: true })
       );
       outline.visible = false;
@@ -1627,7 +1652,7 @@ export default function ModelViewer3D({
           if (len < 14) continue;
           const n = outwardNormal(ends.a, ends.b, ends.winding);
           const dot = new THREE.Group();
-          dot.position.set((ends.a.x + ends.b.x) / 2 + n.x * 6 * s, topY, -((ends.a.y + ends.b.y) / 2 + n.y * 6 * s));
+          dot.position.set((ends.a.x + ends.b.x) / 2 + n.x * 6 * s, elev + body.extrusionHeight / 2, -((ends.a.y + ends.b.y) / 2 + n.y * 6 * s));
           dot.userData = { gizmo: 'offset-wall', bodyId: body.id, index: j };
           const knob = new THREE.Mesh(HANDLE.dot, handleMaterial('#ffffff'));
           knob.scale.setScalar(2.6 * s);
@@ -1801,6 +1826,25 @@ export default function ModelViewer3D({
     <div className="absolute inset-0 select-none touch-none overflow-hidden">
       <div ref={mountRef} className="absolute inset-0" />
 
+      {hold && (
+        <svg className="absolute z-30 pointer-events-none" style={{ left: hold.x - 30, top: hold.y - 30 }} width={60} height={60} viewBox="0 0 60 60">
+          <circle cx={30} cy={30} r={24} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth={4} />
+          <motion.circle
+            cx={30}
+            cy={30}
+            r={24}
+            fill="none"
+            stroke="#a99dff"
+            strokeWidth={4}
+            strokeLinecap="round"
+            transform="rotate(-90 30 30)"
+            initial={{ pathLength: 0 }}
+            animate={{ pathLength: 1 }}
+            transition={{ duration: 0.42, ease: 'linear' }}
+          />
+        </svg>
+      )}
+
       <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
         <AnimatePresence mode="wait">
           {readout && selectedFace && !pickerOpen && (
@@ -1811,6 +1855,14 @@ export default function ModelViewer3D({
               onEditStart={() => holdReadout(true)}
               onEditEnd={() => holdReadout(false)}
               onCommit={(mm) => onFaceValue?.(selectedFace, mm)}
+              onEdges={
+                faceBody
+                  ? () => {
+                      onSelectEdges(edgesAroundFace(faceBody, selectedFace));
+                      onSelectFace(null);
+                    }
+                  : undefined
+              }
             />
           )}
           {pickerOpen && selectedEdges.length > 0 && (

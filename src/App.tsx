@@ -767,6 +767,7 @@ export default function App() {
         face={selectedFace}
         onEdgeChange={handleEdgeChange}
         onClearEdges={() => setSelectedEdges([])}
+        onSelectEdges={setSelectedEdges}
         onExtrudeFace={handleExtrudeFace}
         onClearFace={() => setSelectedFace(null)}
         onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}

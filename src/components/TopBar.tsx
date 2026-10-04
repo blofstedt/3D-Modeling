@@ -5,9 +5,9 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Box, FileDown, Move, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
+import { Box, FileDown, Move, SquareDashed, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
 import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
-import { edgeSize, edgeStyle, MAX_BEVEL_SIZE } from '../utils/edges';
+import { describeEdges, edgeSize, edgesOfKind, edgeStyle, isWholeGroup, MAX_BEVEL_SIZE, type EdgeGroup } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
 import MenuButton from './Menu';
 import Sidebar from './Sidebar';
@@ -29,6 +29,7 @@ interface TopBarProps {
   face: FaceSel | null;
   onEdgeChange: (edges: EdgeSel[], patch: { size?: number; style?: BevelStyle }) => void;
   onClearEdges: () => void;
+  onSelectEdges: (edges: EdgeSel[]) => void;
   onExtrudeFace: (face: FaceSel, delta: number) => void;
   onClearFace: () => void;
   onMove: (dx: number, dy: number, dz: number) => void;
@@ -99,7 +100,7 @@ export default function TopBar(props: TopBarProps) {
       const set = (v: number) => props.onEdgeChange(edges, { size: Math.max(0, Math.min(MAX_BEVEL_SIZE, v)) });
       return (
         <>
-          <Chip sub={body.name}>{edges.length > 1 ? `${edges.length} ${onlyCorners ? 'corners' : 'edges'}` : onlyCorners ? 'Corner' : 'Edge'}</Chip>
+          <Chip sub={describeEdges(body, edges).sub}>{describeEdges(body, edges).title}</Chip>
           <NumberBox label={onlyCorners ? 'Radius' : 'Size'} value={size} step={0.5} min={0} max={MAX_BEVEL_SIZE} onCommit={set} />
           {!onlyCorners && (
             <Segmented
@@ -113,6 +114,42 @@ export default function TopBar(props: TopBarProps) {
               ]}
             />
           )}
+          <MenuButton id="edge-select" openId={openId} setOpenId={setOpenId} label="Select" icon={SquareDashed} placement="down" title="Select edges in bulk">
+            <div className="p-2 flex flex-col gap-1 w-[min(15rem,calc(100vw-1.5rem))]">
+              {(
+                [
+                  ['top', 'Top edges'],
+                  ['bottom', 'Bottom edges'],
+                  ['corner', 'Vertical corners'],
+                  ['all', 'All edges'],
+                ] as [EdgeGroup, string][]
+              ).map(([group, text]) => (
+                <button
+                  key={group}
+                  type="button"
+                  onClick={() => {
+                    props.onSelectEdges(edgesOfKind(body, group));
+                    setOpenId(null);
+                  }}
+                  className={`h-11 px-4 rounded-full text-left text-sm font-medium transition-colors ${
+                    isWholeGroup(body, edges, group) ? 'bg-accent-500 text-white' : 'text-slate-100 hover:bg-white/10'
+                  }`}
+                >
+                  {text}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  props.onClearEdges();
+                  setOpenId(null);
+                }}
+                className="h-11 px-4 rounded-full text-left text-sm font-medium text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          </MenuButton>
           <IconButton icon={Trash2} label="Remove bevel (Del)" onClick={() => props.onEdgeChange(edges, { size: 0 })} danger />
           <IconButton icon={X} label="Done (Esc)" onClick={props.onClearEdges} />
         </>

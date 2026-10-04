@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
+import { SquareDashed } from 'lucide-react';
 import { BevelStyle } from '../types';
 import { spring } from './controls';
 import { formatLength, parseLength } from '../utils/units';
@@ -71,12 +72,15 @@ export function MeasureReadout({
   onEditStart,
   onEditEnd,
   onCommit,
+  onEdges,
 }: {
   label: string;
   value: number;
   onEditStart: () => void;
   onEditEnd: () => void;
   onCommit: (mm: number) => void;
+  /** Select every edge around this face. */
+  onEdges?: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const { main, alt } = formatLength(value);
@@ -129,6 +133,24 @@ export function MeasureReadout({
           }}
           className="w-24 h-8 px-3 rounded-full bg-white/10 border border-accent-400 text-base font-semibold text-white tabular-nums focus:outline-none"
         />
+      )}
+      {onEdges && draft === null && (
+        <>
+          <span className="w-px h-6 bg-white/12" />
+          <motion.button
+            type="button"
+            onClick={onEdges}
+            aria-label="Select the edges around this face"
+            title="Select the edges around this face"
+            whileHover={{ scale: 1.08 }}
+            whileTap={{ scale: 0.9 }}
+            transition={spring}
+            className="h-9 pl-2.5 pr-3.5 -mr-2 rounded-full bg-white/8 hover:bg-accent-500 text-slate-100 hover:text-white flex items-center gap-1.5 text-[13px] font-medium transition-colors"
+          >
+            <SquareDashed size={15} strokeWidth={1.8} />
+            Edges
+          </motion.button>
+        </>
       )}
     </motion.div>
   );
