@@ -9,6 +9,7 @@ import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.j
 import { BevelStyle, Body3D, Point2D } from '../types';
 import { cleanPolygonPoints, ensureWinding } from './geometry';
 import { Outline, getBase, getOutline, outwardNormal, runId, runPath, sideRun } from './outline';
+import { buildCornerCutter } from './cornerBevel';
 
 const toPath = <T extends THREE.Path>(path: T, pts: { x: number; y: number }[]): T => {
   path.moveTo(pts[0].x, pts[0].y);
@@ -239,7 +240,8 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
   geometry.rotateX(-Math.PI / 2);
 
   const bevels = !options.fast && body.edgeBevels?.length ? resolveBevels(body, getOutline(body)) : [];
-  if (bevels.length) {
+  const cornerCutters = options.fast ? [] : (body.cornerBevels ?? []).map((cb) => buildCornerCutter(body, cb)).filter((g): g is THREE.BufferGeometry => !!g);
+  if (bevels.length || cornerCutters.length) {
     try {
       const evaluator = new Evaluator();
       evaluator.attributes = ['position', 'normal'];
@@ -249,6 +251,11 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
         const winding = getOutline(body).winding;
         const cutter = buildBevelCutter(b.path, b.closed, winding, b.side, b.size, b.style, b.side === 'top' ? height : 0);
         if (cutter) result = evaluator.evaluate(result, asBrush(cutter), SUBTRACTION);
+      }
+      for (const cutter of cornerCutters) {
+        // Cutters are built in world height; the body is extruded from zero.
+        cutter.translate(0, -(body.elevation ?? 0), 0);
+        result = evaluator.evaluate(result, asBrush(cutter), SUBTRACTION);
       }
       geometry.dispose();
       geometry = result.geometry;

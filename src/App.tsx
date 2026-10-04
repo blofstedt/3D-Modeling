@@ -401,7 +401,7 @@ export default function App() {
       changed = true;
 
       const full = lo <= tLo && hi >= tHi;
-      const clean = { edgeBevels: undefined, cornerRadii: undefined };
+      const clean = { edgeBevels: undefined, cornerBevels: undefined, cornerRadii: undefined };
       const out: Body3D[] = [];
       if (!full && lo > tLo) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (base)`, elevation: tLo, extrusionHeight: lo - tLo });
       results.forEach((r, i) => {

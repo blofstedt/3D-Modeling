@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BevelStyle, Body3D, EdgeBevel, EdgeSel, FaceSel } from '../types';
+import { BevelStyle, Body3D, CornerBevel, EdgeBevel, EdgeSel, FaceSel } from '../types';
 import { getBase, getOutline, outwardNormal, runId, runPath, sideRun, withOutline } from './outline';
 
 export const DEFAULT_BEVEL_SIZE = 2;
@@ -150,12 +150,26 @@ function computeEdges(body: Body3D): EdgePath[] {
       yLo = bottom;
       yHi = top;
     }
+    // A beveled corner: draw the line on the bevel, a little in from the old sharp corner.
+    const cb = (body.cornerBevels ?? []).find((c) => c.vertex === v);
+    let cx = a.x;
+    let cy = a.y;
+    if (cb && cb.size > 0 && !outline.arcMid.has(v)) {
+      const na = outwardNormal(base[(v - 1 + n) % n], base[v], outline.winding);
+      const nb = outwardNormal(base[v], base[(v + 1) % n], outline.winding);
+      const bx = na.x + nb.x;
+      const by = na.y + nb.y;
+      const bl = Math.hypot(bx, by) || 1;
+      const inset = cb.size * (cb.style === 'round' ? 0.25 : 0.5);
+      cx -= (bx / bl) * inset;
+      cy -= (by / bl) * inset;
+    }
     edges.push({
       kind: 'corner',
       index: v,
       points: [
-        { x: a.x, y: yLo, z: -a.y },
-        { x: a.x, y: yHi, z: -a.y },
+        { x: cx, y: yLo, z: -cy },
+        { x: cx, y: yHi, z: -cy },
       ],
     });
   }
@@ -173,13 +187,15 @@ export function findBevel(body: Body3D, side: 'top' | 'bottom', id: number): Edg
 }
 
 /** Current size (bevel) or radius (corner) of an edge; 0 when untouched. */
+const cornerBevelAt = (body: Body3D, v: number) => (body.cornerBevels ?? []).find((c) => c.vertex === v);
+
 export function edgeSize(body: Body3D, sel: EdgeSel): number {
-  if (sel.kind === 'corner') return body.cornerRadii?.[sel.index] ?? 0;
+  if (sel.kind === 'corner') return cornerBevelAt(body, sel.index)?.size ?? body.cornerRadii?.[sel.index] ?? 0;
   return findBevel(body, sel.kind, sel.index)?.size ?? 0;
 }
 
 export function edgeStyle(body: Body3D, sel: EdgeSel): BevelStyle | undefined {
-  return sel.kind === 'corner' ? undefined : findBevel(body, sel.kind, sel.index)?.style;
+  return sel.kind === 'corner' ? cornerBevelAt(body, sel.index)?.style : findBevel(body, sel.kind, sel.index)?.style;
 }
 
 /** Applies a size/style change to the given edges of `body` and returns the update. */
@@ -190,17 +206,34 @@ export function applyEdgeChange(
 ): Partial<Body3D> {
   let bevels = [...(body.edgeBevels ?? [])];
   const hasRim = sels.some((e) => e.bodyId === body.id && e.kind !== 'corner');
+  let corners = [...(body.cornerBevels ?? [])];
+  let cornersChanged = false;
   const radii = getBase(body).map((_, i) => body.cornerRadii?.[i] ?? 0);
   let radiiChanged = false;
 
   for (const sel of sels) {
     if (sel.bodyId !== body.id) continue;
     if (sel.kind === 'corner') {
-      if (patch.size === undefined) continue;
-      // Picked together with top/bottom edges, a vertical corner keeps the curve it already has: the bevel follows it.
-      // Only a sharp corner is rounded to match, and removing bevels never flattens a curve.
-      if (hasRim && ((radii[sel.index] ?? 0) > 0 || patch.size <= 0)) continue;
-      radii[sel.index] = Math.max(0, Math.min(MAX_BEVEL_SIZE * 2, patch.size));
+      const v = sel.index;
+      const cb = corners.find((c) => c.vertex === v);
+      if (cb || (hasRim && (radii[v] ?? 0) === 0)) {
+        // A corner bevel: cut along the corner and on around any bevel above or below it.
+        if (patch.size !== undefined && patch.size <= 0) {
+          corners = corners.filter((c) => c.vertex !== v);
+        } else if (cb || patch.size !== undefined) {
+          const next: CornerBevel = {
+            vertex: v,
+            size: Math.min(MAX_BEVEL_SIZE, patch.size ?? cb?.size ?? DEFAULT_BEVEL_SIZE),
+            style: patch.style ?? cb?.style ?? 'round',
+          };
+          corners = cb ? corners.map((c) => (c === cb ? next : c)) : [...corners, next];
+        }
+        cornersChanged = true;
+        continue;
+      }
+      // Picked together with top/bottom edges, a corner that is already curved keeps its curve.
+      if (patch.size === undefined || hasRim) continue;
+      radii[v] = Math.max(0, Math.min(MAX_BEVEL_SIZE * 2, patch.size));
       radiiChanged = true;
       continue;
     }
@@ -219,7 +252,11 @@ export function applyEdgeChange(
     bevels = existing ? bevels.map((b) => (b === existing ? next : b)) : [...bevels, next];
   }
 
-  return { edgeBevels: bevels, ...(radiiChanged ? withOutline(body, { cornerRadii: radii }) : {}) };
+  return {
+    edgeBevels: bevels,
+    ...(cornersChanged ? { cornerBevels: corners } : {}),
+    ...(radiiChanged ? withOutline(body, { cornerRadii: radii }) : {}),
+  };
 }
 
 export interface FeatureRow {

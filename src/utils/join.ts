@@ -54,6 +54,7 @@ export function joinBodies(targets: Body3D[], stamp: number): Body3D[] {
         basePoints: fp.points,
         cornerRadii: undefined,
         edgeBevels: undefined,
+        cornerBevels: undefined,
         holes: fp.holes,
         elevation: slab.lo,
         extrusionHeight: slab.hi - slab.lo,

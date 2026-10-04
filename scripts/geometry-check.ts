@@ -108,9 +108,20 @@ const curved = { ...box, ...withOutline(box, { cornerRadii: [0, 25, 0, 0] }) } a
 const wallEdges = edgesAroundFace(curved, { bodyId: curved.id, kind: 'wall', index: 0 });
 const bevelled = { ...curved, ...applyEdgeChange(curved, wallEdges, { size: 8 }) } as Body3D;
 check('bevel keeps an existing curved corner', near(bevelled.cornerRadii![1], 25, 0.01), JSON.stringify(bevelled.cornerRadii));
-check('bevel rounds a sharp corner to match', near(bevelled.cornerRadii![0], 8, 0.01));
+check('a sharp corner gets a corner bevel that follows the edges', (bevelled.cornerBevels ?? []).some((c) => c.vertex === 0 && c.size === 8) && bevelled.cornerRadii![0] === 0);
 const removed = { ...bevelled, ...applyEdgeChange(bevelled, wallEdges, { size: 0 }) } as Body3D;
-check('removing the bevel keeps the curve', near(removed.cornerRadii![1], 25, 0.01) && !(removed.edgeBevels ?? []).length);
+check('removing the bevel keeps the curve', near(removed.cornerRadii![1], 25, 0.01) && !(removed.edgeBevels ?? []).length && !(removed.cornerBevels ?? []).length);
+
+// A corner bevel on a plain box removes exactly the rounded strip (1 - pi/4) r^2 per unit height.
+const cornerRound = buildBodyGeometry({ ...box, cornerBevels: [{ vertex: 1, size: 8, style: 'round' }] } as Body3D)!;
+check('corner bevel (round) volume', near(100 * 60 * 40 - volume(cornerRound), (1 - Math.PI / 4) * 64 * 40, 15), `${Math.round(100 * 60 * 40 - volume(cornerRound))}`);
+const cornerFlat = buildBodyGeometry({ ...box, cornerBevels: [{ vertex: 1, size: 8, style: 'chamfer' }] } as Body3D)!;
+check('corner bevel (flat) volume', near(100 * 60 * 40 - volume(cornerFlat), 0.5 * 64 * 40, 10), `${Math.round(100 * 60 * 40 - volume(cornerFlat))}`);
+// Under a rounded top edge the corner bevel carries on along that curve, so it removes a bit more than the straight run.
+const withTop = { ...box, edgeBevels: [{ side: 'top' as const, edge: 1, size: 15, style: 'round' as const }] } as Body3D;
+const topOnly = 100 * 60 * 40 - volume(buildBodyGeometry(withTop)!);
+const both = 100 * 60 * 40 - volume(buildBodyGeometry({ ...withTop, cornerBevels: [{ vertex: 1, size: 6, style: 'round' }] } as Body3D)!);
+check('corner bevel follows a curved top edge', both > topOnly + (1 - Math.PI / 4) * 36 * (40 - 15) * 0.9, `${Math.round(topOnly)} -> ${Math.round(both)}`);
 
 // Join keeps each shape's own height: a tall block beside a short one stays tall where it is tall.
 const tall = body({ id: 'a', points: rect(0, 0, 40, 40), extrusionHeight: 80 });

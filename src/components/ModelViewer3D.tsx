@@ -255,6 +255,7 @@ const bodySignature = (b: Body3D) =>
     b.extrusionHeight,
     b.elevation,
     b.edgeBevels,
+    b.cornerBevels,
     b.materialType,
     b.color,
   ]);

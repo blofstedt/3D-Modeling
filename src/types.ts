@@ -31,6 +31,13 @@ export interface EdgeBevel {
   style: BevelStyle;
 }
 
+/** A rounded or flat bevel on a vertical corner, cut so it follows any bevel on the edges above and below it. */
+export interface CornerBevel {
+  vertex: number;
+  size: number;
+  style: BevelStyle;
+}
+
 export interface Body3D {
   id: string;
   name: string;
@@ -46,6 +53,7 @@ export interface Body3D {
   elevation?: number;
   /** Bevels on individual top/bottom edges. Nothing is beveled by default. */
   edgeBevels?: EdgeBevel[];
+  cornerBevels?: CornerBevel[];
   color: string;
   materialType: MaterialType;
   visible: boolean;
