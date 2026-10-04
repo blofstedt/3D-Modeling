@@ -96,7 +96,7 @@ export function MeasureReadout({
       transition={{ ...spring, stiffness: 440, damping: 28 }}
       className="h-12 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/12 shadow-xl shadow-black/50 flex items-center gap-2.5 pl-4 pr-4"
     >
-      <span className="text-[11px] uppercase tracking-wide text-slate-400">{label}</span>
+      <span className="text-[11px] leading-none uppercase tracking-wide text-slate-400">{label}</span>
       {draft === null ? (
         <button
           type="button"
@@ -105,10 +105,10 @@ export function MeasureReadout({
             setDraft(String(Math.round(value * 10) / 10));
             onEditStart();
           }}
-          className="flex items-baseline gap-1.5 h-full"
+          className="flex items-center gap-1.5 h-full"
         >
-          <span className="text-base font-semibold text-white tabular-nums">{main}</span>
-          {alt && <span className="text-xs text-slate-400 tabular-nums">· {alt}</span>}
+          <span className="text-base leading-none font-semibold text-white tabular-nums">{main}</span>
+          {alt && <span className="text-xs leading-none text-slate-400 tabular-nums">· {alt}</span>}
         </button>
       ) : (
         <input
