@@ -13,13 +13,13 @@ import {
   Focus,
   Hexagon,
   Layers3,
-  Merge,
+  Combine,
   Ungroup,
   Move3d,
   Octagon,
   Pentagon,
   Repeat,
-  Scissors,
+  SquareMinus,
   Shapes,
   Square,
   SquareRoundCorner,
@@ -85,12 +85,12 @@ export default function BottomBar(props: BottomBarProps) {
   const { selectedCount, bodyCount } = props;
   const tools: Tool[] = [
     { label: 'Move', key: 'M', icon: Move3d, onClick: props.onToggleMove, active: props.moveOn, disabled: selectedCount < 1, hint: 'Select a shape' },
-    { label: props.grouped ? 'Ungroup' : 'Group', key: 'G', icon: props.grouped ? Ungroup : Boxes, onClick: props.onGroup, disabled: !props.grouped && selectedCount < 2, hint: 'Select 2+ shapes' },
-    { label: 'Subtract', key: 'S', icon: Scissors, onClick: props.onSubtract, disabled: bodyCount < 2, hint: 'Needs 2+ shapes' },
+    { label: props.grouped ? 'Ungroup' : 'Group', key: 'G', icon: props.grouped ? Ungroup : Boxes, onClick: props.onGroup, disabled: !props.grouped && selectedCount < 2, hint: 'Hold a shape to add it' },
+    { label: 'Subtract', key: 'S', icon: SquareMinus, onClick: props.onSubtract, disabled: selectedCount < 2, hint: 'Hold a shape to add it, then Subtract' },
     { label: 'Repeat', key: 'R', icon: Repeat, onClick: props.onPattern, disabled: selectedCount < 1, hint: 'Select a shape' },
   ];
   const organize: Tool[] = [
-    { label: 'Join', key: 'J', icon: Merge, onClick: props.onJoin, disabled: selectedCount < 2, hint: 'Select 2+ shapes' },
+    { label: 'Join', key: 'J', icon: Combine, onClick: props.onJoin, disabled: selectedCount < 2, hint: 'Select 2+ shapes' },
     { label: props.isolated ? 'Show everything' : 'Isolate', key: 'I', icon: Focus, onClick: props.onIsolate, active: props.isolated, disabled: !props.isolated && selectedCount < 1, hint: 'Select a shape' },
     { label: 'Hide', key: 'H', icon: EyeOff, onClick: props.onHide, disabled: selectedCount < 1, hint: 'Select a shape' },
     ...(props.hiddenCount > 0 ? [{ label: `Show hidden (${props.hiddenCount})`, key: '', icon: Eye, onClick: props.onShowHidden } as Tool] : []),
@@ -111,7 +111,7 @@ export default function BottomBar(props: BottomBarProps) {
             whileHover={t.disabled ? undefined : { scale: 1.05 }}
             whileTap={t.disabled ? undefined : { scale: 0.92 }}
             transition={spring}
-            className={`shrink-0 h-10 w-10 sm:h-9 sm:w-auto sm:px-3.5 rounded-full flex items-center justify-center gap-1.5 text-[13px] font-medium transition-colors ${
+            className={`shrink-0 h-[46px] w-[46px] sm:h-9 sm:w-auto sm:px-3.5 rounded-full flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 text-[9.5px] sm:text-[13px] leading-none font-medium transition-colors ${
               t.active
                 ? 'bg-accent-500 text-white shadow-md shadow-accent-500/30'
                 : t.danger
@@ -119,15 +119,15 @@ export default function BottomBar(props: BottomBarProps) {
                   : 'bg-white/6 text-slate-200 hover:bg-white/12 hover:text-white disabled:bg-transparent'
             } disabled:text-slate-600 disabled:pointer-events-none`}
           >
-            <Icon size={16} strokeWidth={1.75} />
-            <span className="hidden sm:inline">{t.label}</span>
+            <Icon size={17} strokeWidth={1.75} />
+            <span>{t.label}</span>
           </motion.button>
         );
       };
 
   return (
     <nav aria-label="Tools" className="shrink-0 h-16 bg-slate-900 border-t border-white/8 z-40 flex items-center justify-evenly sm:justify-center sm:gap-1.5 px-2 sm:px-3">
-      <MenuButton id="shapes" openId={props.openId} setOpenId={props.setOpenId} label="Shape" icon={Shapes} placement="up" title="Add a shape" iconOnlyOnMobile>
+      <MenuButton id="shapes" openId={props.openId} setOpenId={props.setOpenId} label="Shape" icon={Shapes} placement="up" title="Add a shape" stackedOnMobile>
         <div className="p-3 w-[min(19rem,calc(100vw-1.5rem))]">
           <p className="px-2 pb-2 text-xs text-slate-400">{props.addOnTop ? 'Adds on top of the selected face' : 'Add a shape'}</p>
           <div className="grid grid-cols-3 gap-2">
@@ -161,7 +161,7 @@ export default function BottomBar(props: BottomBarProps) {
 
       {tools.map(renderTool)}
 
-      <MenuButton id="organize" openId={props.openId} setOpenId={props.setOpenId} label="Organize" icon={Layers3} placement="up" title="Join, isolate, hide" iconOnlyOnMobile>
+      <MenuButton id="organize" openId={props.openId} setOpenId={props.setOpenId} label="Organize" icon={Layers3} placement="up" title="Join, isolate, hide" stackedOnMobile>
         <div className="p-2 flex flex-col gap-1 w-[min(15rem,calc(100vw-1.5rem))]">
           {organize.map((t, i) => {
             const Icon = t.icon;

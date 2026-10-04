@@ -626,7 +626,7 @@ export default function ModelViewer3D({
       const f = live.current.selectedFace;
       if (f) return 'Drag the highlighted face (or its arrow) to extrude it · drag the rest of the shape to move it';
       return live.current.selectedBodyIds.length
-        ? 'Drag the shape to move it · arrow = height · dots = walls · ring = rotate · click an edge to bevel it'
+        ? 'Drag to move · hold another shape to add it · arrow = height · dots = walls · ring = rotate'
         : 'Click a shape to select it · drag empty space to orbit';
     };
 
@@ -1009,6 +1009,10 @@ export default function ModelViewer3D({
       }
     };
 
+    // Press and hold another shape while something is selected: add it to the selection (hold a selected one to drop it).
+    let longPress = 0;
+    let longFired = false;
+
     // Two fingers tapped together (and lifted without moving) show or hide the move arrows.
     const touches = new Map<number, { x0: number; y0: number }>();
     let twoTap: { start: number; ups: number } | null = null;
@@ -1058,6 +1062,18 @@ export default function ModelViewer3D({
           return;
         }
       }
+      longFired = false;
+      window.clearTimeout(longPress);
+      const held = live.current.selectedBodyIds;
+      if (hit.type === 'body' && held.length >= 1 && !(held.length === 1 && held[0] === hit.bodyId)) {
+        const pressed = candidate;
+        longPress = window.setTimeout(() => {
+          if (candidate !== pressed) return; // it turned into a drag, or the finger lifted
+          longFired = true;
+          navigator.vibrate?.(15);
+          live.current.onSelectBody(hit.bodyId, true);
+        }, 420);
+      }
       // Pressing on a shape never orbits: it either selects it or starts moving it.
       controls.enabled = false;
       renderer.domElement.setPointerCapture(e.pointerId);
@@ -1105,6 +1121,7 @@ export default function ModelViewer3D({
 
     const finishPointer = (e: PointerEvent, cancelled: boolean) => {
       if (!e.isPrimary) return;
+      window.clearTimeout(longPress);
       if (pending) {
         const m = pending;
         pending = null;
@@ -1121,6 +1138,10 @@ export default function ModelViewer3D({
       const down = candidate;
       candidate = null;
       controls.enabled = true;
+      if (longFired) {
+        longFired = false;
+        return; // the hold already changed the selection
+      }
       if (cancelled || !down || down.pointerId !== e.pointerId) return;
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX) return; // it was an orbit/pan
 
@@ -1168,6 +1189,8 @@ export default function ModelViewer3D({
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointercancel', onPointerCancel);
     renderer.domElement.addEventListener('pointerleave', onPointerLeave);
+    const onContextMenu = (e: Event) => e.preventDefault();
+    renderer.domElement.addEventListener('contextmenu', onContextMenu);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -1335,6 +1358,8 @@ export default function ModelViewer3D({
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       renderer.domElement.removeEventListener('pointercancel', onPointerCancel);
       renderer.domElement.removeEventListener('pointerleave', onPointerLeave);
+      renderer.domElement.removeEventListener('contextmenu', onContextMenu);
+      window.clearTimeout(longPress);
       controls.dispose();
       entriesRef.current.clear();
       [bodyGroup, gizmoGroup, helperGroup, previewGroup, hoverGroup].forEach(clearGroup);
@@ -1737,7 +1762,7 @@ export default function ModelViewer3D({
           : selectedFace
           ? 'Drag the highlighted face (or its arrow) to extrude it · drag the rest of the shape to move it'
           : selectedBodyIds.length
-          ? 'Drag the shape to move it · arrow = height · dots = walls · ring = rotate · click an edge to bevel it'
+          ? 'Drag to move · hold another shape to add it · arrow = height · dots = walls · ring = rotate'
           : 'Click a shape to select it · drag empty space to orbit'
     );
   }, [selectedBodyIds, selectedFace, moveOn, repeatConfig.isDrawingLine, onHint]);

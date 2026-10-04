@@ -19,11 +19,10 @@ import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
 import BottomBar from './components/BottomBar';
 import TopBar from './components/TopBar';
-import CutModal from './components/CutModal';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
-import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
+import { cutShape, getPolygonSignedArea, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
@@ -138,7 +137,6 @@ export default function App() {
   /** The X / Y / Z move arrows, toggled with a two-finger tap. */
   const [moveOn, setMoveOn] = useState(false);
 
-  const [isCutModalOpen, setIsCutModalOpen] = useState(false);
   /** Shapes waiting on the "Delete?" confirmation. */
   const [confirmDeleteIds, setConfirmDeleteIds] = useState<string[] | null>(null);
   const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
@@ -356,40 +354,96 @@ export default function App() {
     selectOnly(id);
   };
 
-  const handleApplyCut = (targetId: string, cutterId: string, keepCutter: boolean) => {
-    const target = bodies.find((b) => b.id === targetId);
-    const cutter = bodies.find((b) => b.id === cutterId);
-    if (!target || !cutter) return;
-
-    const cutResults = cutShape(target.points, target.holes, cutter.points, cutter.holes);
-    if (cutResults.length === 0) {
-      notify('Subtracting removed the entire shape.');
+  /**
+   * Subtract: the shape you picked last is cut out of the others. Only the part that overlaps in height is cut,
+   * so a short cutter leaves slabs above and below it (kept as one group).
+   */
+  const handleSubtractSelected = () => {
+    const last = bodies.find((b) => b.id === selectedBodyId);
+    if (selectedBodyIds.length < 2 || !last) {
+      notify('Select 2+ shapes first: press and hold a shape to add it. The last one you pick is cut out of the others.');
+      return;
+    }
+    const cutterIds = last.groupId ? bodies.filter((b) => b.groupId === last.groupId).map((b) => b.id) : [last.id];
+    const cutters = bodies.filter((b) => cutterIds.includes(b.id));
+    const targets = bodies.filter((b) => selectedBodyIds.includes(b.id) && !cutterIds.includes(b.id));
+    if (!targets.length) {
+      notify('Select another shape to cut from.');
       return;
     }
 
-    // The outline is new, so earlier edge bevels and corner radii no longer apply.
-    const reshaped = (r: { points: Point2D[]; holes: Point2D[][] }) => ({
-      points: r.points,
-      basePoints: r.points,
-      cornerRadii: undefined,
-      edgeBevels: undefined,
-      holes: r.holes,
-    });
-    const [primary, ...extras] = cutResults;
-    let next = bodies.map((b) => (b.id === targetId ? { ...target, ...reshaped(primary) } : b));
-    extras.forEach((result, i) => {
-      next.push({
-        ...target,
-        ...reshaped(result),
-        id: `body_split_${Date.now()}_${i}`,
-        name: `${target.name} (part ${i + 2})`,
-      });
-    });
-    if (!keepCutter) next = next.filter((b) => b.id !== cutterId);
+    const area = (r: { points: Point2D[]; holes?: Point2D[][] }) =>
+      Math.abs(getPolygonSignedArea(r.points)) - (r.holes ?? []).reduce((sum, h) => sum + Math.abs(getPolygonSignedArea(h)), 0);
+    const stamp = Date.now();
+    let counter = 0;
+    let changed = false;
 
-    setBodies(next);
-    selectOnly(targetId);
-    notify(`Subtracted “${cutter.name}” from “${target.name}”.`);
+    const cutOne = (piece: Body3D, cutter: Body3D): Body3D[] => {
+      const tLo = piece.elevation ?? 0;
+      const tHi = tLo + piece.extrusionHeight;
+      const lo = Math.max(tLo, cutter.elevation ?? 0);
+      const hi = Math.min(tHi, (cutter.elevation ?? 0) + cutter.extrusionHeight);
+      if (hi <= lo) return [piece];
+      const results = cutShape(piece.points, piece.holes, cutter.points, cutter.holes);
+      if (results.length === 1 && Math.abs(area(results[0]) - area(piece)) < 0.5) return [piece]; // footprints do not touch
+      changed = true;
+
+      const full = lo <= tLo && hi >= tHi;
+      const clean = { edgeBevels: undefined, cornerRadii: undefined };
+      const out: Body3D[] = [];
+      if (!full && lo > tLo) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (base)`, elevation: tLo, extrusionHeight: lo - tLo });
+      results.forEach((r, i) => {
+        out.push({
+          ...piece,
+          ...clean,
+          points: r.points,
+          basePoints: r.points,
+          holes: r.holes,
+          elevation: lo,
+          extrusionHeight: hi - lo,
+          id: i === 0 && full ? piece.id : `body_cut_${stamp}_${counter++}`,
+          name: i === 0 ? piece.name : `${piece.name} (part ${i + 1})`,
+        });
+      });
+      if (!full && hi < tHi) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (top)`, elevation: hi, extrusionHeight: tHi - hi });
+      return out;
+    };
+
+    const replaced = new Map<string, Body3D[]>();
+    targets.forEach((t) => {
+      let pieces: Body3D[] = [t];
+      cutters.forEach((c) => {
+        pieces = pieces.flatMap((p) => cutOne(p, c));
+      });
+      replaced.set(t.id, pieces);
+    });
+    if (!changed) {
+      notify("Those shapes don't overlap, so there is nothing to subtract.");
+      return;
+    }
+
+    const newGroups: ShapeGroup[] = [];
+    const next: Body3D[] = bodies
+      .filter((b) => !cutterIds.includes(b.id))
+      .flatMap((b) => {
+        const pieces = replaced.get(b.id);
+        if (!pieces) return [b];
+        if (pieces.length > 1) {
+          const gid = b.groupId ?? `group_${stamp}_${b.id}`;
+          if (!b.groupId) newGroups.push({ id: gid, name: `${b.name}`, bodyIds: [] });
+          return pieces.map((p) => ({ ...p, groupId: gid }));
+        }
+        return pieces;
+      });
+    const allGroups = [...groups, ...newGroups]
+      .map((g) => ({ ...g, bodyIds: next.filter((b) => b.groupId === g.id).map((b) => b.id) }))
+      .filter((g) => g.bodyIds.length > 1);
+    setDoc({ bodies: next, groups: allGroups });
+    setIsolatedIds((prev) => (prev ? prev.filter((id) => !cutterIds.includes(id)) : prev));
+    const firstPieces = replaced.get(targets[0].id);
+    const firstTarget = firstPieces?.find((p) => p.id === targets[0].id) ?? firstPieces?.[0];
+    selectOnly(firstTarget ? firstTarget.id : null);
+    notify(`Subtracted ${cutters.length === 1 ? `“${cutters[0].name}”` : 'the last pick'} from ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} shapes`}. ⌘Z undoes.`);
   };
 
   /** Rounds every vertical corner of a body to the same radius. */
@@ -413,14 +467,6 @@ export default function App() {
   );
 
   // ---- Commands -------------------------------------------------------------
-  const handleOpenCut = () => {
-    if (displayBodies.filter((b) => b.visible).length < 2) {
-      notify('You need at least two shapes to subtract one from another.');
-      return;
-    }
-    setIsCutModalOpen(true);
-  };
-
   const handleOpenRepeat = () => {
     if (!selectedBodyId) {
       notify('Select the shape you want to repeat first.');
@@ -609,9 +655,8 @@ export default function App() {
     if (key === 'escape') {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
       if (openMenu) setOpenMenu(null);
-      else if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) {
+      else if (confirmDeleteIds || isRepeatModalOpen) {
         setConfirmDeleteIds(null);
-        setIsCutModalOpen(false);
         setIsRepeatModalOpen(false);
           } else if (repeatConfig.isDrawingLine) {
         setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
@@ -621,7 +666,7 @@ export default function App() {
       else if (isolatedIds) isolate(null);
       return;
     }
-    if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) return;
+    if (confirmDeleteIds || isRepeatModalOpen) return;
 
     switch (key) {
       case 'm':
@@ -634,7 +679,7 @@ export default function App() {
         toggleIsolate();
         break;
       case 's':
-        handleOpenCut();
+        handleSubtractSelected();
         break;
       case 'r':
         handleOpenRepeat();
@@ -855,7 +900,7 @@ export default function App() {
         onShowHidden={showHidden}
         onGroup={() => (selectedGroupId ? handleUngroup(selectedGroupId) : handleGroupSelected())}
         onJoin={handleMergeSelected}
-        onSubtract={handleOpenCut}
+        onSubtract={handleSubtractSelected}
         onPattern={handleOpenRepeat}
         onDelete={() => requestDelete()}
       />
@@ -867,15 +912,6 @@ export default function App() {
             names={confirmDeleteIds.map((id) => bodies.find((b) => b.id === id)?.name ?? 'shape')}
             onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
             onCancel={() => setConfirmDeleteIds(null)}
-          />
-        )}
-        {isCutModalOpen && (
-          <CutModal
-            key="cut"
-            onClose={() => setIsCutModalOpen(false)}
-            bodies={displayBodies}
-            initialTargetId={selectedBodyId}
-            onApplyCut={handleApplyCut}
           />
         )}
         {isRepeatModalOpen && selectedBody && (

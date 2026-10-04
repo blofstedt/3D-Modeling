@@ -21,7 +21,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | You want to | Do this |
 | --- | --- |
 | Add a shape | Bottom bar → **Shape** opens the common shapes (box, rounded box, cylinder, triangle, wedge, pentagon, hexagon, octagon, star). With a top face selected, the new shape sits on it |
-| Select a shape | Click it. `Shift`-click to add more |
+| Select a shape | Click it. To select several, **press and hold** another shape while one is selected (or `Shift`-click); hold a selected shape to drop it again |
 | Move it | Drag the shape itself (`Shift` locks to one axis). For exact X / Y / Z motion, **two-finger tap** (or `M`, or the Move tool) shows red / green / blue arrows: drag one to move along that axis. Tap again to hide them |
 | Extrude a face | Tap a face (top, bottom or a wall): it lights up with an arrow. Drag the face or its arrow to pull it out or push it in |
 | Type an exact number | Tapping a face shows its number (Height, or Width / Depth for a wall) next to the arrow, and it stays while you drag. Tap it to type a value; add a unit if you like (`12cm`, `1.2m`, `5in`), a bare number is mm. It fades after 3 seconds |
@@ -42,7 +42,7 @@ list. Everything else disappears from the 3D view until you press `I` or *Show a
 Escape steps back one level at a time: edge, face, selection, isolation.
 
 Tools (bottom bar): Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (merge overlapping shapes into one), Subtract `S`
-(cut one shape out of another), Repeat `R`. Grouped shapes select and move together.
+(select 2+ shapes; the one you picked last is cut out of the others, but only where they overlap in height), Repeat `R`. Grouped shapes select and move together.
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
 

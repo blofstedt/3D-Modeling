@@ -17,8 +17,8 @@ interface MenuButtonProps {
   /** Open downwards from a top bar, or upwards from the bottom bar. */
   placement: 'down' | 'up';
   active?: boolean;
-  /** Icon only on phones, icon and label from the sm breakpoint up. */
-  iconOnlyOnMobile?: boolean;
+  /** On phones the label sits under the icon in a small round button; from sm up it is a pill. */
+  stackedOnMobile?: boolean;
   disabled?: boolean;
   title?: string;
   /** Rendered as a round icon-only button when there is no label. */
@@ -26,7 +26,7 @@ interface MenuButtonProps {
 }
 
 /** A round button that opens a small rounded menu next to it. One menu is open at a time. */
-export default function MenuButton({ id, openId, setOpenId, label, icon: Icon, placement, active, iconOnlyOnMobile, disabled, title, children }: MenuButtonProps) {
+export default function MenuButton({ id, openId, setOpenId, label, icon: Icon, placement, active, stackedOnMobile, disabled, title, children }: MenuButtonProps) {
   const open = openId === id;
   const btnRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
@@ -67,13 +67,17 @@ export default function MenuButton({ id, openId, setOpenId, label, icon: Icon, p
         onClick={() => setOpenId(open ? null : id)}
         whileTap={{ scale: 0.94 }}
         transition={spring}
-        className={`shrink-0 h-9 rounded-full flex items-center justify-center gap-1.5 text-[13px] font-medium transition-colors disabled:text-slate-600 disabled:pointer-events-none ${
-          label ? (iconOnlyOnMobile ? 'w-10 sm:w-auto sm:pl-3.5 sm:pr-2.5' : 'pl-3.5 pr-2.5') : 'w-9'
+        className={`shrink-0 rounded-full flex items-center justify-center font-medium transition-colors disabled:text-slate-600 disabled:pointer-events-none ${
+          !label
+            ? 'h-9 w-9 text-[13px]'
+            : stackedOnMobile
+              ? 'h-[46px] w-[46px] flex-col gap-0.5 text-[9.5px] leading-none sm:h-9 sm:w-auto sm:flex-row sm:gap-1.5 sm:pl-3.5 sm:pr-2.5 sm:text-[13px]'
+              : 'h-9 gap-1.5 pl-3.5 pr-2.5 text-[13px]'
         } ${open || active ? 'bg-accent-500 text-white shadow-md shadow-accent-500/30' : 'bg-white/6 text-slate-200 hover:bg-white/12 hover:text-white'}`}
       >
         {Icon && <Icon size={16} strokeWidth={1.75} />}
-        {label && <span className={`whitespace-nowrap ${iconOnlyOnMobile ? 'hidden sm:inline' : ''}`}>{label}</span>}
-        {label && <Chevron size={13} className={`opacity-70 ${iconOnlyOnMobile ? 'hidden sm:block' : ''}`} />}
+        {label && <span className="whitespace-nowrap">{label}</span>}
+        {label && <Chevron size={13} className={`opacity-70 ${stackedOnMobile ? 'hidden sm:block' : ''}`} />}
       </motion.button>
       <AnimatePresence>
         {open && (
