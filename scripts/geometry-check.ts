@@ -101,7 +101,7 @@ check('rotate 90° then move', near(moved.points![0].x, 30 + 10, 0.01) && near(m
 const box = body({});
 check('rim selection counts', edgesOfKind(box, 'top').length === 4 && edgesOfKind(box, 'bottom').length === 4 && edgesOfKind(box, 'corner').length === 4 && edgesOfKind(box, 'all').length === 12);
 check('top face selects the whole top rim', isWholeGroup(box, edgesAroundFace(box, { bodyId: box.id, kind: 'top' }), 'top'));
-check('a wall borders its top and bottom edge', edgesAroundFace(box, { bodyId: box.id, kind: 'wall', index: 0 }).length === 2);
+check('a wall borders four edges: top, bottom and both corners', edgesAroundFace(box, { bodyId: box.id, kind: 'wall', index: 0 }).length === 4);
 
 // Join keeps each shape's own height: a tall block beside a short one stays tall where it is tall.
 const tall = body({ id: 'a', points: rect(0, 0, 40, 40), extrusionHeight: 80 });

@@ -188,13 +188,20 @@ export function edgesOfKind(body: Body3D, group: EdgeGroup): EdgeSel[] {
     .map((e) => ({ bodyId: body.id, kind: e.kind, index: e.index }));
 }
 
-/** The edges that border a face: its whole rim for the top or bottom, the top and bottom edge of that side for a wall. */
+/** The edges that border a face: its whole rim for the top or bottom; for a wall, its top, bottom and both vertical corner lines. */
 export function edgesAroundFace(body: Body3D, face: FaceSel): EdgeSel[] {
   if (face.kind === 'top') return edgesOfKind(body, 'top');
   if (face.kind === 'bottom') return edgesOfKind(body, 'bottom');
   if (face.index === undefined) return [];
-  const id = runId(sideRun(getOutline(body), getBase(body).length, face.index));
-  return (['top', 'bottom'] as const).map((kind) => ({ bodyId: body.id, kind, index: id }));
+  const n = getBase(body).length;
+  const id = runId(sideRun(getOutline(body), n, face.index));
+  // The wall's top and bottom edge, plus the vertical corner line at each end (a rounded corner counts too).
+  return [
+    { bodyId: body.id, kind: 'top', index: id },
+    { bodyId: body.id, kind: 'bottom', index: id },
+    { bodyId: body.id, kind: 'corner', index: face.index },
+    { bodyId: body.id, kind: 'corner', index: (face.index + 1) % n },
+  ];
 }
 
 const keyset = (sels: EdgeSel[]) => new Set(sels.map(edgeKey));
