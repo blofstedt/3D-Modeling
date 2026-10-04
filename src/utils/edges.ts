@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BevelStyle, Body3D, CornerBevel, EdgeBevel, EdgeSel, FaceSel } from '../types';
-import { getBase, getOutline, holeIndex, holeLocal, holeLoops, holeOf, isHoleIndex, outwardNormal, runId, runPath, sideRun, withHoles, withOutline } from './outline';
+import { BevelStyle, Body3D, CornerBevel, EdgeBevel, EdgeSel, FaceSel, Point2D } from '../types';
+import { Outline, getBase, getOutline, holeIndex, holeLocal, holeLoops, holeOf, isHoleIndex, outwardNormal, runId, runPath, sideRun, withHoles, withOutline } from './outline';
 
 export const DEFAULT_BEVEL_SIZE = 2;
 export const MAX_BEVEL_SIZE = 30;
@@ -55,19 +55,54 @@ function runEnds(outline: ReturnType<typeof getOutline>, run: number[], n: numbe
   };
 }
 
-function computeEdges(body: Body3D): EdgePath[] {
-  const base = getBase(body);
-  const n = base.length;
-  if (n < 3) return [];
+export interface Loop {
+  base: Point2D[];
+  outline: Outline;
+  /** Added to every side/vertex index of this loop: 0 for the shape's own outline, HOLE * (hole + 1) for a hole. */
+  offset: number;
+  /** Winding whose outward normal points away from the material (into a hole). */
+  away: 1 | -1;
+}
+
+/** The shape's outline followed by each of its holes. */
+export function loopsOf(body: Body3D): Loop[] {
   const outline = getOutline(body);
+  return [
+    { base: getBase(body), outline, offset: 0, away: outline.winding },
+    ...holeLoops(body).map((l, h): Loop => ({ base: l.base, outline: l.outline, offset: holeIndex(h), away: (-l.outline.winding) as 1 | -1 })),
+  ];
+}
+
+/** The loop an edge/side index belongs to, with the index made local to it. */
+export function loopFor(body: Body3D, index: number): { loop: Loop; local: number } | null {
+  const loops = loopsOf(body);
+  const loop = isHoleIndex(index) ? loops[holeOf(index) + 1] : loops[0];
+  return loop ? { loop, local: isHoleIndex(index) ? holeLocal(index) : index } : null;
+}
+
+/** The index edges on the same run of sides share (a rounded corner joins its neighbours into one). */
+export function edgeId(body: Body3D, side: number): number {
+  const f = loopFor(body, side);
+  return f ? f.loop.offset + runId(sideRun(f.loop.outline, f.loop.base.length, f.local)) : side;
+}
+
+function computeEdges(body: Body3D): EdgePath[] {
   const bottom = body.elevation ?? 0;
   const top = bottom + body.extrusionHeight;
+  return loopsOf(body).flatMap((ctx) => loopEdges(body, ctx, bottom, top));
+}
+
+/** The edges of one outline: the shape's own, or one of its cutouts. A hole's indices are offset (see outline.ts). */
+function loopEdges(body: Body3D, ctx: Loop, bottom: number, top: number): EdgePath[] {
+  const { base, outline, offset, away } = ctx;
+  const n = base.length;
+  if (n < 3) return [];
   const edges: EdgePath[] = [];
 
   const seen = new Set<number>();
   for (let j = 0; j < n; j++) {
     const run = sideRun(outline, n, j);
-    const id = runId(run);
+    const id = offset + runId(run);
     if (seen.has(id)) continue;
     seen.add(id);
     const { pts, closed } = runPath(outline, run, n);
@@ -86,8 +121,8 @@ function computeEdges(body: Body3D): EdgePath[] {
         if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
         const prev = i > 0 ? pts[i - 1] : closed ? pts[pts.length - 1] : null;
         const next = i < pts.length - 1 ? pts[i + 1] : closed ? pts[0] : null;
-        const a = prev ? outwardNormal(prev, p, outline.winding) : null;
-        const b = next ? outwardNormal(p, next, outline.winding) : null;
+        const a = prev ? outwardNormal(prev, p, away) : null;
+        const b = next ? outwardNormal(p, next, away) : null;
         const nx = ((a?.x ?? b!.x) + (b?.x ?? a!.x)) / 2;
         const ny = ((a?.y ?? b!.y) + (b?.y ?? a!.y)) / 2;
         const len = Math.hypot(nx, ny) || 1;
@@ -100,7 +135,7 @@ function computeEdges(body: Body3D): EdgePath[] {
       const detour = (atStart: boolean) => {
         const nbSide = atStart ? ends.beforeSide : ends.afterSide;
         if (nbSide < 0) return null;
-        const nbBevel = findBevel(body, kind, runId(sideRun(outline, n, nbSide)));
+        const nbBevel = findBevel(body, kind, offset + runId(sideRun(outline, n, nbSide)));
         const r = effectiveSize(body, nbBevel);
         if (!nbBevel || r <= 0) return null;
         const vIdx = atStart ? ends.start : (ends.end + 1) % m;
@@ -110,11 +145,11 @@ function computeEdges(body: Body3D): EdgePath[] {
         const dl = Math.hypot(dn.x, dn.y) || 1;
         dn.x /= dl;
         dn.y /= dl;
-        const outN = atStart ? outwardNormal(far, V, outline.winding) : outwardNormal(V, far, outline.winding);
+        const outN = atStart ? outwardNormal(far, V, away) : outwardNormal(V, far, away);
         const nIn = { x: -outN.x, y: -outN.y };
         const segA = atStart ? pts[0] : pts[pts.length - 2];
         const segB = atStart ? pts[1] : pts[pts.length - 1];
-        const mOut = outwardNormal(segA, segB, outline.winding);
+        const mOut = outwardNormal(segA, segB, away);
         const dm = dn.x * mOut.x + dn.y * mOut.y;
         const nm = nIn.x * mOut.x + nIn.y * mOut.y;
         const steps = nbBevel.style === 'round' ? 8 : 1;
@@ -143,7 +178,7 @@ function computeEdges(body: Body3D): EdgePath[] {
     const a = outline.arcMid.get(v) ?? base[v];
     // Where the edges above or below this corner are beveled, the corner line stops short of the sharp end.
     const reach = (kind: 'top' | 'bottom') =>
-      Math.max(0, ...[(v - 1 + n) % n, v].map((side) => effectiveSize(body, findBevel(body, kind, runId(sideRun(outline, n, side))))));
+      Math.max(0, ...[(v - 1 + n) % n, v].map((side) => effectiveSize(body, findBevel(body, kind, offset + runId(sideRun(outline, n, side))))));
     let yLo = bottom + reach('bottom');
     let yHi = top - reach('top');
     if (yHi - yLo < 1) {
@@ -151,12 +186,12 @@ function computeEdges(body: Body3D): EdgePath[] {
       yHi = top;
     }
     // A beveled corner: draw the line on the bevel, a little in from the old sharp corner.
-    const cb = (body.cornerBevels ?? []).find((c) => c.vertex === v);
+    const cb = offset === 0 ? (body.cornerBevels ?? []).find((c) => c.vertex === v) : undefined;
     let cx = a.x;
     let cy = a.y;
     if (cb && cb.size > 0 && !outline.arcMid.has(v)) {
-      const na = outwardNormal(base[(v - 1 + n) % n], base[v], outline.winding);
-      const nb = outwardNormal(base[v], base[(v + 1) % n], outline.winding);
+      const na = outwardNormal(base[(v - 1 + n) % n], base[v], away);
+      const nb = outwardNormal(base[v], base[(v + 1) % n], away);
       const bx = na.x + nb.x;
       const by = na.y + nb.y;
       const bl = Math.hypot(bx, by) || 1;
@@ -166,79 +201,20 @@ function computeEdges(body: Body3D): EdgePath[] {
     }
     edges.push({
       kind: 'corner',
-      index: v,
+      index: offset + v,
       points: [
         { x: cx, y: yLo, z: -cy },
         { x: cx, y: yHi, z: -cy },
       ],
     });
   }
-  edges.push(...holeEdges(body, bottom, top));
   return edges;
 }
 
-/** Edges of the cutouts: the rim around each hole at the top and at the bottom, and its vertical corner lines. */
-function holeEdges(body: Body3D, bottom: number, top: number): EdgePath[] {
-  const out: EdgePath[] = [];
-  holeLoops(body).forEach((loop, h) => {
-    const { outline, base } = loop;
-    const m = outline.points.length;
-    if (m < 3) return;
-    const ring = [...outline.points, outline.points[0]];
-    const rim = (kind: 'top' | 'bottom') => {
-      const bevel = findBevel(body, kind, holeIndex(h));
-      const own = effectiveSize(body, bevel);
-      const inset = own > 0 ? own * (bevel!.style === 'round' ? 0.18 : 0.4) : 0;
-      const y0 = kind === 'top' ? top : bottom;
-      const sign = kind === 'top' ? -1 : 1;
-      // Away from the material is into the hole, so the line sits on the bevel, a little way out into it.
-      const away = (-outline.winding) as 1 | -1;
-      return ring.map((p, i) => {
-        if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
-        const k = i % m;
-        const a = outwardNormal(outline.points[(k - 1 + m) % m], p, away);
-        const b = outwardNormal(p, outline.points[(k + 1) % m], away);
-        const nx = a.x + b.x;
-        const ny = a.y + b.y;
-        const len = Math.hypot(nx, ny) || 1;
-        return { x: p.x - (nx / len) * inset, y: y0 + sign * inset, z: -(p.y - (ny / len) * inset) };
-      });
-    };
-    out.push({ kind: 'top', index: holeIndex(h), points: rim('top') });
-    out.push({ kind: 'bottom', index: holeIndex(h), points: rim('bottom') });
-    const reachTop = effectiveSize(body, findBevel(body, 'top', holeIndex(h)));
-    const reachBottom = effectiveSize(body, findBevel(body, 'bottom', holeIndex(h)));
-    base.forEach((_, v) => {
-      const a = outline.arcMid.get(v) ?? base[v];
-      let yLo = bottom + reachBottom;
-      let yHi = top - reachTop;
-      if (yHi - yLo < 1) {
-        yLo = bottom;
-        yHi = top;
-      }
-      out.push({
-        kind: 'corner',
-        index: holeIndex(h, v),
-        points: [
-          { x: a.x, y: yLo, z: -a.y },
-          { x: a.x, y: yHi, z: -a.y },
-        ],
-      });
-    });
-  });
-  return out;
-}
-
-const sameRun = (body: Body3D, a: number, b: number) => {
-  const outline = getOutline(body);
-  const n = getBase(body).length;
-  return runId(sideRun(outline, n, a)) === runId(sideRun(outline, n, b));
-};
+const sameRun = (body: Body3D, a: number, b: number) => edgeId(body, a) === edgeId(body, b);
 
 export function findBevel(body: Body3D, side: 'top' | 'bottom', id: number): EdgeBevel | undefined {
-  // A hole's rim is one edge all the way round; everything else is matched by the run of sides it belongs to.
-  if (isHoleIndex(id)) return (body.edgeBevels ?? []).find((b) => b.side === side && b.edge === id);
-  return (body.edgeBevels ?? []).find((b) => b.side === side && !isHoleIndex(b.edge) && sameRun(body, b.edge, id));
+  return (body.edgeBevels ?? []).find((b) => b.side === side && sameRun(body, b.edge, id));
 }
 
 /** Current size (bevel) or radius (corner) of an edge; 0 when untouched. */
@@ -345,7 +321,7 @@ export function listFeatures(body: Body3D): FeatureRow[] {
   let top = 0;
   let bottom = 0;
   for (const b of body.edgeBevels ?? []) {
-    const id = runId(sideRun(outline, n, b.edge));
+    const id = edgeId(body, b.edge);
     const key = `${b.side}:${id}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -389,16 +365,17 @@ export function edgesAroundFace(body: Body3D, face: FaceSel): EdgeSel[] {
   if (face.kind === 'bottom') return edgesOfKind(body, 'bottom');
   if (face.index === undefined) return [];
   if (isHoleIndex(face.index)) {
-    const h = holeOf(face.index);
-    const loop = holeLoops(body)[h];
+    const loop = holeLoops(body)[holeOf(face.index)];
     if (!loop) return [];
     const k = loop.base.length;
     const side = holeLocal(face.index);
+    const offset = face.index - side;
+    const id = edgeId(body, face.index);
     return [
-      { bodyId: body.id, kind: 'top', index: holeIndex(h) },
-      { bodyId: body.id, kind: 'bottom', index: holeIndex(h) },
-      { bodyId: body.id, kind: 'corner', index: holeIndex(h, side) },
-      { bodyId: body.id, kind: 'corner', index: holeIndex(h, (side + 1) % k) },
+      { bodyId: body.id, kind: 'top', index: id },
+      { bodyId: body.id, kind: 'bottom', index: id },
+      { bodyId: body.id, kind: 'corner', index: offset + side },
+      { bodyId: body.id, kind: 'corner', index: offset + ((side + 1) % k) },
     ];
   }
   const n = getBase(body).length;

@@ -8,7 +8,8 @@ import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { BevelStyle, Body3D, Point2D } from '../types';
 import { cleanPolygonPoints, ensureWinding } from './geometry';
-import { Outline, getBase, getOutline, holeLoops, holeOf, isHoleIndex, outwardNormal, runId, runPath, sideRun } from './outline';
+import { getOutline, outwardNormal, runId, runPath, sideRun } from './outline';
+import { loopFor } from './edges';
 import { buildCornerCutter } from './cornerBevel';
 
 const toPath = <T extends THREE.Path>(path: T, pts: { x: number; y: number }[]): T => {
@@ -216,40 +217,34 @@ interface ResolvedBevel {
   winding?: 1 | -1;
 }
 
-function resolveBevels(body: Body3D, outline: Outline): ResolvedBevel[] {
-  const n = getBase(body).length;
+function resolveBevels(body: Body3D): ResolvedBevel[] {
   const height = Math.max(1, body.extrusionHeight);
   const done = new Set<string>();
   const out: ResolvedBevel[] = [];
 
   // Later entries win when two bevels end up on the same run.
   for (const bevel of [...(body.edgeBevels ?? [])].reverse()) {
-    if (bevel.edge >= 0 && isHoleIndex(bevel.edge)) {
-      // A hole's rim is one closed loop. Its material is outside the loop, so the cutter's "outward" runs into the hole.
-      const loop = holeLoops(body)[holeOf(bevel.edge)];
-      const key = `${bevel.side}:${bevel.edge}`;
-      if (!loop || bevel.size <= 0 || done.has(key)) continue;
-      done.add(key);
-      const xs = loop.outline.points.map((p) => p.x);
-      const ys = loop.outline.points.map((p) => p.y);
-      // The cutter reaches `size + 1` into the hole, so it has to stay well inside it.
-      let size = Math.min(bevel.size, height / 2 - 0.05, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
-      const radii = loop.outline.radii.filter((r) => r > 0);
-      if (radii.length) size = Math.min(size, Math.min(...radii) - 1.2);
-      if (size < 0.1) continue;
-      out.push({ side: bevel.side, size, style: bevel.style, path: [...loop.outline.points, loop.outline.points[0]], closed: true, ends: {}, winding: (-loop.outline.winding) as 1 | -1 });
-      continue;
-    }
-    if (bevel.edge < 0 || bevel.edge >= n || bevel.size <= 0) continue;
-    const run = sideRun(outline, n, bevel.edge);
-    const key = `${bevel.side}:${runId(run)}`;
+    const found = bevel.size > 0 && bevel.edge >= 0 ? loopFor(body, bevel.edge) : null;
+    if (!found) continue;
+    const { loop, local } = found;
+    const { outline, offset, away } = loop;
+    const n = loop.base.length;
+    if (local >= n) continue;
+    const run = sideRun(outline, n, local);
+    const key = `${bevel.side}:${offset + runId(run)}`;
     if (done.has(key)) continue;
     done.add(key);
 
     // A bevel can't be larger than the rounding it wraps around, or than half the body.
     let size = Math.min(bevel.size, height / 2 - 0.05);
     const corners = outline.radii.filter((r, v) => r > 0 && run.includes(v) && run.includes((v - 1 + n) % n));
-    if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+    if (offset > 0) {
+      // A hole's cutter reaches `size + 1` into the hole, so it has to stay well inside it.
+      const xs = outline.points.map((p) => p.x);
+      const ys = outline.points.map((p) => p.y);
+      size = Math.min(size, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
+      if (corners.length) size = Math.min(size, Math.min(...corners) - 1.2);
+    } else if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
     if (size < 0.1) continue;
 
     const { pts, closed } = runPath(outline, run, n);
@@ -258,10 +253,10 @@ function resolveBevels(body: Body3D, outline: Outline): ResolvedBevel[] {
       const m = outline.points.length;
       const first = outline.points.indexOf(pts[0]);
       const last = outline.points.indexOf(pts[pts.length - 1]);
-      if (first >= 0) ends.start = outwardNormal(outline.points[(first - 1 + m) % m], pts[0], outline.winding);
-      if (last >= 0) ends.end = outwardNormal(pts[pts.length - 1], outline.points[(last + 1) % m], outline.winding);
+      if (first >= 0) ends.start = outwardNormal(outline.points[(first - 1 + m) % m], pts[0], away);
+      if (last >= 0) ends.end = outwardNormal(pts[pts.length - 1], outline.points[(last + 1) % m], away);
     }
-    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends });
+    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends, winding: away });
   }
   return out;
 }
@@ -284,7 +279,7 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
   }
   geometry.rotateX(-Math.PI / 2);
 
-  const bevels = !options.fast && body.edgeBevels?.length ? resolveBevels(body, getOutline(body)) : [];
+  const bevels = !options.fast && body.edgeBevels?.length ? resolveBevels(body) : [];
   const cornerCutters = options.fast ? [] : (body.cornerBevels ?? []).map((cb) => buildCornerCutter(body, cb)).filter((g): g is THREE.BufferGeometry => !!g);
   if (bevels.length || cornerCutters.length) {
     try {

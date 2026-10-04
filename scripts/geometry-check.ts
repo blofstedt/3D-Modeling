@@ -170,12 +170,16 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const hole = rect(-20, -20, 20, 20);
   const plate = body({ id: 'p', points: rect(-60, -60, 60, 60), holes: [hole], extrusionHeight: 20 });
   const holeEdges = listEdges(plate).filter((e) => e.index >= 1000);
-  check('hole has top and bottom rims and four corners', holeEdges.filter((e) => e.kind === 'top').length === 1 && holeEdges.filter((e) => e.kind === 'bottom').length === 1 && holeEdges.filter((e) => e.kind === 'corner').length === 4, holeEdges.map((e) => e.kind + e.index).join(' '));
+  check('hole has an edge per side at the top and bottom, and four corners', holeEdges.filter((e) => e.kind === 'top').length === 4 && holeEdges.filter((e) => e.kind === 'bottom').length === 4 && holeEdges.filter((e) => e.kind === 'corner').length === 4, holeEdges.map((e) => e.kind + e.index).join(' '));
   const flat = volume(buildBodyGeometry(plate)!);
   check('plate with a hole volume', near(flat, (120 * 120 - 40 * 40) * 20, 1), String(flat));
 
-  const rimSel = { bodyId: 'p', kind: 'top' as const, index: 1000 };
-  const rounded = { ...plate, ...applyEdgeChange(plate, [rimSel], { size: 5, style: 'round' }) };
+  const sideSel = { bodyId: 'p', kind: 'top' as const, index: 1000 };
+  const oneSide = { ...plate, ...applyEdgeChange(plate, [sideSel], { size: 5, style: 'round' }) };
+  const oneCut = flat - volume(buildBodyGeometry(oneSide)!);
+  check('one hole edge rounds on its own', oneCut > 20 && oneCut < 400 && !!findBevel(oneSide, 'top', 1000) && !findBevel(oneSide, 'top', 1001), String(oneCut));
+  const rimSel = edgesOfKind(plate, 'top').filter((e) => e.index >= 1000);
+  const rounded = { ...plate, ...applyEdgeChange(plate, rimSel, { size: 5, style: 'round' }) };
   const cutRim = flat - volume(buildBodyGeometry(rounded)!);
   // Rounding a 160 mm loop with r = 5 removes (1 - pi/4) * r^2 per mm of length, a bit more at the mitred corners.
   check('rounding a hole rim removes material from the rim', cutRim > 200 && cutRim < 1200, String(cutRim));
@@ -188,6 +192,7 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   check('rounded hole corner reads back its radius', near(edgeSize(roundedCorner, corner), 8, 0.01));
   const both = { ...roundedCorner, ...applyEdgeChange(roundedCorner, [{ bodyId: 'p', kind: 'bottom' as const, index: 1000 }], { size: 3, style: 'chamfer' }) };
   check('rim bevel on a rounded hole builds', volume(buildBodyGeometry(both)!) < volume(buildBodyGeometry(roundedCorner)!));
+  check('a rounded hole corner joins its two sides into one edge', edgesOfKind(roundedCorner, 'top').filter((e) => e.index >= 1000).length === 3);
 
   const wall = { bodyId: 'p', kind: 'wall' as const, index: 1000 };
   const around = edgesAroundFace(plate, wall);
