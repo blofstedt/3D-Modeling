@@ -17,16 +17,18 @@ import {
 } from './types';
 import ModelViewer3D from './components/ModelViewer3D';
 import Sidebar from './components/Sidebar';
-import ToolRail from './components/ToolRail';
+import BottomBar from './components/BottomBar';
+import TopBar from './components/TopBar';
 import CutModal from './components/CutModal';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
 import { withOutline } from './utils/outline';
+import { extrudeFace } from './utils/faces';
 import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
 import { applyEdgeChange, edgeKey } from './utils/edges';
-import { BodyTransform, selectionBounds, transformBody } from './utils/transform';
+import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
 import {
   Box,
   Focus,
@@ -130,8 +132,10 @@ export default function App() {
   /** When set, only these bodies are shown, in both 2D and 3D. */
   const [isolatedIds, setIsolatedIds] = useState<string[] | null>(null);
   const [hint, setHint] = useState('');
-  const [isInspectorOpen, setIsInspectorOpen] = useState(true);
-  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  /** Which bar menu is open (one at a time). */
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  /** The X / Y / Z move arrows, toggled with a two-finger tap. */
+  const [moveOn, setMoveOn] = useState(false);
 
   const [isCutModalOpen, setIsCutModalOpen] = useState(false);
   /** Shapes waiting on the "Delete?" confirmation. */
@@ -244,6 +248,21 @@ export default function App() {
 
   const requestDelete = (targets: string[] = selectedBodyIds) => {
     if (targets.length) setConfirmDeleteIds(targets);
+  };
+
+  const moveSelection = (dx: number, dy: number, dz: number, angle = 0) => {
+    const b = selectionBounds(selectedBodies);
+    if (b) transformBodies(selectedBodyIds, { dx, dy, dz, angle, cx: b.centerX, cy: b.centerY });
+  };
+
+  const handleResize = (width: number, depth: number) => {
+    if (selectedBody) handleUpdateBody(selectedBody.id, resizeBody(selectedBody, width, depth));
+  };
+
+  const handleExtrudeFace = (face: FaceSel, delta: number) => {
+    const body = bodies.find((b) => b.id === face.bodyId);
+    const updates = body && extrudeFace(body, face, delta);
+    if (updates) setBodies((prev) => prev.map((b) => (b.id === face.bodyId ? { ...b, ...updates } : b)));
   };
 
   const handleDeleteSelected = (targets: string[] = selectedBodyIds) => {
@@ -378,7 +397,6 @@ export default function App() {
       notify('You need at least two shapes to subtract one from another.');
       return;
     }
-    setIsMobileSidebarOpen(false);
     setIsCutModalOpen(true);
   };
 
@@ -387,7 +405,6 @@ export default function App() {
       notify('Select the shape you want to repeat first.');
       return;
     }
-    setIsMobileSidebarOpen(false);
     setIsRepeatModalOpen(true);
   };
 
@@ -570,12 +587,12 @@ export default function App() {
 
     if (key === 'escape') {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
-      if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen || isMobileSidebarOpen) {
+      if (openMenu) setOpenMenu(null);
+      else if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) {
         setConfirmDeleteIds(null);
         setIsCutModalOpen(false);
         setIsRepeatModalOpen(false);
-        setIsMobileSidebarOpen(false);
-      } else if (repeatConfig.isDrawingLine) {
+          } else if (repeatConfig.isDrawingLine) {
         setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
       } else if (selectedEdges.length) setSelectedEdges([]);
       else if (selectedFace) setSelectedFace(null);
@@ -586,6 +603,9 @@ export default function App() {
     if (confirmDeleteIds || isCutModalOpen || isRepeatModalOpen) return;
 
     switch (key) {
+      case 'm':
+        if (selectedBodyIds.length) setMoveOn((v) => !v);
+        break;
       case 'i':
         toggleIsolate();
         break;
@@ -640,29 +660,9 @@ export default function App() {
     onEditEdge: (sel: EdgeSel) => {
       selectOnly(sel.bodyId);
       setSelectedEdges([sel]);
-      setIsMobileSidebarOpen(false);
-    },
+      },
     onRemoveEdge: (sel: EdgeSel) => handleEdgeChange([sel], { size: 0 }),
   };
-
-  const iconButton = (
-    label: string,
-    onClick: () => void,
-    Icon: typeof Undo2,
-    disabled = false,
-    extra = ''
-  ) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className={`w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 disabled:text-slate-600 disabled:hover:bg-transparent transition-colors ${extra}`}
-    >
-      <Icon size={17} strokeWidth={1.75} />
-    </button>
-  );
 
   const isolatedNames = isolatedIds
     ? bodies
@@ -674,31 +674,25 @@ export default function App() {
 
   return (
     <div className="h-dvh flex flex-col bg-slate-950 text-slate-100 font-sans select-none overflow-hidden">
-      {/* Top bar */}
-      <header className="h-12 shrink-0 px-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2 bg-slate-900 border-b border-white/8 z-40">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-7 h-7 rounded-full bg-accent-500 flex items-center justify-center text-white shrink-0">
-            <Box size={16} strokeWidth={2} />
-          </div>
-          <span className="text-sm font-semibold tracking-tight hidden sm:inline">Craft3D</span>
-          <div className="w-px h-5 bg-white/10 mx-1 hidden sm:block" />
-          {iconButton('Undo (⌘Z)', doUndo, Undo2, !history.canUndo)}
-          {iconButton('Redo (⇧⌘Z)', doRedo, Redo2, !history.canRedo)}
-        </div>
-
-        <div />
-
-        <div className="flex items-center justify-end gap-1">
-          {iconButton(
-            isInspectorOpen ? 'Hide inspector' : 'Show inspector',
-            () => setIsInspectorOpen((v) => !v),
-            isInspectorOpen ? PanelRightClose : PanelRightOpen,
-            false,
-            'hidden md:flex'
-          )}
-          {iconButton('Open inspector', () => setIsMobileSidebarOpen(true), PanelRightOpen, false, 'md:hidden')}
-        </div>
-      </header>
+      <TopBar
+        openId={openMenu}
+        setOpenId={setOpenMenu}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
+        onUndo={doUndo}
+        onRedo={doRedo}
+        selected={selectedBodies}
+        edges={selectedEdges}
+        face={selectedFace}
+        onEdgeChange={handleEdgeChange}
+        onClearEdges={() => setSelectedEdges([])}
+        onExtrudeFace={handleExtrudeFace}
+        onClearFace={() => setSelectedFace(null)}
+        onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
+        onResize={handleResize}
+        onUpdateBody={handleUpdateBody}
+        sidebar={sidebarProps}
+      />
 
       <div className="flex-1 min-h-0 flex">
         {/* Viewport */}
@@ -720,6 +714,8 @@ export default function App() {
                   onUpdateRepeatConfig={setRepeatConfig}
                   onDragStateChange={history.hold}
                   onHint={setHint}
+                  moveOn={moveOn}
+                  onToggleMove={() => setMoveOn((v) => !v)}
                 />
 
                 {displayBodies.length === 0 && (
@@ -753,44 +749,8 @@ export default function App() {
                 )}
           </div>
 
-          {(
-            <ToolRail
-              selectedCount={selectedBodyIds.length}
-              bodyCount={displayBodies.length}
-              isolated={!!isolatedIds}
-              addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
-              onAddShape={addShape}
-              onIsolate={toggleIsolate}
-              onGroup={handleGroupSelected}
-              onUnion={handleMergeSelected}
-              onCut={handleOpenCut}
-              onPattern={handleOpenRepeat}
-            />
-          )}
-
-          <AnimatePresence>
-            {selectedBodyIds.length > 0 && (
-              <motion.button
-                key="delete"
-                type="button"
-                onClick={() => requestDelete()}
-                aria-label={selectedBodyIds.length > 1 ? `Delete ${selectedBodyIds.length} shapes` : 'Delete shape'}
-                title="Delete (Del)"
-                initial={{ opacity: 0, scale: 0.4 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.4 }}
-                whileHover={{ scale: 1.08 }}
-                whileTap={{ scale: 0.9 }}
-                transition={{ type: 'spring', stiffness: 460, damping: 26 }}
-                className="absolute z-30 right-3 bottom-20 md:bottom-3 w-12 h-12 rounded-full bg-slate-800/95 backdrop-blur-xl border border-white/10 shadow-xl shadow-black/50 flex items-center justify-center text-slate-300 hover:text-rose-300 hover:border-rose-400/40 transition-colors"
-              >
-                <Trash2 size={19} strokeWidth={1.75} />
-              </motion.button>
-            )}
-          </AnimatePresence>
-
           {/* Bottom-center stack: isolation state and toasts */}
-          <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-20 md:bottom-4 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
+          <div className="absolute z-30 left-1/2 -translate-x-1/2 bottom-3 w-[calc(100%-1.5rem)] max-w-xl flex flex-col items-center gap-2 pointer-events-none [&>*]:pointer-events-auto">
             <AnimatePresence>
               {isolatedIds && (
                 <motion.div
@@ -828,50 +788,30 @@ export default function App() {
               )}
             </AnimatePresence>
             {hint && (
-              <p className="hidden md:block text-xs text-slate-500 text-center leading-snug px-3">{hint}</p>
+              <p className="text-xs text-slate-500 text-center leading-snug px-3">{hint}</p>
             )}
           </div>
         </main>
 
-        {/* Docked inspector (desktop) */}
-        {isInspectorOpen && (
-          <aside className="hidden md:flex w-80 lg:w-[22rem] shrink-0 flex-col min-h-0 bg-slate-900 border-l border-white/8">
-            <Sidebar {...sidebarProps} />
-          </aside>
-        )}
       </div>
 
-      {/* Inspector drawer (mobile) */}
-      <AnimatePresence>
-        {isMobileSidebarOpen && (
-          <div className="fixed inset-0 z-50 md:hidden flex justify-end">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsMobileSidebarOpen(false)}
-              className="absolute inset-0 bg-black/60"
-            />
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="relative w-full max-w-sm h-full bg-slate-900 border-l border-white/10 shadow-2xl flex flex-col"
-            >
-              <button
-                type="button"
-                onClick={() => setIsMobileSidebarOpen(false)}
-                aria-label="Close inspector"
-                className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10"
-              >
-                <X size={17} />
-              </button>
-              <Sidebar {...sidebarProps} />
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <BottomBar
+        openId={openMenu}
+        setOpenId={setOpenMenu}
+        selectedCount={selectedBodyIds.length}
+        bodyCount={displayBodies.length}
+        isolated={!!isolatedIds}
+        moveOn={moveOn && selectedBodyIds.length > 0}
+        addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
+        onAddShape={addShape}
+        onToggleMove={() => setMoveOn((v) => !v)}
+        onIsolate={toggleIsolate}
+        onGroup={handleGroupSelected}
+        onJoin={handleMergeSelected}
+        onSubtract={handleOpenCut}
+        onPattern={handleOpenRepeat}
+        onDelete={() => requestDelete()}
+      />
 
       <AnimatePresence>
         {confirmDeleteIds && (

@@ -20,24 +20,27 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 
 | You want to | Do this |
 | --- | --- |
-| Add a shape | Tap Box, Cylinder, Triangle or Hexagon in the left toolbar. With a top face selected, the new shape sits on it |
+| Add a shape | Bottom bar → **Shape** opens the common shapes (box, rounded box, cylinder, triangle, wedge, pentagon, hexagon, octagon, star). With a top face selected, the new shape sits on it |
 | Select a shape | Click it. `Shift`-click to add more |
-| Move it | Drag the shape itself (`Shift` locks to one axis) |
+| Move it | Drag the shape itself (`Shift` locks to one axis). For exact X / Y / Z motion, **two-finger tap** (or `M`, or the Move tool) shows red / green / blue arrows: drag one to move along that axis. Tap again to hide them |
 | Extrude a face | Tap a face (top, bottom or a wall): it lights up with an arrow. Drag the face or its arrow to pull it out or push it in |
 | Push or pull a wall | Drag the white dot on that wall |
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°) |
 | Bevel an edge | Click an edge, tap the yellow dot, then press Curved or Flat and drag to set the size |
 | Round one corner | Click the vertical corner line the same way |
-| Delete | The trash button at the bottom right (asks first), or `Del` |
+| Delete | Delete in the bottom bar (asks first), or `Del` |
 | Look around | Drag empty space to orbit, right-drag to pan, scroll to zoom |
 
-Exact numbers (height, elevation, corner rounding) live in the Inspector.
+**Two bars.** The top bar is for *properties* and changes with what you have selected: a shape shows its
+name (properties, corner rounding, bevels), *Size & position* (width, depth, height, X, Y, Z) and *Material*; a face or an
+edge shows its own numbers. *Scene* lists every shape, and the file button exports and clears. The bottom bar is for
+*tools*: Shape, Move, Isolate, Group, Join, Subtract, Repeat and Delete.
 
 **Isolating.** Select a shape (or a group) and press `I`, or use the focus button on its row in the Bodies
 list. Everything else disappears from the 3D view until you press `I` or *Show all*.
 Escape steps back one level at a time: edge, face, selection, isolation.
 
-Commands (left toolbar): Isolate `I`, Group `G`, Join `J` (merge overlapping shapes into one), Subtract `S`
+Tools (bottom bar): Move `M`, Isolate `I`, Group `G`, Join `J` (merge overlapping shapes into one), Subtract `S`
 (cut one shape out of another), Repeat `R`. Grouped shapes select and move together.
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
@@ -59,7 +62,7 @@ src/
   App.tsx                 document state, history, shortcuts, layout
   components/
     ModelViewer3D.tsx     three.js scene, direct-manipulation handles, hit-testing, edge picking, camera
-    ToolRail.tsx          left toolbar (add shape, isolate, group, join, subtract, repeat)
+    TopBar.tsx / BottomBar.tsx / Menu.tsx   the properties bar, the tools bar and their round pop-up menus
     FloatingControls.tsx  edge bevel panel pinned to the selected edge
     Sidebar.tsx           inspector: properties, material, bodies, export
     ViewCube.tsx          orientation cube

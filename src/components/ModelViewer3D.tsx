@@ -20,15 +20,16 @@ import { getBase, outwardNormal, wallEnds, withOutline } from '../utils/outline'
 import { BodyTransform, selectionBounds } from '../utils/transform';
 import ViewCube, { CubeFace } from './ViewCube';
 
-type GizmoKind = 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'edge-size' | 'rotate';
+type GizmoKind = 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'edge-size' | 'rotate' | 'move-axis';
+type Axis = 'x' | 'y' | 'z';
 
 type Hit =
-  | { type: 'gizmo'; gizmo: GizmoKind; bodyId?: string; index?: number }
+  | { type: 'gizmo'; gizmo: GizmoKind; bodyId?: string; index?: number; axis?: Axis }
   | { type: 'edge'; sel: EdgeSel }
   | { type: 'body'; bodyId: string; point: THREE.Vector3; face: FaceSel };
 
 interface Drag {
-  kind: 'height' | 'bottom' | 'wall' | 'edge-size' | 'move' | 'rotate';
+  kind: 'height' | 'bottom' | 'wall' | 'edge-size' | 'move' | 'rotate' | 'axis';
   startClientY: number;
   startClientX?: number;
   /** Furthest the pointer travelled from where it went down (px): tells a tap from a drag. */
@@ -40,6 +41,10 @@ interface Drag {
   // height
   initialHeight?: number;
   nextHeight?: number;
+  // axis move
+  axis?: Axis;
+  dz?: number;
+  minLift?: number;
   // bottom
   initialElevation?: number;
   nextDelta?: number;
@@ -77,6 +82,10 @@ export interface ModelViewer3DProps {
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
   onHint?: (text: string) => void;
+  /** Show the X / Y / Z move arrows on the selection. */
+  moveOn?: boolean;
+  /** Two-finger tap asks to show or hide the move arrows. */
+  onToggleMove?: () => void;
 }
 
 const ACCENT = '#8b7cf6';
@@ -262,6 +271,8 @@ export default function ModelViewer3D({
   onUpdateRepeatConfig,
   onDragStateChange,
   onHint,
+  moveOn,
+  onToggleMove,
 }: ModelViewer3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
@@ -317,6 +328,8 @@ export default function ModelViewer3D({
     onUpdateRepeatConfig,
     onDragStateChange,
     onHint,
+    moveOn,
+    onToggleMove,
   };
 
   // ---- Scene setup (once) -------------------------------------------------
@@ -522,7 +535,7 @@ export default function ModelViewer3D({
           const hiddenBehindShape =
             obj?.userData.gizmo === 'rotate' && (raycaster.intersectObjects(bodyGroup.children, true)[0]?.distance ?? Infinity) < gizmoHit.distance;
           if (obj && !hiddenBehindShape) {
-            return { type: 'gizmo', gizmo: obj.userData.gizmo, bodyId: obj.userData.bodyId, index: obj.userData.index };
+            return { type: 'gizmo', gizmo: obj.userData.gizmo, bodyId: obj.userData.bodyId, index: obj.userData.index, axis: obj.userData.axis };
           }
         }
       }
@@ -587,6 +600,7 @@ export default function ModelViewer3D({
 
     const idleHint = () => {
       if (live.current.repeatConfig.isDrawingLine) return 'Click the ground or a corner to place the pattern path';
+      if (live.current.moveOn && live.current.selectedBodyIds.length) return 'Drag an arrow to move along X, Y or Z · two-finger tap to hide';
       const f = live.current.selectedFace;
       if (f) return 'Drag the highlighted face (or its arrow) to extrude it · drag the rest of the shape to move it';
       return live.current.selectedBodyIds.length
@@ -608,9 +622,11 @@ export default function ModelViewer3D({
       let text = idleHint();
       if (live.current.repeatConfig.isDrawingLine) cursor = 'crosshair';
       else if (hit?.type === 'gizmo') {
-        cursor = hit.gizmo === 'extrude-height' || hit.gizmo === 'extrude-bottom' || hit.gizmo === 'edge-size' ? 'ns-resize' : 'grab';
+        cursor = hit.gizmo === 'move-axis' ? (hit.axis === 'z' ? 'ns-resize' : 'ew-resize') : hit.gizmo === 'extrude-height' || hit.gizmo === 'extrude-bottom' || hit.gizmo === 'edge-size' ? 'ns-resize' : 'grab';
         text =
-          hit.gizmo === 'extrude-height'
+          hit.gizmo === 'move-axis'
+            ? `Drag to move along ${hit.axis?.toUpperCase()}`
+            : hit.gizmo === 'extrude-height'
             ? 'Drag to change the height'
             : hit.gizmo === 'extrude-bottom'
               ? 'Drag to extend the bottom face'
@@ -676,7 +692,7 @@ export default function ModelViewer3D({
       controls.enabled = false;
       renderer.domElement.setPointerCapture(pointerId);
       // Show only the handle being dragged; the rest would be stale until the edit lands.
-      gizmoGroup.visible = d.kind === 'height' || d.kind === 'bottom' || d.kind === 'edge-size';
+      gizmoGroup.visible = d.kind === 'height' || d.kind === 'bottom' || d.kind === 'edge-size' || d.kind === 'axis';
       helperGroup.visible = d.kind === 'edge-size';
       if (d.kind === 'height' || d.kind === 'bottom') gizmoGroup.children.forEach((c) => (c.visible = c === heightArrowRef.current));
       setHoverEdge(null);
@@ -720,6 +736,27 @@ export default function ModelViewer3D({
       switch (hit.gizmo) {
         case 'extrude-height':
           return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
+        case 'move-axis': {
+          const ids = live.current.selectedBodyIds;
+          const picked = ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b);
+          const bounds = selectionBounds(picked);
+          if (!bounds || !hit.axis) return null;
+          const top = Math.max(...picked.map((b) => (b.elevation ?? 0) + b.extrusionHeight));
+          const planeY = (bounds.minElevation + top) / 2;
+          return {
+            ...common,
+            kind: 'axis',
+            axis: hit.axis,
+            ids,
+            center: { x: bounds.centerX, y: bounds.centerY },
+            planeY,
+            minLift: bounds.minElevation,
+            startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+            dx: 0,
+            dy: 0,
+            dz: 0,
+          };
+        }
         case 'extrude-bottom':
           return body ? { ...common, kind: 'bottom', bodyId: body.id, initialElevation: body.elevation ?? 0, initialHeight: body.extrusionHeight, nextDelta: 0 } : null;
         case 'offset-wall':
@@ -795,6 +832,24 @@ export default function ModelViewer3D({
           heightArrowRef.current?.position.setY(d.initialElevation! - delta - 0.2);
           text = delta === 0 ? 'Bottom unchanged' : `Bottom ${delta > 0 ? 'down' : 'up'} ${Math.abs(delta)} mm`;
         }
+      } else if (d.kind === 'axis') {
+        let dx = 0;
+        let dy = 0;
+        let dz = 0;
+        if (d.axis === 'z') {
+          dz = Math.max(-(d.minLift ?? 0), Math.round((d.startClientY - m.y) * d.mmPerPixel));
+        } else {
+          const cur = intersectPlane(m.x, m.y, d.planeY!);
+          if (!cur || !d.startPoint) return;
+          if (d.axis === 'x') dx = Math.round(cur.x - d.startPoint.x);
+          else dy = Math.round(-(cur.z - d.startPoint.z));
+        }
+        d.dx = dx;
+        d.dy = dy;
+        d.dz = dz;
+        d.ids!.forEach((id) => entriesRef.current.get(id)?.group.position.set(dx, dz, -dy));
+        gizmoGroup.position.set(dx, dz, -dy);
+        text = `${d.axis!.toUpperCase()} ${signed(d.axis === 'x' ? dx : d.axis === 'y' ? dy : dz)} mm`;
       } else if (d.kind === 'edge-size') {
         if ((d.moved ?? 0) <= CLICK_SLOP_PX) return; // a tap opens the picker; only a real drag resizes
         setPickerOpen(false);
@@ -850,7 +905,7 @@ export default function ModelViewer3D({
         text = `Rotate ${deg}°`;
       }
       setDragLabel({ text, x: m.x - rect.left + 16, y: m.y - rect.top - 28 });
-      invalidate(d.kind === 'move' || d.kind === 'rotate' || d.kind === 'height' || d.kind === 'bottom');
+      invalidate(d.kind === 'move' || d.kind === 'rotate' || d.kind === 'height' || d.kind === 'bottom' || d.kind === 'axis');
     };
 
     const endDrag = () => {
@@ -859,6 +914,7 @@ export default function ModelViewer3D({
       drag = null;
       controls.enabled = true;
       setDragLabel(null);
+      gizmoGroup.position.set(0, 0, 0);
       if (d.kind === 'edge-size' && (d.moved ?? 0) <= CLICK_SLOP_PX) setPickerOpen((open) => !open);
 
       // Commit the previewed change in one update.
@@ -868,6 +924,8 @@ export default function ModelViewer3D({
         live.current.onTransformBodies(d.ids!, { dx: 0, dy: 0, dz: 0, angle: d.angle, cx: d.center!.x, cy: d.center!.y });
       } else if (d.kind === 'height' && d.nextHeight !== d.initialHeight) {
         live.current.onUpdateBody(d.bodyId!, { extrusionHeight: d.nextHeight! });
+      } else if (d.kind === 'axis' && (d.dx || d.dy || d.dz)) {
+        live.current.onTransformBodies(d.ids!, { dx: d.dx!, dy: d.dy!, dz: d.dz!, angle: 0, cx: d.center!.x, cy: d.center!.y });
       } else if (d.kind === 'bottom' && d.nextDelta) {
         const body = bodyOf(d.bodyId);
         if (body) live.current.onUpdateBody(body.id, moveBottom(body, -d.nextDelta));
@@ -886,6 +944,7 @@ export default function ModelViewer3D({
       resetPreviews();
       controls.enabled = true;
       setDragLabel(null);
+      gizmoGroup.position.set(0, 0, 0);
       restoreGizmos();
       setFastId(null);
       live.current.onDragStateChange?.(false);
@@ -917,7 +976,34 @@ export default function ModelViewer3D({
       }
     };
 
+    // Two fingers tapped together (and lifted without moving) show or hide the move arrows.
+    const touches = new Map<number, { x0: number; y0: number }>();
+    let twoTap: { start: number; ups: number } | null = null;
+    const trackTouchDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      touches.set(e.pointerId, { x0: e.clientX, y0: e.clientY });
+      twoTap = touches.size === 2 ? { start: performance.now(), ups: 0 } : null;
+    };
+    const trackTouchMove = (e: PointerEvent) => {
+      const t = touches.get(e.pointerId);
+      if (t && twoTap && Math.hypot(e.clientX - t.x0, e.clientY - t.y0) > 14) twoTap = null;
+    };
+    const trackTouchUp = (e: PointerEvent) => {
+      if (!touches.delete(e.pointerId)) return;
+      if (!twoTap || e.type === 'pointercancel') {
+        twoTap = null;
+        return;
+      }
+      twoTap.ups += 1;
+      if (performance.now() - twoTap.start > 500) twoTap = null;
+      else if (twoTap.ups === 2) {
+        twoTap = null;
+        live.current.onToggleMove?.();
+      }
+    };
+
     const onPointerDown = (e: PointerEvent) => {
+      trackTouchDown(e);
       // A second finger means the user wants to orbit/pinch: abandon any one-finger drag.
       if (!e.isPrimary) {
         cancelDrag();
@@ -945,6 +1031,7 @@ export default function ModelViewer3D({
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      trackTouchMove(e);
       if (drag || candidate) pending = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
       else if (e.pointerType === 'mouse' && e.buttons === 0) pendingHover = { x: e.clientX, y: e.clientY };
     };
@@ -1029,8 +1116,14 @@ export default function ModelViewer3D({
         live.current.onSelectFace(multi ? null : hit.face);
       }
     };
-    const onPointerUp = (e: PointerEvent) => finishPointer(e, false);
-    const onPointerCancel = (e: PointerEvent) => finishPointer(e, true);
+    const onPointerUp = (e: PointerEvent) => {
+      trackTouchUp(e);
+      finishPointer(e, false);
+    };
+    const onPointerCancel = (e: PointerEvent) => {
+      trackTouchUp(e);
+      finishPointer(e, true);
+    };
     const onPointerLeave = () => {
       pendingHover = null;
       clearHoverRef.current();
@@ -1305,6 +1398,42 @@ export default function ModelViewer3D({
     const extent = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
     const s = clamp(extent / 170, 0.7, 2.4);
 
+    if (moveOn) {
+      const top = Math.max(...picked.map((b) => (b.elevation ?? 0) + b.extrusionHeight));
+      const midY = (bounds.minElevation + top) / 2;
+      const up = new THREE.Vector3(0, 1, 0);
+      const ringGeo = shared(new THREE.RingGeometry(4.5, 6.5, 40).rotateX(-Math.PI / 2));
+      const axisArrow = (axis: Axis, color: string, pos: THREE.Vector3, dir: THREE.Vector3) => {
+        const mat = handleMaterial(color);
+        const arrow = new THREE.Group();
+        arrow.position.copy(pos);
+        arrow.quaternion.setFromUnitVectors(up, dir);
+        arrow.scale.setScalar(s);
+        arrow.userData = { gizmo: 'move-axis', axis };
+        const base = new THREE.Mesh(ringGeo, mat);
+        const shaft = new THREE.Mesh(HANDLE.shaft, mat);
+        shaft.position.y = 9;
+        const head = new THREE.Mesh(HANDLE.head, mat);
+        head.position.y = 22.5;
+        base.renderOrder = shaft.renderOrder = head.renderOrder = 30;
+        const hit = new THREE.Mesh(HANDLE.arrowHit, hiddenMaterial);
+        hit.position.y = 16;
+        arrow.add(base, shaft, head, hit);
+        gizmoGroup.add(arrow);
+      };
+      axisArrow('x', '#fb7185', new THREE.Vector3(bounds.maxX + 6, midY, -bounds.centerY), new THREE.Vector3(1, 0, 0));
+      axisArrow('y', '#34d399', new THREE.Vector3(bounds.centerX, midY, -(bounds.maxY + 6)), new THREE.Vector3(0, 0, -1));
+      axisArrow('z', '#60a5fa', new THREE.Vector3(bounds.centerX, top + 6, -bounds.centerY), up);
+      gizmoGroup.children.forEach((c) => (c.userData.baseScale = c.scale.x));
+      if (popKeyRef.current !== `move|${ids.join(',')}`) {
+        popKeyRef.current = `move|${ids.join(',')}`;
+        popRef.current = { start: performance.now() };
+        gizmoGroup.children.forEach((c) => c.scale.setScalar(0.0001));
+      }
+      invalidateRef.current();
+      return;
+    }
+
     // Rotation halo around the selection, on the ground it stands on.
     const radius = 0.5 * Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) + 12;
     const ring = new THREE.Group();
@@ -1473,7 +1602,7 @@ export default function ModelViewer3D({
       gizmoGroup.children.forEach((c) => c.scale.setScalar(0.0001));
     }
     invalidateRef.current();
-  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, isSceneReady]);
+  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, moveOn, isSceneReady]);
 
   // ---- Pattern path preview ----------------------------------------------
   useEffect(() => {
@@ -1523,13 +1652,15 @@ export default function ModelViewer3D({
     onHint?.(
       repeatConfig.isDrawingLine
         ? 'Click the ground or a corner to place the pattern path'
-        : selectedFace
+        : moveOn && selectedBodyIds.length
+          ? 'Drag an arrow to move along X, Y or Z · two-finger tap to hide'
+          : selectedFace
           ? 'Drag the highlighted face (or its arrow) to extrude it · drag the rest of the shape to move it'
           : selectedBodyIds.length
           ? 'Drag the shape to move it · arrow = height · dots = walls · ring = rotate · click an edge to bevel it'
           : 'Click a shape to select it · drag empty space to orbit'
     );
-  }, [selectedBodyIds, selectedFace, repeatConfig.isDrawingLine, onHint]);
+  }, [selectedBodyIds, selectedFace, moveOn, repeatConfig.isDrawingLine, onHint]);
 
   const pickerBody = selectedEdges.length ? bodies.find((b) => b.id === selectedEdges[0].bodyId) : undefined;
   const pickerStyle: BevelStyle = pickerBody ? edgeStyle(pickerBody, selectedEdges.find((e) => e.kind !== 'corner') ?? selectedEdges[0]) ?? 'round' : 'round';

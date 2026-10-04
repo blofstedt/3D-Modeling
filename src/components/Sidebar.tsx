@@ -44,9 +44,11 @@ interface SidebarProps {
   onRemoveEdge: (sel: EdgeSel) => void;
   onIsolate: (id: string) => void;
   onShowAll: () => void;
+  /** Show only this section, without the header and tabs (used inside the bar menus). */
+  section?: Tab;
 }
 
-type Tab = 'properties' | 'material' | 'bodies' | 'export';
+export type Tab = 'properties' | 'material' | 'bodies' | 'export';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'properties', label: 'Properties' },
@@ -165,8 +167,10 @@ export default function Sidebar({
   onRemoveEdge,
   onIsolate,
   onShowAll,
+  section,
 }: SidebarProps) {
-  const [tab, setTab] = useState<Tab>('properties');
+  const [tabState, setTab] = useState<Tab>('properties');
+  const tab = section ?? tabState;
   const [exportNote, setExportNote] = useState<string | null>(null);
   const body = bodies.find((b) => b.id === selectedBodyId) || null;
   const stats = body ? bodyStats(body) : null;
@@ -178,7 +182,8 @@ export default function Sidebar({
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0 text-slate-100">
+    <div className={`flex flex-col min-h-0 text-slate-100 ${section ? 'w-[min(20rem,calc(100vw-1.5rem))]' : 'h-full'}`}>
+      {!section && (
       <div className="px-4 pt-3.5 pr-14 md:pr-4 shrink-0">
         <h2 className="text-sm font-semibold tracking-tight">Inspector</h2>
         <p className="text-xs text-slate-500">
@@ -186,7 +191,9 @@ export default function Sidebar({
           {selectedBodyIds.length > 1 && ` · ${selectedBodyIds.length} selected`}
         </p>
       </div>
+      )}
 
+      {!section && (
       <div role="tablist" className="flex gap-1 px-3 mt-3 border-b border-white/8 shrink-0">
         {TABS.map((t) => (
           <button
@@ -204,8 +211,9 @@ export default function Sidebar({
           </button>
         ))}
       </div>
+      )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-5">
+      <div className={`min-h-0 p-4 flex flex-col gap-5 ${section ? '' : 'flex-1 overflow-y-auto'}`}>
         {/* ---------------- Properties ---------------- */}
         {tab === 'properties' &&
           (body && stats ? (
