@@ -38,6 +38,19 @@ export interface CornerBevel {
   style: BevelStyle;
 }
 
+/**
+ * Where a shape that stands on a wall sits in the world. Its outline, height and bevels are ordinary (as if it stood on the ground),
+ * but its "ground" is the wall plane and its "up" points out of the wall. Shapes drawn on the ground or a top face have no frame.
+ */
+export interface Frame {
+  /** The wall point the outline's origin sits on: plan position and height above the ground. */
+  x: number;
+  y: number;
+  h: number;
+  /** Direction the shape grows out of the wall, as an angle in plan (radians, counter-clockwise from +X). */
+  angle: number;
+}
+
 export interface Body3D {
   id: string;
   name: string;
@@ -62,6 +75,8 @@ export interface Body3D {
   visible: boolean;
   createdAt: string;
   groupId?: string;
+  /** Set on a shape drawn on a wall: see Frame. Absent for everything standing upright. */
+  frame?: Frame;
   /** Set on a derived copy made by a live repeat: the id of the shape it follows. Never edited directly. */
   repeatOf?: string;
 }
@@ -123,6 +138,8 @@ export interface DrawSession {
   points: Point2D[];
   /** `bends[i]`: a point the side from corner i to the next passes through, making it a curve. Null = straight. */
   bends: (Point2D | null)[];
+  /** Drawing on a wall: the wall the sketch lies on. Absent on the ground or a top face. */
+  frame?: Frame;
 }
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [

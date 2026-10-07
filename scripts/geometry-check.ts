@@ -12,6 +12,8 @@ import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
 import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, syncRepeats, transformLink, withCopies, withSpacing } from '../src/utils/repeat';
 import { circleOutline, circleThrough, drawnBody, rectangleOutline, shapeOutline, sketchOutline, snapDrawPoint } from '../src/utils/draw';
+import * as THREE2 from 'three';
+import { frameMatrix, moveFrame, wallFrame } from '../src/utils/frame';
 import { RepeatLink, RepeatSession } from '../src/types';
 
 let failures = 0;
@@ -293,6 +295,29 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   check('points snap to whole millimetres', snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).x === 10 && snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).y === 4);
   check('points snap to a nearby corner', snapDrawPoint({ x: 10, y: 10 }, [{ x: 12, y: 11 }], null).x === 12);
   check('points line up with the last corner', snapDrawPoint({ x: 31, y: 50 }, [], { x: 30, y: 0 }).x === 30);
+}
+
+
+// Wall shapes: a frame stands the shape on its wall.
+{
+  // A wall facing +Z (outward normal towards the viewer), through plan point (10, -20).
+  const f = wallFrame({ x: 10, y: -20 }, { x: 0, y: -1 });
+  const m = frameMatrix(f);
+  const w = new THREE2.Vector3(5, 3, -7).applyMatrix4(m);
+  check('a wall shape: along the wall, out of it, and up it', near(w.x, 15, 1e-6) && near(w.y, 7, 1e-6) && near(w.z, 23, 1e-6), `${w.x},${w.y},${w.z}`);
+  const east = frameMatrix(wallFrame({ x: 0, y: 0 }, { x: 1, y: 0 }));
+  const e = new THREE2.Vector3(0, 10, 0).applyMatrix4(east);
+  check('a wall facing east grows east', near(e.x, 10, 1e-6) && near(e.z, 0, 1e-6));
+  const up = new THREE2.Vector3(0, 0, -4).applyMatrix4(east);
+  check('local -y is up the wall', near(up.y, 4, 1e-6));
+  const det = m.determinant();
+  check('the frame is a proper turn, not a mirror', near(det, 1, 1e-6));
+  const wallBody = drawnBody(rectangleOutline({ x: 0, y: 0 }, { x: 30, y: 20 })!, 0, 'w', 'w', '#fff', f);
+  check('a drawn wall shape keeps its frame and starts at the wall', !!wallBody.frame && wallBody.elevation === 0);
+  const carried = { ...wallBody, ...transformBody(wallBody, { dx: 5, dy: 5, dz: 12, angle: 0, cx: 0, cy: 0 }) };
+  check('moving a wall shape moves its frame, not its outline', carried.frame!.x === 15 && carried.frame!.y === -15 && carried.frame!.h === 12 && carried.points === wallBody.points);
+  const turned = moveFrame(f, { dx: 0, dy: 0, dz: 0, angle: Math.PI / 2, cx: 0, cy: 0 });
+  check('turning a wall shape turns where it points', near(turned.angle, f.angle + Math.PI / 2, 1e-9));
 }
 
 if (failures) {

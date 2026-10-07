@@ -52,16 +52,19 @@ function SizePositionPanel({ selected, onMove, onResize, onUpdateBody }: Pick<To
   const single = selected.length === 1 ? selected[0] : null;
   const width = b.maxX - b.minX;
   const depth = b.maxY - b.minY;
+  // A shape on a wall is measured across the wall, up it, and out from it.
+  const onWall = !!single?.frame;
+  const walled = selected.some((x) => x.frame);
   return (
     <div className="p-4 flex flex-col gap-3 w-[min(19rem,calc(100vw-1.5rem))]">
       {single && (
         <div>
           <p className="text-xs font-medium text-slate-400 mb-1.5">Size (mm)</p>
           <div className="flex gap-2">
-            <NumberBox label="Width" value={width} min={1} onCommit={(v) => onResize(v, depth)} />
-            <NumberBox label="Depth" value={depth} min={1} onCommit={(v) => onResize(width, v)} />
+            <NumberBox label={onWall ? 'Across' : 'Width'} value={width} min={1} onCommit={(v) => onResize(v, depth)} />
+            <NumberBox label={onWall ? 'Up' : 'Depth'} value={depth} min={1} onCommit={(v) => onResize(width, v)} />
             <NumberBox
-              label="Height"
+              label={onWall ? 'Out' : 'Height'}
               value={single.extrusionHeight}
               min={2}
               max={600}
@@ -70,6 +73,7 @@ function SizePositionPanel({ selected, onMove, onResize, onUpdateBody }: Pick<To
           </div>
         </div>
       )}
+      {!walled && (
       <div>
         <p className="text-xs font-medium text-slate-400 mb-1.5">Position (mm)</p>
         <div className="flex gap-2">
@@ -78,6 +82,7 @@ function SizePositionPanel({ selected, onMove, onResize, onUpdateBody }: Pick<To
           <NumberBox label="Z" value={b.minElevation} min={0} onCommit={(v) => onMove(0, 0, Math.max(0, v) - b.minElevation)} />
         </div>
       </div>
+      )}
     </div>
   );
 }

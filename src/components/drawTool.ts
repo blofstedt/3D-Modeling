@@ -5,7 +5,8 @@
 
 import * as THREE from 'three';
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Body3D, DrawSession, Point2D } from '../types';
+import { Body3D, DrawSession, Frame, Point2D } from '../types';
+import { frameMatrix, wallFrame } from '../utils/frame';
 import { DrawnOutline, circleOutline, rectangleOutline, shapeOutline, sidePoints, sketchOutline, snapDrawPoint } from '../utils/draw';
 
 /** What the Draw tool needs from the viewer: the camera and scene, and a way to ask for a redraw. */
@@ -25,13 +26,14 @@ export interface DrawCallbacks {
   /** The sketch changed. */
   set: (next: DrawSession) => void;
   /** A finished outline to turn into a shape on the surface at `planeY`. */
-  finish: (outline: DrawnOutline, planeY: number) => void;
+  finish: (outline: DrawnOutline, planeY: number, frame?: Frame) => void;
   notify: (message: string) => void;
 }
 
 const ACCENT = '#8b7cf6';
 const ACCENT_LIGHT = '#a99dff';
 const TAP_SLOP = 5;
+const NO_SURFACE = 'Draw on the ground, the top of a shape, or one of its walls.';
 const LIFT = 0.6;
 
 let dotTexture: THREE.Texture | null = null;
@@ -84,31 +86,44 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
     ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
   };
-  const onPlane = (cx: number, cy: number, y: number): Point2D | null => {
+  /** Where the sketch lies: the scene itself, or a wall (then everything below is in the wall's own space). */
+  const sketchMatrix = (f?: Frame) => (f ? frameMatrix(f) : new THREE.Matrix4());
+  const onPlane = (cx: number, cy: number, y: number, f: Frame | undefined = cur?.frame): Point2D | null => {
     ray(cx, cy);
+    const r = f ? raycaster.ray.clone().applyMatrix4(sketchMatrix(f).invert()) : raycaster.ray;
     const p = new THREE.Vector3();
-    return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), p) ? { x: p.x, y: -p.z } : null;
+    return r.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), p) ? { x: p.x, y: -p.z } : null;
   };
   const toScreen = (p: Point2D, y: number) => {
-    const v = new THREE.Vector3(p.x, y + LIFT, -p.y).project(camera);
+    const v = new THREE.Vector3(p.x, y + LIFT, -p.y).applyMatrix4(sketchMatrix(cur?.frame)).project(camera);
     const r = rect();
     return { x: (v.x * 0.5 + 0.5) * r.width + r.left, y: (-v.y * 0.5 + 0.5) * r.height + r.top };
   };
 
-  /** Which surface a tap at this spot would draw on: the top of a shape, or the ground. `null` means a wall or underside. */
-  const surfaceAt = (cx: number, cy: number): number | null => {
+  /**
+   * Which surface a tap at this spot would draw on: the ground, the top of a shape, or one of its walls.
+   * `null` means somewhere that cannot be drawn on (an underside, a slope, a shape that is itself on a wall).
+   */
+  type Surface = { y: number; frame?: Frame } | null;
+  const surfaceAt = (cx: number, cy: number): Surface => {
     ray(cx, cy);
     const hit = raycaster.intersectObjects(api.bodyGroup.children, true)[0];
-    if (!hit) return 0;
+    if (!hit) return { y: 0 };
     let obj: THREE.Object3D | null = hit.object;
     while (obj && !obj.userData.bodyId) obj = obj.parent;
     const body = obj && api.bodies().find((b) => b.id === obj!.userData.bodyId);
     const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : null;
-    if (!body || !n || n.y < 0.75) return null;
-    return Math.round(((body.elevation ?? 0) + body.extrusionHeight) * 100) / 100;
+    if (!body || !n || body.frame) return null;
+    if (n.y > 0.75) return { y: Math.round(((body.elevation ?? 0) + body.extrusionHeight) * 100) / 100 };
+    if (Math.abs(n.y) < 0.25) {
+      // A wall: the sketch lies in the wall's plane, with its origin where the tap landed.
+      const at = { x: Math.round(hit.point.x), y: Math.round(-hit.point.z) };
+      return { y: 0, frame: { ...wallFrame(at, { x: n.x, y: -n.z }), h: Math.round(hit.point.y) } };
+    }
+    return null;
   };
 
-  const corners = (): Point2D[] => api.bodies().flatMap((b) => (b.visible ? b.points : []));
+  const corners = (): Point2D[] => (cur?.frame ? [] : api.bodies().flatMap((b) => (b.visible && !b.frame ? b.points : [])));
 
   // ---- Drawing the sketch -------------------------------------------------
   const disposeGroup = () => {
@@ -158,6 +173,9 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
   const redraw = () => {
     disposeGroup();
     const s = cur;
+    group.matrixAutoUpdate = false;
+    group.matrix.copy(sketchMatrix(s?.frame));
+    group.matrixWorldNeedsUpdate = true;
     if (!s) return;
     const y = gesture?.kind === 'form' ? gesture.planeY : s.planeY ?? hover?.y ?? 0;
 
@@ -252,15 +270,17 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
       }
     }
     if (s.form !== 'shape') {
-      const y = s.planeY ?? surfaceAt(e.clientX, e.clientY);
-      if (y === null) {
-        cb.notify('Draw on the ground or on the top of a shape.');
+      const surface = s.planeY !== null ? { y: s.planeY, frame: s.frame } : surfaceAt(e.clientX, e.clientY);
+      if (!surface) {
+        cb.notify(NO_SURFACE);
         return;
       }
-      const a = snapped(e.clientX, e.clientY, y);
+      // The first touch on a wall only picks the wall: the view turns to face it, then you draw.
+      if (s.planeY === null && surface.frame) return void apply({ ...s, planeY: surface.y, frame: surface.frame });
+      const a = snapped(e.clientX, e.clientY, surface.y);
       if (!a) return;
-      if (s.planeY === null) apply({ ...s, planeY: y });
-      return grab({ kind: 'form', anchor: a, planeY: y, current: a, id: e.pointerId }, e);
+      if (s.planeY === null) apply({ ...s, planeY: surface.y });
+      return grab({ kind: 'form', anchor: a, planeY: surface.y, current: a, id: e.pointerId }, e);
     }
     // Empty space: a tap places a corner; a drag is left to the camera.
     gesture = { kind: 'tap', x: e.clientX, y: e.clientY, id: e.pointerId };
@@ -320,9 +340,11 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
     }
     // Hovering (mouse): show where a tap would land.
     if (e.pointerType === 'mouse' && e.buttons === 0) {
-      const y = s.planeY ?? surfaceAt(e.clientX, e.clientY);
-      const p = y === null ? null : snapped(e.clientX, e.clientY, y);
-      hover = p && y !== null ? { point: p, y } : null;
+      const surface = s.planeY !== null ? { y: s.planeY, frame: s.frame } : surfaceAt(e.clientX, e.clientY);
+      // Before the first tap on a wall there is no flat sketch to show a cursor on yet.
+      const p = !surface || (s.planeY === null && surface.frame) ? null : snapped(e.clientX, e.clientY, surface.y);
+      const y = surface?.y ?? 0;
+      hover = p ? { point: p, y } : null;
       label(e, p && s.form === 'shape' && s.points.length && s.planeY !== null ? `${Math.round(Math.hypot(p.x - s.points[s.points.length - 1].x, p.y - s.points[s.points.length - 1].y))} mm` : null);
       redraw();
     }
@@ -342,20 +364,23 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
     if (g.kind === 'point') {
       if (!g.moved && g.index === 0 && s.points.length >= 3) {
         const o = shapeOutline(s);
-        if (o && s.planeY !== null) cb.finish(o, s.planeY);
+        if (o && s.planeY !== null) cb.finish(o, s.planeY, s.frame);
         else cb.notify('Those corners do not make a shape yet.');
       }
     } else if (g.kind === 'form') {
       const o = s.form === 'rectangle' ? rectangleOutline(g.anchor, g.current) : circleOutline(g.anchor, g.current);
-      if (o) cb.finish(o, g.planeY);
+      if (o) cb.finish(o, g.planeY, s.frame);
       else redraw();
     } else if (g.kind === 'tap' && Math.hypot(e.clientX - g.x, e.clientY - g.y) <= TAP_SLOP) {
-      const y = s.planeY ?? surfaceAt(e.clientX, e.clientY);
-      if (y === null) {
-        cb.notify('Draw on the ground or on the top of a shape.');
+      const surface = s.planeY !== null ? { y: s.planeY, frame: s.frame } : surfaceAt(e.clientX, e.clientY);
+      if (!surface) {
+        cb.notify(NO_SURFACE);
+      } else if (s.planeY === null && surface.frame) {
+        // The first tap on a wall only picks the wall: the view turns to face it, then you draw.
+        apply({ ...s, planeY: surface.y, frame: surface.frame });
       } else {
-        const p = snapped(e.clientX, e.clientY, y);
-        if (p && !s.points.some((q) => q.x === p.x && q.y === p.y)) apply({ ...s, planeY: y, points: [...s.points, p], bends: [...s.bends, null] });
+        const p = snapped(e.clientX, e.clientY, surface.y);
+        if (p && !s.points.some((q) => q.x === p.x && q.y === p.y)) apply({ ...s, planeY: surface.y, points: [...s.points, p], bends: [...s.bends, null] });
       }
     }
     redraw();

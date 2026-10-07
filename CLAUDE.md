@@ -95,8 +95,7 @@ the stock cylinder. The result is a normal shape, 20 mm tall, top face selected 
 While drawing, the camera looks straight at the surface and rotation is off, so it feels like flat paper (drag pans); the old viewing angle returns afterwards. Drawing on a wall must do the same, facing the wall head-on. The tool owns its own pointer handlers while open; the viewer's handlers bail out (`live.current.draw`).
 
 Still to do:
-- **Drawing on a wall** needs a per-shape orientation (a plane transform on `Body3D`) — plan that with a geometry
-  check before building the UI. Bottom faces and undersides are refused for now.
+- Bottom faces, undersides and slopes are refused for now; so is drawing on a shape that is itself on a wall.
 - Drawing *inside* a face to make a cutout (reusing hole support), instead of a separate shape on top.
 - Curved sides are flattened into many small sides, so bevelling them is per-segment; smooth runs (like corner
   rounding's `arcMid`) would let a whole curve be one edge.
@@ -104,6 +103,20 @@ Still to do:
 - Sketch dimensions you can type while drawing (the number beside the pointer is read-only today).
 - Insert a corner by tapping a side; delete a single corner.
 - Check on a real touch screen: corner/side hit reach is 24 px for touch, untested.
+
+#### Wall shapes (built): how the model works
+
+A shape drawn on a wall has `Body3D.frame` (`{x, y, h, angle}`: where its outline's origin sits on the wall and which
+way it grows). Its outline, height and bevels stay ordinary: they are built "as if standing on the ground", in the
+shape's *own space*, and `frameMatrix(frame)` (utils/frame.ts) stands that space on the wall. Rules to keep:
+- Geometry code (`bodyGeometry`, `outline`, `faces`, `edges`) stays frame-free. The frame is applied at the edges: exporters,
+  the viewer's `BodyEntry.root`, and `transformBody` (which moves the frame, not the outline).
+- In the viewer, handles for a wall shape are built in its own space inside `gizmoFrame`; pointer rays are read in that
+  space (`intersectPlane(..., frame)`, `Drag.frame`), and height drags follow the arrow's direction on screen (`axisScreen`).
+  Hits are converted into the shape's space in `resolveHit`.
+- Not yet for wall shapes: bevels / edge picking, move arrows, rotate ring, Join, Subtract, Repeat, drawing on them.
+  Each is refused or hidden rather than half-working. Supporting them means doing that conversion in the matching code.
+- Position X/Y/Z are hidden in the properties bar for them (the size boxes read Across / Up / Out instead).
 
 ### 3. Autora integration
 

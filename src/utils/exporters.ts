@@ -8,6 +8,7 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import { Body3D } from '../types';
 import { buildBodyGeometry } from './bodyGeometry';
+import { frameMatrix } from './frame';
 
 const buildExportGroup = (bodies: Body3D[]) => {
   const group = new THREE.Group();
@@ -17,6 +18,10 @@ const buildExportGroup = (bodies: Body3D[]) => {
     if (!geometry) return;
     const mesh = new THREE.Mesh(geometry);
     mesh.name = body.name.replace(/\s+/g, '_');
+    if (body.frame) {
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.copy(frameMatrix(body.frame));
+    }
     group.add(mesh);
   });
   return group;

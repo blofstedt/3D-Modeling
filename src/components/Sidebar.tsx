@@ -235,6 +235,7 @@ export default function Sidebar({
                 onChange={(v) => onUpdateBody(body.id, { extrusionHeight: v })}
               />
 
+              {!body.frame && (
               <NumberSlider
                 label="Elevation"
                 value={body.elevation ?? 0}
@@ -243,6 +244,7 @@ export default function Sidebar({
                 hardMax={1000}
                 onChange={(v) => onUpdateBody(body.id, { elevation: v })}
               />
+              )}
 
               <NumberSlider
                 label="All corners"

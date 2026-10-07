@@ -12,6 +12,7 @@ import {
   FaceSel,
   Point2D,
   DrawForm,
+  Frame,
   DrawSession,
   RepeatLink,
   RepeatSession,
@@ -27,7 +28,8 @@ import { useHistory } from './hooks/useHistory';
 import { cutShape, getPolygonSignedArea, mergeShapes } from './utils/geometry';
 import { defaultSession, syncRepeats, transformLink } from './utils/repeat';
 import { DrawnOutline, drawnBody, shapeOutline } from './utils/draw';
-import { withOutline } from './utils/outline';
+import { outwardNormal, wallEnds, withOutline } from './utils/outline';
+import { wallFrame } from './utils/frame';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { joinBodies } from './utils/join';
 import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
@@ -368,7 +370,7 @@ export default function App() {
       cy = b.centerY;
       elevation = Math.round(((onTop.elevation ?? 0) + onTop.extrusionHeight) * 100) / 100;
     } else {
-      const b = selectionBounds(bodies.filter((x) => x.visible));
+      const b = selectionBounds(bodies.filter((x) => x.visible && !x.frame));
       if (b) {
         cx = Math.round(b.maxX + 50);
         cy = Math.round(b.centerY);
@@ -396,7 +398,14 @@ export default function App() {
    * Subtract: the shape you picked last is cut out of the others. Only the part that overlaps in height is cut,
    * so a short cutter leaves slabs above and below it (kept as one group).
    */
+  const WALL_NOTE = 'Shapes drawn on a wall can be moved, resized and pulled out, but not joined, cut or repeated yet.';
+  const hasWallShape = (ids: string[]) => bodies.some((b) => ids.includes(b.id) && b.frame);
+
   const handleSubtractSelected = () => {
+    if (hasWallShape(selectedBodyIds)) {
+      notify(WALL_NOTE);
+      return;
+    }
     const last = bodies.find((b) => b.id === selectedBodyId);
     if (selectedBodyIds.length < 2 || !last) {
       notify('Select 2+ shapes first: press and hold a shape to add it. The last one you pick is cut out of the others.');
@@ -515,6 +524,10 @@ export default function App() {
       notify('Select the shape you want to repeat first.');
       return;
     }
+    if (selectedBody.frame) {
+      notify(WALL_NOTE);
+      return;
+    }
     setDraw(null);
     setSelectedFace(null);
     setSelectedEdges([]);
@@ -550,6 +563,10 @@ export default function App() {
   };
 
   const handleMergeSelected = () => {
+    if (hasWallShape(selectedBodyIds)) {
+      notify(WALL_NOTE);
+      return;
+    }
     if (selectedBodyIds.length < 2) {
       notify('Select at least two shapes to join (press and hold a shape to add it).');
       return;
@@ -584,13 +601,23 @@ export default function App() {
       return;
     }
     if (repeat) setRepeat(null);
-    const face = selectedFace?.kind === 'top' ? selectedFace : null;
+    const face = selectedFace?.kind === 'top' || selectedFace?.kind === 'wall' ? selectedFace : null;
     const host = face && bodies.find((b) => b.id === face.bodyId);
+    // A selected wall starts the sketch on that wall, square on to it, at the middle of its height.
+    let frame: Frame | undefined;
+    if (host && face?.kind === 'wall' && face.index !== undefined && !host.frame) {
+      const ends = wallEnds(host, face.index);
+      if (ends) {
+        const n = outwardNormal(ends.a, ends.b, ends.winding);
+        frame = { ...wallFrame({ x: (ends.a.x + ends.b.x) / 2, y: (ends.a.y + ends.b.y) / 2 }, n), h: Math.round((host.elevation ?? 0) + host.extrusionHeight / 2) };
+      }
+    }
     setDraw({
       form: 'shape',
-      planeY: host ? Math.round(((host.elevation ?? 0) + host.extrusionHeight) * 100) / 100 : null,
+      planeY: frame ? 0 : host && face?.kind === 'top' ? Math.round(((host.elevation ?? 0) + host.extrusionHeight) * 100) / 100 : null,
       points: [],
       bends: [],
+      ...(frame ? { frame } : {}),
     });
     setSelectedFace(null);
     setSelectedEdges([]);
@@ -598,11 +625,11 @@ export default function App() {
   };
 
   /** A finished sketch becomes an ordinary shape standing on its surface, with its top selected so it can be pulled up at once. */
-  const handleFinishDraw = (outline: DrawnOutline, planeY: number) => {
+  const handleFinishDraw = (outline: DrawnOutline, planeY: number, frame?: Frame) => {
     bodyCounter.current += 1;
     const id = `body_${Date.now()}`;
     const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
-    const body = drawnBody(outline, planeY, id, `${outline.name} ${bodyCounter.current}`, color);
+    const body = drawnBody(outline, planeY, id, `${outline.name} ${bodyCounter.current}`, color, frame);
     setDraw(null);
     setBodies((prev) => [...prev, body]);
     setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
@@ -621,7 +648,7 @@ export default function App() {
       notify('Place at least three corners that make a shape.');
       return;
     }
-    handleFinishDraw(outline, draw.planeY);
+    handleFinishDraw(outline, draw.planeY, draw.frame);
   };
 
   /** Keeps the repeat: from now on its copies follow the shape and the path. */
@@ -738,7 +765,7 @@ export default function App() {
         handleDrawDone();
       } else if (key === 'backspace' || key === 'delete') {
         e.preventDefault();
-        setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 ? null : d.planeY } : d));
+        setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 && !d.frame ? null : d.planeY } : d));
       } else if (key === 'd') handleToggleDraw();
       return;
     }

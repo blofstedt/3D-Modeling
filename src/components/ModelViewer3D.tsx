@@ -12,13 +12,14 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Point2D, RepeatSession } from '../types';
+import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Frame, Point2D, RepeatSession } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
 import { DrawApi, createDrawTool } from './drawTool';
 import { DrawnOutline } from '../utils/draw';
+import { frameMatrix, frameNormal } from '../utils/frame';
 import { BodyTransform, scaleBodyAbout, selectionBounds, transformBody } from '../utils/transform';
 import { bendHandle, bendThrough, copyTransforms, stops, withCopies } from '../utils/repeat';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -35,6 +36,10 @@ interface Drag {
   kind: 'height' | 'bottom' | 'wall' | 'corner' | 'edge-size' | 'move' | 'rotate' | 'axis' | 'repeat';
   /** Which repeat handle is being dragged. */
   repeatHandle?: 'end' | 'bend';
+  /** The grabbed shape stands on a wall: pointer rays are read in the wall's own space. */
+  frame?: THREE.Matrix4;
+  /** Screen direction in which a wall shape's height grows (unit vector). Absent for upright shapes: up the screen. */
+  axisScreen?: { x: number; y: number };
   startClientY: number;
   startClientX?: number;
   /** Furthest the pointer travelled from where it went down (px): tells a tap from a drag. */
@@ -95,7 +100,7 @@ export interface ModelViewer3DProps {
   /** The open Draw sketch, or null. The viewer shows it and reads the pointer; the app owns it. */
   draw: DrawSession | null;
   onUpdateDraw: (next: DrawSession) => void;
-  onFinishDraw: (outline: DrawnOutline, planeY: number) => void;
+  onFinishDraw: (outline: DrawnOutline, planeY: number, frame?: Frame) => void;
   onNotify: (message: string) => void;
   /** Switch what is being drawn, finish the corners sketched so far, or stop drawing. */
   onDrawForm: (form: DrawForm) => void;
@@ -123,6 +128,7 @@ const EDGE_PICK_PX = 9;
 const EDGE_PICK_TOUCH_PX = 18;
 const MAX_WALL_HANDLES = 16;
 
+const IDENTITY = new THREE.Matrix4();
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n)}`;
 
@@ -266,6 +272,14 @@ function createMaterial(body: Body3D): THREE.Material {
   }
 }
 
+/** Stands a shape on its wall (or leaves it upright). */
+function placeFrame(root: THREE.Group, body: Body3D) {
+  root.matrixAutoUpdate = false;
+  if (body.frame) root.matrix.copy(frameMatrix(body.frame));
+  else root.matrix.identity();
+  root.matrixWorldNeedsUpdate = true;
+}
+
 const bodySignature = (b: Body3D) =>
   JSON.stringify([
     b.points,
@@ -282,6 +296,8 @@ const bodySignature = (b: Body3D) =>
 
 interface BodyEntry {
   body: Body3D;
+  /** Carries the wall frame (identity for upright shapes); `group` inside it takes drag previews in the shape's own space. */
+  root: THREE.Group;
   group: THREE.Group;
   outline: THREE.LineSegments;
   signature: string;
@@ -331,6 +347,7 @@ export default function ModelViewer3D({
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
+  const gizmoFrameRef = useRef<THREE.Group | null>(null);
   const drawApiRef = useRef<DrawApi | null>(null);
   const drawToolRef = useRef<ReturnType<typeof createDrawTool> | null>(null);
   const repeatAnchorRef = useRef<THREE.Vector3 | null>(null);
@@ -362,7 +379,7 @@ export default function ModelViewer3D({
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
-  const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean, from?: THREE.Vector3) => void>(() => {});
+  const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean, from?: THREE.Vector3, focus?: { center: THREE.Vector3; radius: number }) => void>(() => {});
   const knownIdsRef = useRef<Set<string> | null>(null);
   const tweenRef = useRef<{
     start: number;
@@ -479,7 +496,12 @@ export default function ModelViewer3D({
     const hoverGroup = new THREE.Group();
     const gizmoGroup = new THREE.Group();
     const previewGroup = new THREE.Group();
-    scene.add(bodyGroup, helperGroup, hoverGroup, gizmoGroup, previewGroup);
+    // Handles for a wall shape are built in its own space; this carries them onto its wall.
+    const gizmoFrame = new THREE.Group();
+    gizmoFrame.matrixAutoUpdate = false;
+    gizmoFrame.add(helperGroup, gizmoGroup);
+    gizmoFrameRef.current = gizmoFrame;
+    scene.add(bodyGroup, gizmoFrame, hoverGroup, previewGroup);
     bodyGroupRef.current = bodyGroup;
     gizmoGroupRef.current = gizmoGroup;
     helperGroupRef.current = helperGroup;
@@ -513,11 +535,33 @@ export default function ModelViewer3D({
       ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(ndc, camera);
     };
-    const intersectPlane = (clientX: number, clientY: number, planeY: number): THREE.Vector3 | null => {
+    /** Where the pointer's ray meets the horizontal plane at `planeY`; with a wall frame, the plane and the answer are in the wall shape's own space. */
+    const intersectPlane = (clientX: number, clientY: number, planeY: number, frame?: THREE.Matrix4): THREE.Vector3 | null => {
       setRay(clientX, clientY);
+      const ray = frame ? raycaster.ray.clone().applyMatrix4(frame.clone().invert()) : raycaster.ray;
       const point = new THREE.Vector3();
-      return raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), point) ? point : null;
+      return ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY), point) ? point : null;
     };
+    const frameOfBody = (b?: Body3D) => (b?.frame ? frameMatrix(b.frame) : undefined);
+    /** Which way along the screen a wall shape's height grows, so dragging along its arrow extrudes it. */
+    const axisScreenFor = (b: Body3D): { x: number; y: number } | undefined => {
+      if (!b.frame) return undefined;
+      const m = frameMatrix(b.frame);
+      const n = frameNormal(b.frame);
+      const top = (b.elevation ?? 0) + b.extrusionHeight;
+      const p0 = new THREE.Vector3(0, top, 0).applyMatrix4(m);
+      const p1 = p0.clone().addScaledVector(n, 40);
+      const rect = renderer.domElement.getBoundingClientRect();
+      const a = p0.clone().project(camera);
+      const c = p1.clone().project(camera);
+      const dx = ((c.x - a.x) * rect.width) / 2;
+      const dy = (-(c.y - a.y) * rect.height) / 2;
+      const len = Math.hypot(dx, dy);
+      // Looking straight at the wall the arrow points at you: fall back to dragging up the screen.
+      return len < 6 ? { x: 0, y: -1 } : { x: dx / len, y: dy / len };
+    };
+    /** How far the pointer has moved along the grow direction (pixels, positive = taller). */
+    const alongGrow = (d: Drag, m: { x: number; y: number }) => (d.axisScreen ? (m.x - (d.startClientX ?? m.x)) * d.axisScreen.x + (m.y - d.startClientY) * d.axisScreen.y : d.startClientY - m.y);
 
     // ---- Edge picking (screen-space distance to each edge's polyline) -----
     let pickPx = EDGE_PICK_PX;
@@ -531,7 +575,7 @@ export default function ModelViewer3D({
       const b = new THREE.Vector3();
 
       for (const body of live.current.bodies) {
-        if (!body.visible || body.repeatOf) continue; // a live copy is picked through its shape
+        if (!body.visible || body.repeatOf || body.frame) continue; // a live copy is picked through its shape; wall shapes have no bevels yet
         for (const edge of listEdges(body)) {
           let best = Infinity;
           let bestPoint: THREE.Vector3 | null = null;
@@ -573,7 +617,7 @@ export default function ModelViewer3D({
     };
 
     /** Which face of the shape a ray hit: top, bottom, or the wall whose flat side is nearest. */
-    const faceAt = (bodyId: string, hit: THREE.Intersection): FaceSel => {
+    const faceAt = (bodyId: string, hit: THREE.Intersection, at: THREE.Vector3 = hit.point): FaceSel => {
       const ny = hit.face?.normal.y ?? 0;
       if (ny > 0.75) return { bodyId, kind: 'top' };
       if (ny < -0.75) return { bodyId, kind: 'bottom' };
@@ -585,7 +629,7 @@ export default function ModelViewer3D({
         walls.forEach((j) => {
           const ends = wallEnds(body, j);
           if (!ends) return;
-          const { distance } = distanceToSegment2D(hit.point.x, -hit.point.z, ends.a.x, ends.a.y, ends.b.x, ends.b.y);
+          const { distance } = distanceToSegment2D(at.x, -at.z, ends.a.x, ends.a.y, ends.b.x, ends.b.y);
           if (distance < bestDist) {
             bestDist = distance;
             best = j;
@@ -629,10 +673,12 @@ export default function ModelViewer3D({
       while (obj && !obj.userData.bodyId) obj = obj.parent;
       if (!obj) return null;
       const hitId: string = obj.userData.bodyId;
-      const face = faceAt(hitId, hit);
+      // The point is kept in the shape's own space, so dragging works the same on a wall shape.
+      const local = entriesRef.current.get(hitId)?.root.worldToLocal(hit.point.clone()) ?? hit.point.clone();
+      const face = faceAt(hitId, hit, local);
       // Touching a live copy is touching the shape it follows: that is the one that can be edited.
       const bodyId = bodyOf(hitId)?.repeatOf ?? hitId;
-      return { type: 'body', bodyId, point: hit.point.clone(), face: { ...face, bodyId } };
+      return { type: 'body', bodyId, point: local, face: { ...face, bodyId } };
     };
 
     // ---- Hover feedback ----------------------------------------------------
@@ -806,7 +852,8 @@ export default function ModelViewer3D({
         initialBase: wallBase(body, index).map((p) => ({ ...p })),
         normal: outwardNormal(ends.a, ends.b, ends.winding),
         planeY,
-        startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+        frame: frameOfBody(body),
+        startPoint: intersectPlane(e.clientX, e.clientY, planeY, frameOfBody(body)) ?? undefined,
       };
     };
 
@@ -827,7 +874,8 @@ export default function ModelViewer3D({
         initialBody: body,
         corner0: { x: xs[index], y: ys[index] },
         anchor: { x: xs[(index + 2) % 4], y: ys[(index + 2) % 4] },
-        startPoint: intersectPlane(e.clientX, e.clientY, planeY) ?? undefined,
+        frame: frameOfBody(body),
+        startPoint: intersectPlane(e.clientX, e.clientY, planeY, frameOfBody(body)) ?? undefined,
       };
     };
 
@@ -835,7 +883,7 @@ export default function ModelViewer3D({
     const faceDrag = (face: FaceSel, e: { clientX: number; clientY: number }): Drag | null => {
       const body = bodyOf(face.bodyId);
       if (!body) return null;
-      const common = { startClientY: e.clientY, mmPerPixel: mmPerPixel(), bodyId: body.id };
+      const common = { startClientY: e.clientY, startClientX: e.clientX, mmPerPixel: mmPerPixel(), bodyId: body.id, axisScreen: axisScreenFor(body) };
       if (face.kind === 'top') return { ...common, kind: 'height', initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight };
       if (face.kind === 'bottom') {
         return { ...common, kind: 'bottom', initialElevation: body.elevation ?? 0, initialHeight: body.extrusionHeight, nextDelta: 0 };
@@ -855,7 +903,7 @@ export default function ModelViewer3D({
           return { ...common, kind: 'repeat', repeatHandle: hit.gizmo === 'repeat-end' ? 'end' : 'bend', planeY: (src.elevation ?? 0) + src.extrusionHeight };
         }
         case 'extrude-height':
-          return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
+          return body ? { ...common, axisScreen: axisScreenFor(body), kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
         case 'move-axis': {
           const ids = withCopies(live.current.selectedBodyIds, live.current.bodies);
           const picked = ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b);
@@ -878,7 +926,7 @@ export default function ModelViewer3D({
           };
         }
         case 'extrude-bottom':
-          return body ? { ...common, kind: 'bottom', bodyId: body.id, initialElevation: body.elevation ?? 0, initialHeight: body.extrusionHeight, nextDelta: 0 } : null;
+          return body ? { ...common, axisScreen: axisScreenFor(body), kind: 'bottom', bodyId: body.id, initialElevation: body.elevation ?? 0, initialHeight: body.extrusionHeight, nextDelta: 0 } : null;
         case 'offset-wall':
           return body && hit.index !== undefined ? wallDrag(body, hit.index, e) : null;
         case 'scale-corner':
@@ -914,8 +962,11 @@ export default function ModelViewer3D({
         center: { x: bounds.centerX, y: bounds.centerY },
         planeY: point.y,
         startPoint: point,
+        // A wall shape slides along its wall, whatever the camera sees.
+        frame: frameOfBody(bodyOf(bodyId)),
         dx: 0,
         dy: 0,
+        dz: 0,
       };
     };
 
@@ -951,7 +1002,7 @@ export default function ModelViewer3D({
       }
 
       if (d.kind === 'height') {
-        const next = clamp(Math.round(d.initialHeight! + (d.startClientY - m.y) * d.mmPerPixel), 2, 600);
+        const next = clamp(Math.round(d.initialHeight! + alongGrow(d, m) * d.mmPerPixel), 2, 600);
         d.nextHeight = next;
         // Preview by stretching the existing mesh; the exact geometry is rebuilt on release.
         const body = bodyOf(d.bodyId);
@@ -972,7 +1023,7 @@ export default function ModelViewer3D({
         if (body && entry) {
           // Down is positive: pulling the bottom face down grows the shape, the top stays put.
           const range = bottomRange(body);
-          const delta = clamp(Math.round((m.y - d.startClientY) * d.mmPerPixel), -range.max, -range.min);
+          const delta = clamp(Math.round(-alongGrow(d, m) * d.mmPerPixel), -range.max, -range.min);
           d.nextDelta = delta;
           const top = d.initialElevation! + d.initialHeight!;
           const s = (d.initialHeight! + delta) / d.initialHeight!;
@@ -1009,7 +1060,7 @@ export default function ModelViewer3D({
         text = next > 0 ? `Size ${next} mm` : 'No bevel';
       } else if (d.kind === 'corner') {
         const body = bodyOf(d.bodyId);
-        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        const cur = intersectPlane(m.x, m.y, d.planeY!, d.frame);
         if (!body || !cur || !d.startPoint || !d.initialBody || !d.anchor || !d.corner0) return;
         const w0 = Math.max(1, Math.abs(d.corner0.x - d.anchor.x));
         const h0 = Math.max(1, Math.abs(d.corner0.y - d.anchor.y));
@@ -1024,7 +1075,7 @@ export default function ModelViewer3D({
         text = `${Math.round(w0 * sx)} × ${Math.round(h0 * sy)} mm`;
       } else if (d.kind === 'wall') {
         const body = bodyOf(d.bodyId);
-        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        const cur = intersectPlane(m.x, m.y, d.planeY!, d.frame);
         if (!body || !cur || !d.normal || !d.startPoint) return;
         const n = d.normal;
         const dist = Math.round((cur.x - d.startPoint.x) * n.x - (cur.z - d.startPoint.z) * n.y);
@@ -1033,19 +1084,31 @@ export default function ModelViewer3D({
         text = `Wall ${signed(dist)} mm`;
         if (d.measure0 !== undefined) showReadout(`${d.bodyId}:wall:${d.index}`, d.measureLabel ?? 'Size', d.measure0 + (isHoleIndex(d.index!) ? -dist : dist));
       } else if (d.kind === 'move') {
-        const cur = intersectPlane(m.x, m.y, d.planeY!);
+        const cur = intersectPlane(m.x, m.y, d.planeY!, d.frame);
         if (!cur) return;
-        let dx = Math.round(cur.x - d.startPoint!.x);
-        let dy = Math.round(-(cur.z - d.startPoint!.z));
+        // The move in the grabbed shape's own space: across the ground, or across its wall.
+        let du = Math.round(cur.x - d.startPoint!.x);
+        let dv = Math.round(-(cur.z - d.startPoint!.z));
         if (m.shift) {
-          if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
-          else dx = 0;
+          if (Math.abs(du) >= Math.abs(dv)) dv = 0;
+          else du = 0;
         }
+        // …and in the scene, which is what every selected shape is moved by.
+        const w = new THREE.Vector3(du, 0, -dv);
+        if (d.frame) w.applyMatrix3(new THREE.Matrix3().setFromMatrix4(d.frame));
+        const dx = Math.round(w.x * 100) / 100;
+        const dy = Math.round(-w.z * 100) / 100;
+        const dz = d.frame ? Math.round(w.y * 100) / 100 : 0;
         d.dx = dx;
         d.dy = dy;
+        d.dz = dz;
         // A pure transform of the existing meshes: no geometry is rebuilt while dragging.
-        d.ids!.forEach((id) => entriesRef.current.get(id)?.group.position.set(dx, 0, -dy));
-        text = `X ${signed(dx)}, Y ${signed(dy)} mm`;
+        d.ids!.forEach((id) => {
+          const f = frameOfBody(bodyOf(id));
+          const local = f ? new THREE.Vector3(dx, dz, -dy).applyMatrix3(new THREE.Matrix3().setFromMatrix4(f).invert()) : new THREE.Vector3(dx, dz, -dy);
+          entriesRef.current.get(id)?.group.position.copy(local);
+        });
+        text = d.frame ? `Across ${signed(du)}, up ${signed(dv)} mm` : `X ${signed(dx)}, Y ${signed(dy)} mm`;
       } else if (d.kind === 'rotate') {
         const cur = intersectPlane(m.x, m.y, d.planeY!);
         if (!cur) return;
@@ -1082,8 +1145,8 @@ export default function ModelViewer3D({
       if (d.kind === 'edge-size' && (d.moved ?? 0) <= CLICK_SLOP_PX) setPickerOpen((open) => !open);
 
       // Commit the previewed change in one update.
-      if (d.kind === 'move' && (d.dx || d.dy)) {
-        live.current.onTransformBodies(d.ids!, { dx: d.dx!, dy: d.dy!, dz: 0, angle: 0, cx: d.center!.x, cy: d.center!.y });
+      if (d.kind === 'move' && (d.dx || d.dy || d.dz)) {
+        live.current.onTransformBodies(d.ids!, { dx: d.dx!, dy: d.dy!, dz: d.dz ?? 0, angle: 0, cx: d.center!.x, cy: d.center!.y });
       } else if (d.kind === 'rotate' && d.angle) {
         live.current.onTransformBodies(d.ids!, { dx: 0, dy: 0, dz: 0, angle: d.angle, cx: d.center!.x, cy: d.center!.y });
       } else if (d.kind === 'height' && d.nextHeight !== d.initialHeight) {
@@ -1346,16 +1409,17 @@ export default function ModelViewer3D({
     };
 
     // ---- Camera framing ---------------------------------------------------
-    const frameView = (face: CubeFace | 'keep', instant = false, from?: THREE.Vector3) => {
+    const frameView = (face: CubeFace | 'keep', instant = false, from?: THREE.Vector3, focus?: { center: THREE.Vector3; radius: number }) => {
       const box = new THREE.Box3();
       let any = false;
       live.current.bodies.forEach((b) => {
         if (!b.visible) return;
         any = true;
         const lo = b.elevation ?? 0;
+        const m = frameOfBody(b);
         b.points.forEach((p) => {
-          box.expandByPoint(new THREE.Vector3(p.x, lo, -p.y));
-          box.expandByPoint(new THREE.Vector3(p.x, lo + b.extrusionHeight, -p.y));
+          box.expandByPoint(new THREE.Vector3(p.x, lo, -p.y).applyMatrix4(m ?? IDENTITY));
+          box.expandByPoint(new THREE.Vector3(p.x, lo + b.extrusionHeight, -p.y).applyMatrix4(m ?? IDENTITY));
         });
       });
       // While copies are being placed, frame them too so the whole row is in view.
@@ -1363,8 +1427,8 @@ export default function ModelViewer3D({
       if (r) stops(r).forEach((p) => box.expandByPoint(new THREE.Vector3(p.x, 0, -p.y)));
       if (!any) box.set(new THREE.Vector3(-100, 0, -100), new THREE.Vector3(100, 50, 100));
 
-      const center = box.getCenter(new THREE.Vector3());
-      const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 40);
+      const center = focus ? focus.center.clone() : box.getCenter(new THREE.Vector3());
+      const radius = focus ? focus.radius : Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 40);
       const vFov = THREE.MathUtils.degToRad(camera.fov);
       const fitFov = camera.aspect < 1 ? 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect) : vFov;
       const distance = (radius / Math.sin(fitFov / 2)) * 1.2;
@@ -1436,7 +1500,7 @@ export default function ModelViewer3D({
         return;
       }
       if (!anchor) return; // nothing selected: keep the spot so the card can animate out
-      const v = anchor.pos.clone().project(camera);
+      const v = anchor.pos.clone().applyMatrix4(gizmoFrame.matrix).project(camera);
       const w = container.clientWidth;
       const h = container.clientHeight;
       const pw = el.offsetWidth;
@@ -1539,7 +1603,7 @@ export default function ModelViewer3D({
 
     entries.forEach((entry, id) => {
       if (!visible.has(id)) {
-        group.remove(entry.group);
+        group.remove(entry.root);
         disposeObject(entry.group);
         entries.delete(id);
       }
@@ -1551,11 +1615,18 @@ export default function ModelViewer3D({
       if (existing?.body === body && existing.signature.endsWith('|fast') === fast) return; // untouched object
       const signature = bodySignature(body) + (fast ? '|fast' : '');
       if (existing && existing.signature === signature) {
+        // Where a wall shape stands is not part of its geometry: a move arrives as a new frame, replacing the drag preview.
+        if (JSON.stringify(existing.body.frame) !== JSON.stringify(body.frame)) {
+          existing.group.position.set(0, 0, 0);
+          existing.group.rotation.set(0, 0, 0);
+          existing.group.scale.set(1, 1, 1);
+        }
         existing.body = body;
+        placeFrame(existing.root, body);
         return;
       }
       if (existing) {
-        group.remove(existing.group);
+        group.remove(existing.root);
         disposeObject(existing.group);
         entries.delete(id);
       }
@@ -1574,8 +1645,11 @@ export default function ModelViewer3D({
       const bodyGroup = new THREE.Group();
       bodyGroup.userData.bodyId = id;
       bodyGroup.add(mesh, outline);
-      group.add(bodyGroup);
-      entries.set(id, { body, group: bodyGroup, outline, signature });
+      const root = new THREE.Group();
+      root.add(bodyGroup);
+      placeFrame(root, body);
+      group.add(root);
+      entries.set(id, { body, root, group: bodyGroup, outline, signature });
     });
     refreshOutlinesRef.current();
     invalidateRef.current(true);
@@ -1624,11 +1698,19 @@ export default function ModelViewer3D({
       invalidateRef.current();
       return;
     }
+    // One wall shape: its handles are built in its own space and carried onto its wall. Moving and turning by arrows or ring need upright shapes.
+    const walled = picked.some((b) => b.frame);
+    const gf = gizmoFrameRef.current;
+    if (gf) {
+      if (walled && core.length === 1 && core[0].frame) gf.matrix.copy(frameMatrix(core[0].frame));
+      else gf.matrix.identity();
+      gf.matrixWorldNeedsUpdate = true;
+    }
     const bounds = selectionBounds(picked)!;
     const extent = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
     const s = clamp(extent / 170, 0.7, 2.4);
 
-    if (moveOn) {
+    if (moveOn && !walled) {
       const top = Math.max(...picked.map((b) => (b.elevation ?? 0) + b.extrusionHeight));
       const midY = (bounds.minElevation + top) / 2;
       const up = new THREE.Vector3(0, 1, 0);
@@ -1686,6 +1768,7 @@ export default function ModelViewer3D({
     }
 
     // Rotation halo around the selection, on the ground it stands on.
+    if (!walled) {
     const radius = 0.5 * Math.hypot(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) + 12;
     const ring = new THREE.Group();
     ring.position.set(bounds.centerX, bounds.minElevation + 0.3, -bounds.centerY);
@@ -1695,6 +1778,7 @@ export default function ModelViewer3D({
     const ringHit = new THREE.Mesh(new THREE.TorusGeometry(radius, 6, 5, 48).rotateX(Math.PI / 2), hiddenMaterial);
     ring.add(ringLine, ringHit);
     gizmoGroup.add(ring);
+    }
 
     const body = core.length === 1 ? core[0] : null;
     if (body) {
@@ -1894,7 +1978,7 @@ export default function ModelViewer3D({
     if (!drawing || !isSceneReady || !api) return;
     const tool = createDrawTool(api, () => live.current.draw, {
       set: (next) => live.current.onUpdateDraw(next),
-      finish: (outline, planeY) => live.current.onFinishDraw(outline, planeY),
+      finish: (outline, planeY, frame) => live.current.onFinishDraw(outline, planeY, frame),
       notify: (m) => live.current.onNotify(m),
     });
     drawToolRef.current = tool;
@@ -1907,6 +1991,20 @@ export default function ModelViewer3D({
     drawToolRef.current?.refresh();
   }, [draw]);
 
+  // The camera looks straight at whatever is being drawn on: down at the ground or a top face, or square on to a wall.
+  const wallKey = draw?.frame ? JSON.stringify(draw.frame) : null;
+  useEffect(() => {
+    if (!drawing || !isSceneReady) return;
+    if (!draw?.frame) {
+      frameViewRef.current('top');
+      return;
+    }
+    const f = draw.frame;
+    const centre = new THREE.Vector3(f.x, f.h, -f.y);
+    frameViewRef.current('keep', false, frameNormal(f), { center: centre, radius: 90 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawing, isSceneReady, wallKey]);
+
   // Drawing is flat work: the camera looks straight down at the surface, turning is off so it stays like paper
   // (drag pans, pinch or scroll zooms), and the old viewing angle comes back when the sketch is done.
   useEffect(() => {
@@ -1914,7 +2012,6 @@ export default function ModelViewer3D({
     if (!drawing || !isSceneReady || !api) return;
     const { camera, controls } = api;
     const saved = { pos: camera.position.clone(), target: controls.target.clone() };
-    frameViewRef.current('top');
     controls.enableRotate = false;
     controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
     controls.touches.ONE = THREE.TOUCH.PAN;
@@ -2038,7 +2135,7 @@ export default function ModelViewer3D({
           ? draw.points.length >= 3
             ? 'Tap to add a corner · drag a side to curve it · tap the green corner to finish'
             : draw.planeY === null
-              ? 'Tap the ground or the top of a shape to start drawing'
+              ? 'Tap the ground, the top of a shape, or a wall to start drawing'
               : 'Tap to place corners · drag a corner to move it · drag empty space to pan'
           : 'Drag it out · release to make it'
         : repeat
@@ -2123,7 +2220,7 @@ export default function ModelViewer3D({
               onEditEnd={() => holdReadout(false)}
               onCommit={(mm) => onFaceValue?.(selectedFace, mm)}
               onEdges={
-                faceBody
+                faceBody && !faceBody.frame
                   ? () => {
                       // Edges already picked on this shape stay selected; this face's edges join them.
                       const kept = selectedEdges.filter((e) => e.bodyId === faceBody.id);

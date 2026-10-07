@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Body3D, DrawSession, Point2D } from '../types';
+import { Body3D, DrawSession, Frame, Point2D } from '../types';
 import { getPolygonSignedArea } from './geometry';
 import { withOutline } from './outline';
 
@@ -106,15 +106,17 @@ export function shapeOutline(s: Pick<DrawSession, 'points' | 'bends'>): DrawnOut
   return { name: 'Sketch', basePoints: area < 0 ? flat.slice().reverse() : flat };
 }
 
-/** A new shape from a drawn outline, lying on a surface at `elevation`. */
-export function drawnBody(outline: DrawnOutline, elevation: number, id: string, name: string, color: string): Body3D {
+/** A new shape from a drawn outline: standing on a surface at `elevation`, or growing out of a wall (`frame`). */
+export function drawnBody(outline: DrawnOutline, elevation: number, id: string, name: string, color: string, frame?: Frame): Body3D {
   const base: Body3D = {
     id,
     name,
     points: outline.basePoints,
     basePoints: outline.basePoints,
     extrusionHeight: DRAWN_HEIGHT,
-    elevation: round2(elevation),
+    // On a wall the surface is the shape's own ground: it stands out of the wall rather than up from a height.
+    elevation: frame ? 0 : round2(elevation),
+    ...(frame ? { frame } : {}),
     color,
     materialType: 'matte',
     visible: true,
