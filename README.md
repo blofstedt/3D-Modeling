@@ -51,7 +51,7 @@ Tools (bottom bar): Draw `D`, Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
 
-Export STL (Z-up, slicer-ready), OBJ or JSON from the file menu at the top right. Exports use the
+Export STL (Z-up, slicer-ready), GLB (metres, Y-up, colours and materials: for game engines), OBJ or JSON from the file menu at the top right. Exports use the
 same geometry you see in the viewport, including cutouts and bevels.
 
 ### Phone, tablet and desktop
@@ -106,7 +106,7 @@ src/
     faces.ts              face extrusion (top, bottom, walls)
     bodyGeometry.ts       extrusion + CSG bevels, shared by viewer and exporters
     transform.ts          move / rotate bodies
-    exporters.ts          STL / OBJ / JSON
+    exporters.ts          STL / GLB / OBJ / JSON (glb.ts writes the glTF)
   hooks/useHistory.ts     debounced undo/redo
 scripts/agent/            MCP (stdio) and HTTP servers over the headless engine
 ```

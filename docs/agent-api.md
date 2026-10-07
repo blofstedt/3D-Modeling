@@ -37,7 +37,7 @@ Build the Node pieces once: `npm run agent:build` (writes `dist-agent/`).
 - `batch` runs several commands all-or-nothing and is one undo step.
 - Sizes are held to what the shape allows (a bevel cannot be deeper than the shape): the result tells you the size you got.
 - `shape_measure` builds the real solid and reports volume, area and whether it is **watertight** (will print).
-- `export` gives STL (base64), OBJ or JSON. Headless, `path` writes the file for you (hand it to a slicer).
+- `export` gives STL or GLB (base64; GLB takes `scale` and `pivot` scene/asset/shape), OBJ or JSON. Headless, `path` writes the file for you (hand it to a slicer).
 
 ## Library (Node or browser)
 

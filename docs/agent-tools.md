@@ -335,13 +335,15 @@ _changes the model · headless and live_
 
 ## `export`
 
-Export the visible shapes. format "stl" (binary, Z-up, returned as base64), "obj" (text) or "json" (the document).
+Export the visible shapes. format "stl" (binary, Z-up, returned as base64), "glb" (binary glTF for game engines: metres, Y-up, keeps colours and materials, returned as base64), "obj" (text) or "json" (the document). glb options: scale (output metres per scene mm, default 0.001) and pivot ("scene" as placed, "asset" centred on the ground, "shape" one pivot per shape at the centre of its base).
 
 _read-only · headless and live_
 
 | argument | type | |
 | --- | --- | --- |
-| `format` | `stl` \| `obj` \| `json` | required |
+| `format` | `stl` \| `glb` \| `obj` \| `json` | required |
+| `scale` | number |  |
+| `pivot` | `scene` \| `asset` \| `shape` |  |
 
 ## `batch`
 

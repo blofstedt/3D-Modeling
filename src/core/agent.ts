@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { glbBytes } from '../utils/glb';
 import { objText, stlBytes, toBase64 } from '../utils/serialize';
 import { initManifold } from '../utils/manifoldBoolean';
 import { Doc, IdGen, emptyDoc, parseDoc, settle } from './doc';
@@ -118,7 +119,12 @@ function runOne(host: AgentHost, doc: Doc, ids: IdGen, name: string, args: unkno
         if (!bytes) throw new AgentError('Nothing visible to export.');
         return { doc, result: { format: 'stl', filename: 'craft3d.stl', encoding: 'base64', bytes: bytes.length, data: toBase64(bytes) }, changed: false };
       }
-      throw new AgentError('format must be "stl", "obj" or "json".');
+      if (a.format === 'glb') {
+        const bytes = glbBytes(bodies, { scale: a.scale, pivot: a.pivot });
+        if (!bytes) throw new AgentError('Nothing visible to export.');
+        return { doc, result: { format: 'glb', filename: 'craft3d.glb', encoding: 'base64', bytes: bytes.length, data: toBase64(bytes) }, changed: false };
+      }
+      throw new AgentError('format must be "stl", "glb", "obj" or "json".');
     }
     default: {
       const out = runDocTool({ doc, ids }, name, args);

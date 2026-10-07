@@ -148,6 +148,17 @@ const main = async () => {
   check('the STL header counts match its size', bytes.readUInt32LE(80) * 50 + 84 === bytes.length, `${bytes.readUInt32LE(80)} triangles, ${bytes.length} bytes`);
   const obj = await m.execute('export', { format: 'obj' });
   check('export an OBJ', obj.ok && String((obj.result as any).text).includes('\nv '));
+  const glb = await m.execute('export', { format: 'glb' });
+  const gb = Buffer.from((glb.result as any)?.data ?? '', 'base64');
+  const gjson = gb.length ? JSON.parse(gb.subarray(20, 20 + gb.readUInt32LE(12)).toString()) : null;
+  check('export a GLB that is a valid container', glb.ok && gb.toString('ascii', 0, 4) === 'glTF' && gb.readUInt32LE(8) === gb.length && !!gjson && gjson.nodes.length > 0 && gjson.materials.length === gjson.nodes.length, glb.error);
+  const sizeM = gjson ? gjson.accessors[0].max.map((v: number, i: number) => v - gjson.accessors[0].min[i]) : [];
+  check('GLB is in metres (a 10 cm part is ~0.1)', sizeM.length === 3 && Math.max(...sizeM) < 5 && Math.max(...sizeM) > 0.001, sizeM.join(','));
+  const glbAsset = await m.execute('export', { format: 'glb', pivot: 'asset' });
+  const ab = Buffer.from((glbAsset.result as any)?.data ?? '', 'base64');
+  const aj = JSON.parse(ab.subarray(20, 20 + ab.readUInt32LE(12)).toString());
+  const lows = aj.accessors.filter((x: any) => x.type === 'VEC3' && x.min).map((x: any) => x.min[1]);
+  check('GLB pivot "asset" puts the lowest point on the ground', Math.abs(Math.min(...lows)) < 1e-6, String(Math.min(...lows)));
   const saved = (await m.execute('doc_get')).result;
   const fresh = new Engine();
   const loaded = await fresh.execute('doc_set', { doc: saved });
