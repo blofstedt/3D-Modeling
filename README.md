@@ -51,7 +51,7 @@ Tools (bottom bar): Draw `D`, Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
 
-Export STL (Z-up, slicer-ready), GLB (metres, Y-up, colours and materials: for game engines), OBJ or JSON from the file menu at the top right. Exports use the
+Save a group (or a shape) to the project library from the top bar, place linked copies from Shape → Your objects; Edit a copy, Save, and every copy follows. Export STL (Z-up, slicer-ready), GLB (metres, Y-up, colours and materials: for game engines), OBJ or JSON from the file menu at the top right. Exports use the
 same geometry you see in the viewport, including cutouts and bevels.
 
 ### Phone, tablet and desktop

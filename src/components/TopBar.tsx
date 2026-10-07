@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Box, FileDown, Move, SquareDashed, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
+import { BookmarkPlus, Box, FileDown, Link2, Move, Pencil, Unlink, SquareDashed, Palette, Redo2, SlidersHorizontal, Trash2, Undo2, X } from 'lucide-react';
 import { BevelStyle, Body3D, EdgeSel, FaceSel } from '../types';
 import { describeEdges, edgeSize, edgesOfKind, edgeStyle, isWholeGroup, MAX_BEVEL_SIZE, maxBevelSize, primaryEdge, type EdgeGroup } from '../utils/edges';
 import { selectionBounds } from '../utils/transform';
@@ -38,6 +38,13 @@ interface TopBarProps {
   /** The selection is exactly one group: its name can be changed right here. */
   group?: { id: string; name: string };
   onRenameGroup: (id: string, name: string) => void;
+  /** The selected group's relation to the library: a linked copy, open for editing, or neither. */
+  object?: { state: 'linked' | 'editing'; item: string };
+  /** The selection can be saved to the library (a group, or one ungrouped shape). */
+  canSave: boolean;
+  onSaveToLibrary: () => void;
+  onEditObject: () => void;
+  onSeparateObject: () => void;
   sidebar: Omit<SidebarProps, 'section'>;
 }
 
@@ -46,6 +53,21 @@ const Chip = ({ children, sub }: { children: React.ReactNode; sub?: string }) =>
     <div className="text-sm font-semibold text-white whitespace-nowrap">{children}</div>
     {sub && <div className="text-[11px] text-slate-400 whitespace-nowrap">{sub}</div>}
   </div>
+);
+
+/** A small labelled button for an action on the selected object. */
+const PillButton = ({ icon: Icon, label, onClick, title }: { icon: React.ComponentType<{ size?: number; strokeWidth?: number }>; label: string; onClick: () => void; title: string }) => (
+  <motion.button
+    type="button"
+    onClick={onClick}
+    title={title}
+    whileTap={{ scale: 0.92 }}
+    transition={spring}
+    className="shrink-0 h-8 px-3 rounded-full bg-white/8 hover:bg-white/14 text-[13px] font-medium text-slate-100 flex items-center gap-1.5 transition-colors"
+  >
+    <Icon size={15} strokeWidth={1.75} />
+    {label}
+  </motion.button>
 );
 
 /** A group's name, changed by tapping it. Saves on Enter or when you tap away; Escape keeps the old one. */
@@ -130,8 +152,8 @@ export default function TopBar(props: TopBarProps) {
   let mode = 'none';
   if (body && edges.length) mode = 'edge';
   else if (body && face && face.bodyId === body.id) mode = 'face';
-  else if (body) mode = 'shape';
-  else if (selected.length > 1) mode = 'multi';
+  else if (body && !props.group) mode = 'shape';
+  else if (selected.length > 1 || props.group) mode = 'multi';
 
   const dynamic = (() => {
     if (mode === 'edge' && body) {
@@ -219,6 +241,7 @@ export default function TopBar(props: TopBarProps) {
           <MenuButton id="material" openId={openId} setOpenId={setOpenId} label="Material" icon={Palette} placement="down">
             <Sidebar {...props.sidebar} section="material" />
           </MenuButton>
+          {props.canSave && <PillButton icon={BookmarkPlus} label="Save to library" onClick={props.onSaveToLibrary} title="Keep this object in the project library so you can place linked copies" />}
         </>
       );
     }
@@ -245,6 +268,22 @@ export default function TopBar(props: TopBarProps) {
           ) : (
             <Chip sub={props.joined ? 'Joined · moves as one' : 'Drag one to move them all'}>{props.joined ? selected[0].name : `${selected.length} shapes`}</Chip>
           )}
+          {props.object?.state === 'linked' && (
+            <>
+              <span className="shrink-0 text-[11px] text-slate-400 flex items-center gap-1 whitespace-nowrap">
+                <Link2 size={13} /> Linked to “{props.object.item}”
+              </span>
+              <PillButton icon={Pencil} label="Edit" onClick={props.onEditObject} title="Open this object for editing: save it back and every copy follows" />
+              <PillButton icon={Unlink} label="Separate" onClick={props.onSeparateObject} title="Make this copy independent of the library" />
+            </>
+          )}
+          {props.object?.state === 'editing' && (
+            <>
+              <PillButton icon={BookmarkPlus} label={`Save to “${props.object.item}”`} onClick={props.onSaveToLibrary} title="Update the library object: every linked copy follows" />
+              <PillButton icon={Unlink} label="Separate" onClick={props.onSeparateObject} title="Forget the library object: this stays as plain shapes" />
+            </>
+          )}
+          {!props.object && props.canSave && <PillButton icon={BookmarkPlus} label="Save to library" onClick={props.onSaveToLibrary} title="Keep this object in the project library so you can place linked copies" />}
           <MenuButton id="size" openId={openId} setOpenId={setOpenId} label="Position" icon={Move} placement="down">
             <SizePositionPanel {...props} />
           </MenuButton>

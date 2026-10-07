@@ -79,6 +79,8 @@ export interface Body3D {
   frame?: Frame;
   /** Set on a derived copy made by a live repeat: the id of the shape it follows. Never edited directly. */
   repeatOf?: string;
+  /** Set on a shape that belongs to a linked library object: the id of that placed object (a group). Derived from the library, rebuilt on every change. */
+  instanceOf?: string;
 }
 
 /** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
@@ -96,6 +98,28 @@ export interface EdgeSel {
   index: number;
 }
 
+/** Where a placed library object sits: its footprint centre, its underside, and a turn (radians, counter-clockwise from above). */
+export interface Placement {
+  x: number;
+  y: number;
+  z: number;
+  angle: number;
+}
+
+/**
+ * A reusable object kept in the project: a snapshot of a group (or one shape), centred on the ground at the origin.
+ * Placed copies follow it. `bodies[].groupId === ROOT` means directly inside the object.
+ */
+export interface LibraryItem {
+  id: string;
+  name: string;
+  bodies: Body3D[];
+  /** The groups inside the object (not the object itself); their parentId may be ROOT. */
+  groups: ShapeGroup[];
+}
+
+export const ROOT = '@root';
+
 export interface ShapeGroup {
   id: string;
   name: string;
@@ -103,6 +127,11 @@ export interface ShapeGroup {
   bodyIds: string[];
   /** The group this one sits inside, when groups nest (a "head" inside a "character"). */
   parentId?: string;
+  /** A placed library object: the item it follows. With `place` it is linked (its shapes are derived); without, it is open for editing. */
+  libraryId?: string;
+  place?: Placement;
+  /** On the inner groups of a placed object: the placed object they belong to. Derived with the shapes. */
+  instanceOf?: string;
   /** Made by Join or Subtract: the pieces form one solid, so it is presented as a single shape. */
   joined?: boolean;
 }

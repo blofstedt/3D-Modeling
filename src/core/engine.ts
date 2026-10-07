@@ -83,6 +83,6 @@ export class Engine implements AgentHost {
   }
 
   toJSON() {
-    return { bodies: this.doc.bodies, groups: this.doc.groups, repeats: this.doc.repeats };
+    return { bodies: this.doc.bodies, groups: this.doc.groups, repeats: this.doc.repeats, library: this.doc.library };
   }
 }

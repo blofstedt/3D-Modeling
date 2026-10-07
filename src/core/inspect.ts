@@ -10,6 +10,7 @@ import { listEdges } from '../utils/edges';
 import { faceMeasure } from '../utils/faces';
 import { frameMatrix } from '../utils/frame';
 import { spacing } from '../utils/repeat';
+import { selectionBounds } from '../utils/transform';
 import { getBase, holeIndex, holeLoops, outwardNormal, wallEnds } from '../utils/outline';
 import { Doc } from './doc';
 
@@ -45,6 +46,8 @@ export interface ShapeSummary {
   group?: string;
   /** Present on a copy made by a live repeat: the shape it follows. Copies cannot be edited; edit that shape. */
   copyOf?: string;
+  /** Part of a linked library object (the placed object's group id). */
+  linkedTo?: string;
   /** Present on a shape that has a live repeat: the id to pass to repeat commands is this shape's id. */
   repeat?: { kind: string; count: number; gap: number; follow: boolean; start: Point2D; end: Point2D; bend: Point2D | null };
   /** Present on a shape drawn on a wall. */
@@ -103,6 +106,7 @@ export function summarize(doc: Doc, body: Body3D): ShapeSummary {
   if (body.cornerRadii?.some((r) => r > 0)) out.cornerRadii = body.cornerRadii;
   if (body.groupId) out.group = body.groupId;
   if (body.repeatOf) out.copyOf = body.repeatOf;
+  if (body.instanceOf) out.linkedTo = body.instanceOf;
   if (link) out.repeat = { kind: link.kind, count: link.count, gap: round2(spacing(link)), follow: link.follow, start: link.start, end: link.end, bend: link.bend };
   if (body.frame) out.wall = body.frame;
   return out;
@@ -220,7 +224,7 @@ export function meshReport(body: Body3D): MeshReport | null {
 
 export interface SceneSummary {
   shapes: ShapeSummary[];
-  groups: { id: string; name: string; shapes: string[]; joined: boolean; parent?: string }[];
+  groups: { id: string; name: string; shapes: string[]; joined: boolean; parent?: string; library?: string; linked?: boolean; place?: { x: number; y: number; z: number; degrees: number } }[];
   bounds: { min: Vec3; max: Vec3 } | null;
   /** How to read the numbers. */
   units: string;
@@ -230,9 +234,24 @@ export function sceneSummary(doc: Doc, options: { includeCopies?: boolean } = {}
   const shown = options.includeCopies ? doc.bodies : doc.bodies.filter((b) => !b.repeatOf);
   const out: SceneSummary = {
     shapes: shown.map((b) => summarize(doc, b)),
-    groups: doc.groups.map((g) => ({ id: g.id, name: g.name, shapes: g.bodyIds, joined: !!g.joined, parent: g.parentId })),
+    groups: doc.groups.map((g) => ({ id: g.id, name: g.name, shapes: g.bodyIds, joined: !!g.joined, parent: g.parentId, library: g.libraryId, linked: g.place ? true : undefined, place: g.place ? { x: g.place.x, y: g.place.y, z: g.place.z, degrees: round2((g.place.angle * 180) / Math.PI) } : undefined })),
     bounds: boundsOf(doc.bodies.filter((b) => b.visible)),
     units: 'millimetres. x is to the right, y is away from the front of the view, z is up. A shape stands on its bottom (z) and rises to its top.',
   };
   return out;
+}
+
+/** The project library, with each object's size and how many linked copies are placed. */
+export function libraryItems(doc: Doc) {
+  return doc.library.map((item) => {
+    const box = selectionBounds(item.bodies)!;
+    return {
+      id: item.id,
+      name: item.name,
+      shapes: item.bodies.length,
+      size: { x: round2(box.maxX - box.minX), y: round2(box.maxY - box.minY), z: round2(box.maxTop - box.minElevation) },
+      placed: doc.groups.filter((g) => g.libraryId === item.id && g.place).map((g) => g.id),
+      open: doc.groups.filter((g) => g.libraryId === item.id && !g.place).map((g) => g.id),
+    };
+  });
 }

@@ -38,10 +38,13 @@ export function descendantGroups(groups: ShapeGroup[], groupId: string): ShapeGr
  */
 export function pickInGroups(bodies: Body3D[], groups: ShapeGroup[], bodyId: string, selected: string[]): { group: ShapeGroup | null; ids: string[] } {
   const body = bodies.find((b) => b.id === bodyId);
-  const chain = groupChain(groups, body?.groupId);
+  let chain = groupChain(groups, body?.groupId);
+  // A placed library object is one piece: tapping never steps inside it.
+  const atom = chain.findIndex((g) => g.place);
+  if (atom >= 0) chain = chain.slice(0, atom + 1);
   const same = (ids: string[]) => ids.length === selected.length && ids.every((i) => selected.includes(i));
   for (let i = 0; i < chain.length; i++) {
-    if (same(chain[i].bodyIds)) return i + 1 < chain.length ? { group: chain[i + 1], ids: chain[i + 1].bodyIds } : { group: null, ids: [bodyId] };
+    if (same(chain[i].bodyIds)) return i + 1 < chain.length ? { group: chain[i + 1], ids: chain[i + 1].bodyIds } : { group: chain[i].place ? chain[i] : null, ids: chain[i].place ? chain[i].bodyIds : [bodyId] };
   }
   // Not stepping in: the outermost group, unless the selection is already inside one (then stay at its level or deeper).
   if (chain.length) return { group: chain[0], ids: chain[0].bodyIds };
@@ -81,7 +84,7 @@ export function normalizeGroups(bodies: Body3D[], groups: ShapeGroup[]): { bodie
     owner.forEach((gid) => {
       for (const g of groupChain(gs, gid)) count.set(g.id, (count.get(g.id) ?? 0) + 1);
     });
-    const dead = gs.find((g) => (count.get(g.id) ?? 0) < 2);
+    const dead = gs.find((g) => (count.get(g.id) ?? 0) < (g.place ? 1 : 2));
     if (!dead) break;
     gs.forEach((g) => g.parentId === dead.id && (g.parentId = dead.parentId));
     owner.forEach((gid, id) => gid === dead.id && owner.set(id, dead.parentId));

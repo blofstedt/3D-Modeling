@@ -80,7 +80,7 @@ const isTypingTarget = (target: EventTarget | null) => {
 
 export default function App() {
   const [doc, setDocState] = useState<Doc>(loadInitialDoc);
-  const { bodies, groups, repeats } = doc;
+  const { bodies, groups, repeats, library } = doc;
   /** The newest document, updated the moment a change is made (state lags a render behind; agents send changes back to back). */
   const docRef = useRef(doc);
   const revRef = useRef(0);
@@ -493,8 +493,47 @@ export default function App() {
     if (runOp((d, ids) => ops.groupShapes(d, ids, { ids: selectedBodyIds }))) notify(`Grouped ${selectedBodyIds.length} shapes. They now select and move together.`);
   };
 
+  /** Selects everything in a group, once the document has settled (its shapes may have new ids). */
+  const selectGroup = (groupId: string) => {
+    const g = docRef.current.groups.find((x) => x.id === groupId);
+    if (g?.bodyIds.length) selectMany(g.bodyIds);
+  };
+
+  const handleSaveToLibrary = () => {
+    const single = selectedBodies.length === 1 && !selectedBodies[0].groupId ? selectedBodies[0] : null;
+    if (!selectedGroup && !single) return;
+    const made = runOp((d, ids) => ops.saveToLibrary(d, ids, selectedGroup ? { group: selectedGroup.id } : { id: single!.id }));
+    if (!made) return;
+    selectGroup(made.group);
+    const name = docRef.current.library.find((i) => i.id === made.item)?.name ?? 'object';
+    notify(made.updated ? `Updated “${name}”: every linked copy follows.` : `Saved “${name}” to the library. Place more from Shape.`);
+  };
+
+  const handlePlaceItem = (item: string) => {
+    const onTop = selectedFace?.kind === 'top' && selectedBody && !selectedBody.frame ? selectedBody.id : undefined;
+    const made = runOp((d, ids) => ops.placeFromLibrary(d, ids, { item, onTopOf: onTop }));
+    if (made) selectGroup(made.group);
+  };
+
+  const handleEditObject = () => {
+    if (!selectedGroup) return;
+    const made = runOp((d, ids) => ops.unlinkObject(d, ids, { group: selectedGroup.id }));
+    if (!made) return;
+    selectGroup(made.group);
+    notify('Open for editing. Change it, then Save: every linked copy follows.');
+  };
+
+  const handleSeparateObject = () => {
+    if (!selectedGroup) return;
+    const made = runOp((d, ids) => ops.unlinkObject(d, ids, { group: selectedGroup.id, forget: true }));
+    if (made) {
+      selectGroup(made.group);
+      notify('Now separate from the library.');
+    }
+  };
+
   const handleUngroup = (groupId: string) => {
-    if (runOp((d) => ops.ungroupShapes(d, { group: groupId }))) notify('Group dissolved.');
+    if (runOp((d, ids) => ops.ungroupShapes(d, ids, { group: groupId }))) notify('Group dissolved.');
   };
 
   const handleMergeSelected = () => {
@@ -815,6 +854,18 @@ export default function App() {
         onResize={handleResize}
         onUpdateBody={handleUpdateBody}
         group={selectedGroup ? { id: selectedGroup.id, name: selectedGroup.name } : undefined}
+        object={
+          selectedGroup?.libraryId
+            ? { state: selectedGroup.place ? 'linked' : 'editing', item: library.find((i) => i.id === selectedGroup.libraryId)?.name ?? 'object' }
+            : undefined
+        }
+        canSave={
+          !selectedGroup?.libraryId &&
+          (selectedGroup ? !selectedGroup.joined : selectedBodies.length === 1 && !selectedBodies[0].groupId && !selectedBodies[0].repeatOf && !selectedBodies[0].instanceOf && !selectedBodies[0].frame)
+        }
+        onSaveToLibrary={handleSaveToLibrary}
+        onEditObject={handleEditObject}
+        onSeparateObject={handleSeparateObject}
         onRenameGroup={(group, name) => void runOp((d) => ops.renameGroup(d, { group, name }))}
         sidebar={sidebarProps}
       />
@@ -962,6 +1013,9 @@ export default function App() {
         moveOn={moveOn && selectedBodyIds.length > 0}
         addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
         onAddShape={addShape}
+        library={library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length }))}
+        onPlaceItem={handlePlaceItem}
+        onRemoveItem={(item) => void runOp((d) => ops.removeLibraryItem(d, { item }))}
         onToggleMove={() => setMoveOn((v) => !v)}
         onIsolate={toggleIsolate}
         grouped={!!selectedGroupId}

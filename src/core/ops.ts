@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Body3D, DrawSession, EdgeSel, FaceSel, Frame, MaterialType, Point2D, RepeatLink, RepeatSession, ShapeGroup, SWATCHES } from '../types';
+import { Body3D, DrawSession, EdgeSel, FaceSel, Frame, LibraryItem, MaterialType, Point2D, RepeatLink, RepeatSession, ShapeGroup, SWATCHES } from '../types';
 import { BodyTransform, resizeBody, selectionBounds, transformBody } from '../utils/transform';
 import { cutShape, getPolygonSignedArea } from '../utils/geometry';
 import { joinBodies } from '../utils/join';
@@ -13,7 +13,8 @@ import { MAX_HEIGHT, MIN_HEIGHT, extrudeFace, faceMeasure, setFaceMeasure } from
 import { EdgeGroup, applyEdgeChange, edgesAroundFace, edgesOfKind, edgeSize, maxBevelSize } from '../utils/edges';
 import { DRAWN_HEIGHT, DrawnOutline, circleOutline, drawnBody, rectangleOutline, shapeOutline } from '../utils/draw';
 import { wallFrame } from '../utils/frame';
-import { groupChain } from '../utils/groups';
+import { descendantGroups, groupChain } from '../utils/groups';
+import { movePlace, templateOf } from '../utils/library';
 import { bendThrough, defaultSession, spacing, toAround, transformLink, withCount, withSpacing } from '../utils/repeat';
 import { Doc, IdGen, settle } from './doc';
 import { fail } from './errors';
@@ -43,13 +44,18 @@ export function need(doc: Doc, id: unknown): Body3D {
 /** A repeat's copies are derived: asking to edit one means editing the shape it follows. */
 export function editable(doc: Doc, id: unknown): Body3D {
   const b = need(doc, id);
+  if (b.instanceOf) {
+    const g = doc.groups.find((x) => x.id === b.instanceOf);
+    return fail(`"${b.id}" is part of the linked library object "${g?.name ?? b.instanceOf}", so it cannot be edited on its own.`, `Move, turn or delete the whole object (${b.instanceOf}). To change the object itself call object_unlink on ${b.instanceOf}, edit the shapes, then library_save it (every copy follows); object_unlink with forget:true makes it separate shapes instead.`);
+  }
   if (b.repeatOf) return fail(`"${b.id}" is a copy made by a live repeat, so it cannot be edited directly.`, `Edit its source "${b.repeatOf}" (every copy follows), or call repeat_remove first to make the copies separate shapes.`);
   return b;
 }
 
-function idList(doc: Doc, ids: unknown, what = 'ids'): Body3D[] {
+function idList(doc: Doc, ids: unknown, what = 'ids', whole = false): Body3D[] {
   if (!Array.isArray(ids) || !ids.length) return fail(`${what} must be a non-empty list of shape ids.`);
-  return [...new Set(ids as string[])].map((id) => editable(doc, id));
+  // `whole`: the operation acts on a linked object as a unit (move, turn, delete, group), so its shapes are fine.
+  return [...new Set(ids as string[])].map((id) => (whole ? need(doc, id) : editable(doc, id)));
 }
 
 /** The shapes plus everything grouped with them (in the outermost group they belong to): a group moves, turns and is deleted together. */
@@ -329,16 +335,19 @@ export interface TurnArgs {
 /** Rigid move/turn of shapes and the live repeats they carry: the same rule the app uses. */
 export function applyTransform(doc: Doc, ids: string[], t: BodyTransform): Doc {
   const set = new Set(ids);
+  // A linked library object is rebuilt from its item: only its placement travels.
+  const placed = new Set(doc.bodies.filter((b) => set.has(b.id) && b.instanceOf).map((b) => b.instanceOf));
   return {
     ...doc,
-    bodies: doc.bodies.map((b) => (set.has(b.id) && !b.repeatOf ? { ...b, ...transformBody(b, t) } : b)),
+    groups: placed.size ? doc.groups.map((g) => (placed.has(g.id) && g.place ? { ...g, place: movePlace(g.place, t) } : g)) : doc.groups,
+    bodies: doc.bodies.map((b) => (set.has(b.id) && !b.repeatOf && !b.instanceOf ? { ...b, ...transformBody(b, t) } : b)),
     // A repeat's path lives in its shape's own space; for a shape on a wall the frame moves and the path stays put.
     repeats: doc.repeats.map((l) => (set.has(l.bodyId) && !doc.bodies.find((b) => b.id === l.bodyId)?.frame ? transformLink(l, t) : l)),
   };
 }
 
 export function moveShapes(doc: Doc, a: MoveArgs): OpResult<{ moved: string[] }> {
-  const bodies = withGroupMates(doc, idList(doc, a.ids));
+  const bodies = withGroupMates(doc, idList(doc, a.ids, 'ids', true));
   if (!a.by && !a.to) return fail('Give "by" ({"x","y","z"} to move by) or "to" (where to put them).');
   let d = { x: 0, y: 0, z: 0 };
   if (a.by) d = { x: num(a.by.x, 'by.x', 0), y: num(a.by.y, 'by.y', 0), z: num(a.by.z, 'by.z', 0) };
@@ -358,7 +367,7 @@ export function moveShapes(doc: Doc, a: MoveArgs): OpResult<{ moved: string[] }>
 }
 
 export function turnShapes(doc: Doc, a: TurnArgs): OpResult<{ turned: string[] }> {
-  const bodies = withGroupMates(doc, idList(doc, a.ids));
+  const bodies = withGroupMates(doc, idList(doc, a.ids, 'ids', true));
   const angle = (num(a.degrees, 'degrees') * Math.PI) / 180;
   const upright = bodies.filter((b) => !b.frame);
   const b = upright.length ? selectionBounds(upright)! : null;
@@ -467,13 +476,16 @@ export const bevelRoom = (b: Body3D, sels: EdgeSel[]) => maxBevelSize(b, sels);
 // ---- Structure ------------------------------------------------------------------------------------
 
 export function deleteShapes(doc: Doc, a: { ids: string[] }): OpResult<{ deleted: string[] }> {
-  const bodies = withGroupMates(doc, idList(doc, a.ids));
+  const bodies = withGroupMates(doc, idList(doc, a.ids, 'ids', true));
   const gone = new Set(bodies.map((b) => b.id));
   const deleted = bodies.map((b) => b.id);
+  // A linked object goes as a whole: its group has to go too, or it would rebuild its shapes.
+  const placed = new Set(bodies.map((b) => b.instanceOf).filter(Boolean));
   const next: Doc = {
+    ...doc,
     bodies: doc.bodies.filter((b) => !gone.has(b.id) && !(b.repeatOf && gone.has(b.repeatOf))),
     repeats: doc.repeats.filter((l) => !gone.has(l.bodyId)),
-    groups: doc.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })).filter((g) => g.bodyIds.length > 1),
+    groups: doc.groups.filter((g) => !placed.has(g.id) && !(g.instanceOf && placed.has(g.instanceOf))).map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })),
   };
   return { doc: next, result: { deleted } };
 }
@@ -494,8 +506,10 @@ export function duplicateShapes(doc: Doc, ids: IdGen, a: { ids: string[]; by?: {
  * "head" and "body" makes one "character" that contains both; the rest become direct members.
  */
 export function groupShapes(doc: Doc, ids: IdGen, a: { ids: string[]; name?: string }): OpResult<{ group: string }> {
-  const bodies = idList(doc, a.ids);
+  const bodies = idList(doc, a.ids, 'ids', true);
   if (bodies.length < 2) return fail('A group needs at least two shapes.');
+  const partial = bodies.find((b) => b.instanceOf && doc.bodies.some((x) => x.instanceOf === b.instanceOf && !bodies.includes(x)));
+  if (partial) return fail('A linked library object can only be grouped as a whole.', `Select every shape of ${partial.instanceOf}, or tap it once to pick the whole object.`);
   const gid = ids('group');
   const picked = new Set(bodies.map((b) => b.id));
   // The outermost existing groups that are fully inside the selection become children; a partly selected group is split.
@@ -521,9 +535,11 @@ export function renameGroup(doc: Doc, a: { group: string; name: string }): OpRes
 }
 
 /** Dissolves one level: its shapes and groups move up into whatever group was around it. */
-export function ungroupShapes(doc: Doc, a: { group: string }): OpResult<{ released: string[] }> {
+export function ungroupShapes(doc: Doc, ids: IdGen, a: { group: string }): OpResult<{ released: string[] }> {
   const g = doc.groups.find((x) => x.id === a.group);
   if (!g) return fail(`No group "${a.group}".`, `Groups: ${doc.groups.map((x) => x.id).join(', ') || 'none'}`);
+  // A linked object cannot be dissolved into loose members: that is making it separate.
+  if (g.place) return { doc: unlinkObject(doc, ids, { group: g.id, forget: true }).doc, result: { released: g.bodyIds } };
   return {
     doc: {
       ...doc,
@@ -745,4 +761,128 @@ export function removeRepeat(doc: Doc, a: { id: string }): OpResult<{ id: string
   if (!link) return fail(`"${a.id}" has no repeat.`);
   const copies = doc.bodies.filter((b) => b.repeatOf === a.id).map((b) => b.id);
   return { doc: settle({ ...doc, repeats: doc.repeats.filter((l) => l !== link) }), result: { id: a.id, keptAsShapes: copies } };
+}
+
+// ---- Library: reusable objects, placed as linked copies -------------------------------------------
+
+const itemOf = (doc: Doc, id: unknown): LibraryItem => {
+  const item = doc.library.find((i) => i.id === id);
+  if (!item) return fail(`No library object "${String(id)}".`, `Library: ${doc.library.map((i) => `${i.id} (${i.name})`).join(', ') || 'empty (save a group with library_save)'}`);
+  return item;
+};
+const groupOf = (doc: Doc, id: unknown): ShapeGroup => {
+  const g = doc.groups.find((x) => x.id === id);
+  if (!g) return fail(`No group "${String(id)}".`, `Groups: ${doc.groups.map((x) => `${x.id} (${x.name})`).join(', ') || 'none'}`);
+  return g;
+};
+
+/**
+ * Saves a group (or one shape) to the library, and makes it the first placed copy. A group that was opened for editing
+ * (`object_unlink`) updates its item instead, so every copy follows.
+ */
+export function saveToLibrary(doc: Doc, ids: IdGen, a: { group?: string; id?: string; name?: string }): OpResult<{ item: string; group: string; updated: boolean }> {
+  let group: ShapeGroup | null = null;
+  let single: Body3D | undefined;
+  if (a.group !== undefined) {
+    group = groupOf(doc, a.group);
+    if (group.place) return fail(`"${group.name}" is already a linked library object.`, 'To change it: object_unlink it, edit, then library_save again.');
+    if (group.instanceOf) return fail('That group is inside a linked library object.');
+  } else {
+    single = editable(doc, a.id);
+    if (single.groupId) return fail(`"${single.id}" is in a group.`, `Save the group (${single.groupId}) instead, or ungroup it first.`);
+  }
+  const made = templateOf(doc.bodies, doc.groups, group, single);
+  if (typeof made === 'string') return fail(made);
+  const existing = group?.libraryId ? doc.library.find((i) => i.id === group!.libraryId) : undefined;
+  const name = (a.name ?? existing?.name ?? group?.name ?? single?.name ?? 'Object').trim() || 'Object';
+  const item: LibraryItem = { id: existing?.id ?? ids('item'), name, ...made.item };
+  const gone = new Set((group ? group.bodyIds : [single!.id]));
+  const innerGroups = new Set(group ? descendantGroups(doc.groups, group.id).map((g) => g.id) : []);
+  const gid = group?.id ?? ids('group');
+  const instance: ShapeGroup = { ...(group ?? { id: gid, name, bodyIds: [] }), libraryId: item.id, place: made.place, name: group?.name ?? name };
+  const next: Doc = {
+    ...doc,
+    library: existing ? doc.library.map((i) => (i.id === item.id ? item : i)) : [...doc.library, item],
+    bodies: doc.bodies.filter((b) => !gone.has(b.id)),
+    groups: [...doc.groups.filter((g) => g.id !== gid && !innerGroups.has(g.id)), instance],
+  };
+  return { doc: next, result: { item: item.id, group: gid, updated: !!existing } };
+}
+
+export interface PlaceArgs {
+  item: string;
+  x?: number;
+  y?: number;
+  z?: number;
+  /** Degrees, counter-clockwise from above. */
+  angle?: number;
+  /** Put it on the top of this shape. */
+  onTopOf?: string;
+  name?: string;
+}
+
+/** Places a linked copy of a library object: beside what is there by default, or on top of a shape. */
+export function placeFromLibrary(doc: Doc, ids: IdGen, a: PlaceArgs): OpResult<{ group: string; shapes: string[] }> {
+  const item = itemOf(doc, a.item);
+  let x = 0;
+  let y = 0;
+  let z = a.z !== undefined ? num(a.z, 'z') : 0;
+  const box = selectionBounds(item.bodies)!;
+  const width = box.maxX - box.minX;
+  if (a.onTopOf) {
+    const host = need(doc, a.onTopOf);
+    if (host.frame) return fail('Objects cannot be placed on a shape that is on a wall yet.');
+    const hb = selectionBounds([host])!;
+    x = hb.centerX;
+    y = hb.centerY;
+    z = round2((host.elevation ?? 0) + host.extrusionHeight);
+  } else if (a.x === undefined && a.y === undefined) {
+    const there = selectionBounds(doc.bodies.filter((b) => b.visible && !b.frame));
+    if (there) {
+      x = Math.round(there.maxX + 30 + width / 2);
+      y = Math.round(there.centerY);
+    }
+  }
+  if (a.x !== undefined) x = num(a.x, 'x');
+  if (a.y !== undefined) y = num(a.y, 'y');
+  if (z < 0) return fail('z cannot be below the ground (0).');
+  const gid = ids('group');
+  const group: ShapeGroup = { id: gid, name: a.name ?? item.name, bodyIds: [], libraryId: item.id, place: { x: round2(x), y: round2(y), z: round2(z), angle: (num(a.angle, 'angle', 0) * Math.PI) / 180 } };
+  const next = settle({ ...doc, groups: [...doc.groups, group] });
+  return { doc: next, result: { group: gid, shapes: next.bodies.filter((b) => b.instanceOf === gid).map((b) => b.id) } };
+}
+
+/**
+ * Lets a placed object go. By default it opens for editing: its shapes become ordinary ones, and library_save on the
+ * group updates the library object so every copy follows. With `forget` it is simply separate from then on.
+ */
+export function unlinkObject(doc: Doc, ids: IdGen, a: { group: string; forget?: boolean }): OpResult<{ group: string; shapes: string[]; editing: boolean }> {
+  const g = groupOf(doc, a.group);
+  if (!g.place) return fail(`"${g.name}" is not a linked library object.`, 'Linked objects show "library" in scene_get groups.');
+  const inside = (x: { instanceOf?: string }) => x.instanceOf === g.id;
+  // The derived shapes get ordinary ids again.
+  const fresh = new Map<string, string>();
+  doc.bodies.filter(inside).forEach((b) => fresh.set(b.id, ids('body')));
+  doc.groups.filter(inside).forEach((x) => fresh.set(x.id, ids('group')));
+  const re = (id: string | undefined) => (id ? fresh.get(id) ?? id : id);
+  const next: Doc = {
+    ...doc,
+    bodies: doc.bodies.map((b) => (inside(b) ? { ...b, id: re(b.id)!, groupId: re(b.groupId), instanceOf: undefined } : b)),
+    groups: doc.groups.map((x) => (inside(x) ? { ...x, id: re(x.id)!, parentId: re(x.parentId), instanceOf: undefined } : x.id === g.id ? { ...x, place: undefined, libraryId: a.forget ? undefined : x.libraryId } : x)),
+  };
+  return { doc: next, result: { group: g.id, shapes: [...fresh.entries()].filter(([k]) => doc.bodies.some((b) => b.id === k)).map(([, v]) => v), editing: !a.forget } };
+}
+
+export function renameLibraryItem(doc: Doc, a: { item: string; name: string }): OpResult<{ item: string; name: string }> {
+  const item = itemOf(doc, a.item);
+  const name = String(a.name ?? '').trim();
+  if (!name) return fail('name must not be empty.');
+  return { doc: { ...doc, library: doc.library.map((i) => (i.id === item.id ? { ...i, name } : i)) }, result: { item: item.id, name } };
+}
+
+/** Removes a library object. Placed copies stay in the scene as ordinary shapes. */
+export function removeLibraryItem(doc: Doc, a: { item: string }): OpResult<{ item: string; keptAsShapes: number }> {
+  const item = itemOf(doc, a.item);
+  const kept = doc.groups.filter((g) => g.libraryId === item.id).length;
+  return { doc: settle({ ...doc, library: doc.library.filter((i) => i.id !== item.id) }), result: { item: item.id, keptAsShapes: kept } };
 }

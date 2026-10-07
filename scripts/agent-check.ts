@@ -182,6 +182,49 @@ const main = async () => {
       check('deleting one member deletes its group (not the others)', left.groups.length === 1 && left.shapes.length === 2, JSON.stringify(left.groups));
     }
   }
+  {
+    // Library: save, place linked copies, move, edit the original, everything follows
+    const L = new Engine();
+    const box = async (x: number, w = 20, h = 10) => ((await L.execute('shape_add', { kind: 'box', x, y: 0, width: w, depth: 20, height: h })) as any).shapes[0].id as string;
+    const [a, b] = [await box(0), await box(30)];
+    const grp = ((await L.execute('group_create', { ids: [a, b], name: 'wing' })) as any).result.group as string;
+    const saved = (await L.execute('library_save', { group: grp })) as any;
+    check('a group saves to the library', saved.ok && saved.result.item && !saved.result.updated, saved.error);
+    const lib = ((await L.execute('library_list')) as any).result.items as any[];
+    check('the library lists it with a size and its copy', lib.length === 1 && lib[0].name === 'wing' && lib[0].shapes === 2 && lib[0].placed.length === 1 && lib[0].size.x === 50, JSON.stringify(lib));
+    const placed = (await L.execute('library_place', { item: lib[0].id, x: 200, y: 0, angle: 90 })) as any;
+    check('placing makes a linked copy', placed.ok && placed.result.shapes.length === 2, placed.error);
+    const scene = async () => ((await L.execute('scene_get')) as any).result;
+    check('two linked copies of two shapes each', (await scene()).shapes.length === 4);
+    const edit = (await L.execute('shape_set', { id: placed.result.shapes[0], height: 30 })) as any;
+    check('a linked shape cannot be edited on its own, and says how to', !edit.ok && /object_unlink/.test(`${edit.error} ${edit.hint}`), edit.error);
+    const before = (await scene()).shapes.map((s: any) => s.center.x);
+    await L.execute('shape_move', { ids: [placed.result.shapes[0]], by: { x: 40 } });
+    const after = (await scene()).shapes.map((s: any) => s.center.x);
+    const movedCount = after.filter((x: number, i: number) => Math.abs(x - before[i] - 40) < 0.02).length;
+    check('moving a linked copy moves only that copy, as one piece', movedCount === 2, `${before} -> ${after}`);
+    // Open the first copy for editing, change it, save: the other copy follows.
+    await L.execute('object_unlink', { group: grp });
+    const sc1 = await scene();
+    const open = sc1.groups.find((g: any) => g.id === grp);
+    check('an opened object is ordinary shapes again', open && !open.linked && sc1.shapes.every((s: any) => s.id !== undefined));
+    const mine = sc1.shapes.find((s: any) => s.id === a || s.id.startsWith(`${grp}~`) || true);
+    const ownIds = sc1.groups.find((g: any) => g.id === grp).shapes as string[];
+    await L.execute('shape_set', { id: ownIds[0], height: 40 });
+    const upd = (await L.execute('library_save', { group: grp })) as any;
+    check('saving an opened object updates the library object', upd.ok && upd.result.updated && upd.result.item === lib[0].id, upd.error);
+    const sc2 = await scene();
+    const tall = sc2.shapes.filter((s: any) => (s.size?.z ?? s.height) === 40 || s.top === 40);
+    check('every linked copy follows the edit', tall.length === 2, JSON.stringify(sc2.shapes.map((s: any) => [s.id, s.top ?? s.size])));
+    void mine;
+    const copyShapes = (await scene()).shapes.filter((s: any) => s.linkedTo).map((s: any) => s.id);
+    const del = (await L.execute('shape_delete', { ids: [copyShapes[0]] })) as any;
+    const sc3 = await scene();
+    check('deleting a linked copy deletes the whole copy, not the library object', del.ok && copyShapes.length === 4 && sc3.shapes.length === 2 && ((await L.execute('library_list')) as any).result.items.length === 1, JSON.stringify([del.error, copyShapes, sc3.shapes.length, sc3.groups.map((g: any) => g.id)]));
+    await L.execute('library_remove', { item: lib[0].id });
+    const sc4 = await scene();
+    check('removing the library object keeps the copy as plain shapes', sc4.shapes.length === 2 && !sc4.groups.some((g: any) => g.linked), JSON.stringify(sc4.groups));
+  }
   const glb = await m.execute('export', { format: 'glb' });
   const gb = Buffer.from((glb.result as any)?.data ?? '', 'base64');
   const gjson = gb.length ? JSON.parse(gb.subarray(20, 20 + gb.readUInt32LE(12)).toString()) : null;

@@ -146,8 +146,19 @@ A group is a named object ("head"). Groups nest (`ShapeGroup.parentId`); a body 
 (`utils/groups.ts`) repairs the rest (groups under two shapes dissolve; contents move up). Tap = the outermost group,
 tap again = one group deeper, then the shape (`pickInGroups`). Dragging, deleting and turning act on the outermost group.
 Rename by tapping the name in the top bar (or `group_rename`). `group_create` nests any group wholly inside the ids.
-GLB export writes the groups as a node tree. Next: a library of objects (project + app-wide; placed copies linked, like
-repeats), then a way to see/rearrange the hierarchy.
+GLB export writes the groups as a node tree.
+
+#### Library (built: project library, linked copies)
+
+`Doc.library` holds `LibraryItem`s: a snapshot of a group (or one shape), centred on the ground at the origin (`templateOf`,
+`utils/library.ts`). A placed copy is a group with `libraryId` + `place` ({x,y,z,angle}); its shapes (`Body3D.instanceOf`) and
+inner groups are *derived* by `syncInstances` in `settle`, exactly like live-repeat copies, so never write them directly.
+Rules: tap picks the whole copy (never steps inside); move/turn only change `place` (`applyTransform`); deleting a copy deletes
+its group; editing one of its shapes is refused with the way out. **Edit** (`object_unlink`) turns a copy into ordinary
+shapes that remember the item; **Save** (`library_save`) on it updates the item and every copy follows; **Separate**
+(`forget`) cuts the link. Removing an item leaves its copies as plain shapes. Tools: `library_list/save/place/rename/remove`,
+`object_unlink`. Next: an app-wide library (localStorage + export/import, same item shape), item thumbnails, per-copy colour overrides,
+saving wall shapes, and a hierarchy view.
 
 ### Picking things that are buried
 

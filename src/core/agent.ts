@@ -88,10 +88,10 @@ function runOne(host: AgentHost, doc: Doc, ids: IdGen, name: string, args: unkno
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, any>;
   switch (name) {
     case 'doc_get':
-      return { doc, result: { bodies: doc.bodies, groups: doc.groups, repeats: doc.repeats }, changed: false };
+      return { doc, result: { bodies: doc.bodies, groups: doc.groups, repeats: doc.repeats, library: doc.library }, changed: false };
     case 'doc_set': {
       const next = parseDoc(a.doc);
-      if (!next) throw new AgentError('doc must be a document from doc_get: { bodies: [...], groups: [...], repeats: [...] }.');
+      if (!next) throw new AgentError('doc must be a document from doc_get: { bodies: [...], groups: [...], repeats: [...], library: [...] }.');
       return { doc: next, result: { shapes: next.bodies.filter((b) => !b.repeatOf).length }, changed: true };
     }
     case 'doc_clear':
@@ -108,7 +108,7 @@ function runOne(host: AgentHost, doc: Doc, ids: IdGen, name: string, args: unkno
     }
     case 'export': {
       const bodies = doc.bodies;
-      if (a.format === 'json') return { doc, result: { format: 'json', filename: 'craft3d.json', text: JSON.stringify({ bodies: doc.bodies, groups: doc.groups, repeats: doc.repeats }) }, changed: false };
+      if (a.format === 'json') return { doc, result: { format: 'json', filename: 'craft3d.json', text: JSON.stringify({ bodies: doc.bodies, groups: doc.groups, repeats: doc.repeats, library: doc.library }) }, changed: false };
       if (a.format === 'obj') {
         const text = objText(bodies);
         if (!text) throw new AgentError('Nothing visible to export.');

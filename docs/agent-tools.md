@@ -251,6 +251,72 @@ _changes the model · headless and live_
 | `group` | string | required |
 | `name` | string | required |
 
+## `library_list`
+
+The project library: reusable objects with their size and how many linked copies are placed.
+
+_read-only · headless and live_
+
+## `library_save`
+
+Save a group (or one ungrouped shape) to the project library under its name. It stays in the scene as the first linked copy. If the group was opened with object_unlink it updates its library object instead, and every linked copy follows.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `group` | string |  |
+| `id` | string | A single ungrouped shape, when there is no group. |
+| `name` | string |  |
+
+## `library_place`
+
+Place a linked copy of a library object (default: beside the scene; or on top of a shape). A linked copy moves, turns and deletes as one piece and follows its library object; to change the object use object_unlink then library_save.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `item` | string | required |
+| `x` | number |  |
+| `y` | number |  |
+| `z` | number |  |
+| `angle` | number | Degrees, counter-clockwise from above. |
+| `onTopOf` | string |  |
+| `name` | string |  |
+
+## `object_unlink`
+
+Open a linked copy for editing: its shapes become ordinary, you edit them, then library_save the group to update the library object (all copies follow). With forget:true it becomes separate shapes for good.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `group` | string | required |
+| `forget` | boolean |  |
+
+## `library_rename`
+
+Rename a library object.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `item` | string | required |
+| `name` | string | required |
+
+## `library_remove`
+
+Remove a library object. Its placed copies stay as ordinary shapes.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `item` | string | required |
+
 ## `group_remove`
 
 Dissolve one group (its shapes and inner groups stay, moving up into the group around it).

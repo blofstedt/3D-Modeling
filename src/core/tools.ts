@@ -6,7 +6,7 @@
 import { Body3D } from '../types';
 import { Doc, IdGen } from './doc';
 import { fail } from './errors';
-import { describeEdgesOf, describeFaces, meshReport, sceneSummary, summarize } from './inspect';
+import { describeEdgesOf, describeFaces, libraryItems, meshReport, sceneSummary, summarize } from './inspect';
 import * as ops from './ops';
 
 /** A JSON-Schema-described command an agent can call. These specs are what MCP and LLM tool-use want. */
@@ -175,6 +175,29 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   { name: 'group_create', description: 'Group shapes so they select, move and turn together, and give the group a name (it becomes the object name in GLB export). Groups nest: a group that is wholly inside the ids is put inside the new one, so group "head" + "body" makes one "character".', inputSchema: obj({ ids, name: { type: 'string' } }, ['ids']) },
   { name: 'group_rename', description: 'Rename a group (e.g. "head"). Find group ids with scene_get.', inputSchema: obj({ group: { type: 'string' }, name: { type: 'string' } }, ['group', 'name']) },
+  {
+    name: 'library_list',
+    description: 'The project library: reusable objects with their size and how many linked copies are placed.',
+    inputSchema: obj({}),
+    readOnly: true,
+  },
+  {
+    name: 'library_save',
+    description: 'Save a group (or one ungrouped shape) to the project library under its name. It stays in the scene as the first linked copy. If the group was opened with object_unlink it updates its library object instead, and every linked copy follows.',
+    inputSchema: obj({ group: { type: 'string' }, id: { type: 'string', description: 'A single ungrouped shape, when there is no group.' }, name: { type: 'string' } }),
+  },
+  {
+    name: 'library_place',
+    description: 'Place a linked copy of a library object (default: beside the scene; or on top of a shape). A linked copy moves, turns and deletes as one piece and follows its library object; to change the object use object_unlink then library_save.',
+    inputSchema: obj({ item: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }, angle: { type: 'number', description: 'Degrees, counter-clockwise from above.' }, onTopOf: { type: 'string' }, name: { type: 'string' } }, ['item']),
+  },
+  {
+    name: 'object_unlink',
+    description: 'Open a linked copy for editing: its shapes become ordinary, you edit them, then library_save the group to update the library object (all copies follow). With forget:true it becomes separate shapes for good.',
+    inputSchema: obj({ group: { type: 'string' }, forget: { type: 'boolean' } }, ['group']),
+  },
+  { name: 'library_rename', description: 'Rename a library object.', inputSchema: obj({ item: { type: 'string' }, name: { type: 'string' } }, ['item', 'name']) },
+  { name: 'library_remove', description: 'Remove a library object. Its placed copies stay as ordinary shapes.', inputSchema: obj({ item: { type: 'string' } }, ['item']) },
   { name: 'group_remove', description: 'Dissolve one group (its shapes and inner groups stay, moving up into the group around it).', inputSchema: obj({ group: { type: 'string' } }, ['group']) },
   {
     name: 'shapes_join',
@@ -297,8 +320,20 @@ export function runDocTool(ctx: ToolContext, name: string, rawArgs: unknown): To
       return done(ops.groupShapes(doc, ids, a as { ids: string[] }));
     case 'group_rename':
       return done(ops.renameGroup(doc, a as { group: string; name: string }));
+    case 'library_list':
+      return { doc: ctx.doc, result: { items: libraryItems(doc) } };
+    case 'library_save':
+      return done(ops.saveToLibrary(doc, ids, a as { group?: string; id?: string; name?: string }));
+    case 'library_place':
+      return done(ops.placeFromLibrary(doc, ids, a as ops.PlaceArgs));
+    case 'object_unlink':
+      return done(ops.unlinkObject(doc, ids, a as { group: string; forget?: boolean }));
+    case 'library_rename':
+      return done(ops.renameLibraryItem(doc, a as { item: string; name: string }));
+    case 'library_remove':
+      return done(ops.removeLibraryItem(doc, a as { item: string }));
     case 'group_remove':
-      return done(ops.ungroupShapes(doc, a as { group: string }));
+      return done(ops.ungroupShapes(doc, ids, a as { group: string }));
     case 'shapes_join':
       return done(ops.joinShapes(doc, ids, a as { ids: string[] }));
     case 'shapes_subtract':

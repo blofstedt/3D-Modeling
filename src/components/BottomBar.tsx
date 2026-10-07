@@ -57,6 +57,10 @@ interface BottomBarProps {
   /** True when the next shape will be placed on the selected top face. */
   addOnTop: boolean;
   onAddShape: (kind: ShapeKind) => void;
+  /** The project's saved objects: tapping one places a linked copy. */
+  library: { id: string; name: string; shapes: number }[];
+  onPlaceItem: (id: string) => void;
+  onRemoveItem: (id: string) => void;
   onToggleMove: () => void;
   onIsolate: () => void;
   /** The selection is already a group, so the Group tool becomes Ungroup. */
@@ -166,6 +170,37 @@ export default function BottomBar(props: BottomBarProps) {
               );
             })}
           </div>
+          {props.library.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-white/8">
+              <p className="px-2 pb-2 text-xs text-slate-400">Your objects · placed copies stay linked</p>
+              <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+                {props.library.map((item) => (
+                  <div key={item.id} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        props.onPlaceItem(item.id);
+                        props.setOpenId(null);
+                      }}
+                      className="flex-1 min-w-0 h-11 px-4 rounded-full bg-white/6 hover:bg-white/12 text-left text-sm font-medium text-slate-100 flex items-center gap-2 transition-colors"
+                    >
+                      <span className="truncate">{item.name}</span>
+                      <span className="ml-auto text-[11px] text-slate-400">{item.shapes} {item.shapes === 1 ? 'shape' : 'shapes'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => props.onRemoveItem(item.id)}
+                      aria-label={`Remove ${item.name} from the library`}
+                      title="Remove from the library (placed copies stay as shapes)"
+                      className="w-11 h-11 shrink-0 rounded-full text-slate-400 hover:text-rose-300 hover:bg-rose-500/15 flex items-center justify-center transition-colors"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </MenuButton>
 
