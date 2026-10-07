@@ -118,6 +118,23 @@ shape's *own space*, and `frameMatrix(frame)` (utils/frame.ts) stands that space
   Each is refused or hidden rather than half-working. Supporting them means doing that conversion in the matching code.
 - Position X/Y/Z are hidden in the properties bar for them (the size boxes read Across / Up / Out instead).
 
+### Bevels (curved / flat)
+
+Edges beveled alike that meet at a corner are merged into one cutter (`joinBevelRuns` in `utils/bodyGeometry.ts`):
+separate cutters overlapped at corners and left cracks and doubled faces (dark specks, non-watertight STL). `npm test`
+checks that rims, partial runs, L-shapes and holes are watertight; keep that true. Sizes are honest: you can't set a
+size the shape won't show (`maxBevelSize`), a first bevel is visible (`defaultBevelSize`), and the picker/label says
+"largest that fits". The highlight on a beveled rim hugs the bevel and mitres at corners.
+Known gap: neighbouring edges with *different* sizes still use separate cutters and can crack at the corner.
+A variable-size sweep (a step at the joint) would fix it.
+
+### Picking things that are buried
+
+`See through` (X, under the view cube) makes every shape glassy and picks the innermost shape under the pointer;
+Alt-click picks the next shape behind. The selected shape's outline ignores depth. I could not confirm how Tinkercad
+handles this (a web search found nothing specific); the approach follows common CAD conventions (x-ray, pick-behind).
+Not done: box (marquee) selection, which would also reach buried shapes but needs a gesture that doesn't clash with orbit.
+
 ### 3. Autora integration
 
 The Autora repo isn't available in this environment, so no assumptions about its interface are baked in.

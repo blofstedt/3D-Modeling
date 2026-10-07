@@ -6,7 +6,7 @@ import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, wallEnds, withOutline } from '../src/utils/outline';
-import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
+import { applyEdgeChange, defaultBevelSize, maxBevelSize, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
 import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
@@ -318,6 +318,60 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   check('moving a wall shape moves its frame, not its outline', carried.frame!.x === 15 && carried.frame!.y === -15 && carried.frame!.h === 12 && carried.points === wallBody.points);
   const turned = moveFrame(f, { dx: 0, dy: 0, dz: 0, angle: Math.PI / 2, cx: 0, cy: 0 });
   check('turning a wall shape turns where it points', near(turned.angle, f.angle + Math.PI / 2, 1e-9));
+}
+
+
+// Bevels: edges beveled alike that meet at a corner must make one clean, closed solid (no cracks, no doubled faces).
+{
+  const boundaryEdges = (b: Body3D) => {
+    const g = buildBodyGeometry(b)!;
+    const pos = g.attributes.position;
+    const n = g.index ? g.index.count : pos.count;
+    const key = (i: number) => `${Math.round(pos.getX(i) * 1000)},${Math.round(pos.getY(i) * 1000)},${Math.round(pos.getZ(i) * 1000)}`;
+    const edges = new Map<string, number>();
+    for (let t = 0; t < n / 3; t++) {
+      const v = [0, 1, 2].map((k) => key(g.index ? g.index.getX(t * 3 + k) : t * 3 + k));
+      for (let k = 0; k < 3; k++) {
+        const a = v[k];
+        const c = v[(k + 1) % 3];
+        if (a === c) continue;
+        const e = a < c ? `${a}|${c}` : `${c}|${a}`;
+        edges.set(e, (edges.get(e) ?? 0) + 1);
+      }
+    }
+    let bad = 0;
+    edges.forEach((c) => {
+      if (c !== 2) bad++;
+    });
+    return bad;
+  };
+  const bev = (n: number, side: 'top' | 'bottom', size: number, style: 'round' | 'chamfer') => Array.from({ length: n }, (_, i) => ({ side, edge: i, size, style }));
+  const box = body({ points: rect(-40, -30, 40, 30), basePoints: rect(-40, -30, 40, 30) });
+  check('a rim of rounded edges is watertight', boundaryEdges({ ...box, edgeBevels: bev(4, 'top', 8, 'round') }) === 0);
+  check('a rim of flat bevels is watertight', boundaryEdges({ ...box, edgeBevels: bev(4, 'top', 8, 'chamfer') }) === 0);
+  check('top and bottom rims together are watertight', boundaryEdges({ ...box, edgeBevels: [...bev(4, 'top', 6, 'chamfer'), ...bev(4, 'bottom', 6, 'round')] }) === 0);
+  check('two neighbouring edges are watertight', boundaryEdges({ ...box, edgeBevels: bev(2, 'top', 8, 'round') }) === 0);
+  check('three edges are watertight', boundaryEdges({ ...box, edgeBevels: bev(3, 'top', 8, 'chamfer') }) === 0);
+  const ell = [{ x: -40, y: -40 }, { x: 40, y: -40 }, { x: 40, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 40 }, { x: -40, y: 40 }];
+  check('an L-shaped rim (an inside corner) is watertight', boundaryEdges(body({ points: ell, basePoints: ell, edgeBevels: bev(6, 'top', 6, 'round') })) === 0);
+  const hole = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+  check('a rim round a hole is watertight', boundaryEdges({ ...box, holes: [hole], edgeBevels: bev(4, 'top', 5, 'chamfer') }) === 0);
+  const rimmed = buildBodyGeometry({ ...box, edgeBevels: bev(4, 'top', 8, 'round') })!;
+  const sep = buildBodyGeometry({ ...box, edgeBevels: bev(1, 'top', 8, 'round') })!;
+  check('a rim is far lighter than four separate cuts', rimmed.attributes.position.count < sep.attributes.position.count * 4);
+}
+
+
+// Bevel sizes are honest: you cannot set one the shape will not show, and a first one is visible.
+{
+  const box = body({ points: rect(-40, -30, 40, 30), basePoints: rect(-40, -30, 40, 30), extrusionHeight: 30 });
+  const top = { bodyId: 't', kind: 'top' as const, index: 0 };
+  check('the largest bevel is half the height', near(maxBevelSize(box, [top]), 14.95, 0.01), String(maxBevelSize(box, [top])));
+  const huge = { ...box, ...applyEdgeChange(box, [top], { size: 25, style: 'round' }) };
+  check('a bevel set too large is held at the largest that fits', near(edgeSize(huge, top), 14.95, 0.01), String(edgeSize(huge, top)));
+  const first = { ...box, ...applyEdgeChange(box, [top], { style: 'chamfer' }) };
+  check('a first bevel is visible, not a hairline', edgeSize(first, top) >= 3, String(edgeSize(first, top)));
+  check('the default grows with the shape but stays modest', defaultBevelSize({ ...box, extrusionHeight: 400 }) <= 6 && defaultBevelSize({ ...box, extrusionHeight: 6 }) < 1.5);
 }
 
 if (failures) {

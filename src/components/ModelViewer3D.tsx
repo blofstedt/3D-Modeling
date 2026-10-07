@@ -15,13 +15,14 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Frame, Point2D, RepeatSession } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
-import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
+import { EdgePath, defaultBevelSize, maxBevelSize, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
 import { DrawApi, createDrawTool } from './drawTool';
 import { DrawnOutline } from '../utils/draw';
 import { frameMatrix, frameNormal } from '../utils/frame';
 import { BodyTransform, scaleBodyAbout, selectionBounds, transformBody } from '../utils/transform';
 import { bendHandle, bendThrough, copyTransforms, stops, withCopies } from '../utils/repeat';
+import { Eye } from 'lucide-react';
 import ViewCube, { CubeFace } from './ViewCube';
 
 type GizmoKind = 'repeat-end' | 'repeat-bend' | 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'scale-corner' | 'edge-size' | 'rotate' | 'move-axis';
@@ -97,6 +98,9 @@ export interface ModelViewer3DProps {
   repeat: RepeatSession | null;
   onUpdateRepeat: React.Dispatch<React.SetStateAction<RepeatSession | null>>;
   onFinishRepeat: () => void;
+  /** See-through mode: every shape turns glassy so what is inside another shape can be seen and picked. */
+  xray: boolean;
+  onToggleXray: () => void;
   /** The open Draw sketch, or null. The viewer shows it and reads the pointer; the app owns it. */
   draw: DrawSession | null;
   onUpdateDraw: (next: DrawSession) => void;
@@ -190,6 +194,8 @@ function disposeObject(root: THREE.Object3D) {
   root.traverse((obj) => {
     const o = obj as THREE.Mesh;
     if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    // A shape's see-through twin is not on the mesh while it is hidden: let go of it too.
+    (o.userData?.ghost as THREE.Material | undefined)?.dispose();
     const m = o.material;
     const dispose = (mat: THREE.Material) => {
       if (mat.userData.shared) return;
@@ -318,6 +324,8 @@ export default function ModelViewer3D({
   repeat,
   onUpdateRepeat,
   onFinishRepeat,
+  xray,
+  onToggleXray,
   draw,
   onUpdateDraw,
   onFinishDraw,
@@ -371,13 +379,14 @@ export default function ModelViewer3D({
     window.clearTimeout(readoutTimer.current);
     if (!hold) readoutTimer.current = window.setTimeout(() => setReadout(null), 3000);
   }, []);
-  const pickerDrag = useRef<{ startY: number; start: number; sels: EdgeSel[] } | null>(null);
+  const pickerDrag = useRef<{ startY: number; start: number; sels: EdgeSel[]; limit: number } | null>(null);
   const placePanelRef = useRef<() => void>(() => {});
   /** When the handles last popped in (ms), and the selection they popped in for. */
   const popRef = useRef<{ start: number } | null>(null);
   const popKeyRef = useRef('');
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
+  const applyXrayRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
   const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean, from?: THREE.Vector3, focus?: { center: THREE.Vector3; radius: number }) => void>(() => {});
   const knownIdsRef = useRef<Set<string> | null>(null);
@@ -406,6 +415,8 @@ export default function ModelViewer3D({
     onEdgeChange,
     onUpdateRepeat,
     onFinishRepeat,
+    xray,
+    onToggleXray,
     draw,
     onUpdateDraw,
     onFinishDraw,
@@ -605,8 +616,9 @@ export default function ModelViewer3D({
       }
       candidates.sort((c1, c2) => c1.dist - c2.dist);
 
-      // Skip edges hidden behind the body.
+      // Skip edges hidden behind the body (in see-through mode nothing hides anything).
       for (const c of candidates.slice(0, 6)) {
+        if (live.current.xray) return c.sel;
         const toPoint = c.point.clone().sub(camera.position);
         const dist = toPoint.length();
         raycaster.set(camera.position, toPoint.normalize());
@@ -640,7 +652,39 @@ export default function ModelViewer3D({
     };
 
     // ---- Hit testing: handles first, then edges, then solids ---------------
-    const resolveHit = (clientX: number, clientY: number): Hit | null => {
+    /** Which shape a ray at this spot picks: the nearest; in see-through mode the smallest (the one inside); Alt-click, the next one behind. */
+    const chooseBodyHit = (hits: THREE.Intersection[], behind: boolean): THREE.Intersection | undefined => {
+      const meshes = hits.filter((h) => h.object instanceof THREE.Mesh);
+      const rootOf = (h: THREE.Intersection) => {
+        let obj: THREE.Object3D | null = h.object;
+        while (obj && !obj.userData.bodyId) obj = obj.parent;
+        const id: string | undefined = obj?.userData.bodyId;
+        return id ? bodyOf(id)?.repeatOf ?? id : undefined;
+      };
+      const firstPerShape = new Map<string, THREE.Intersection>();
+      meshes.forEach((h) => {
+        const id = rootOf(h);
+        if (id && !firstPerShape.has(id)) firstPerShape.set(id, h);
+      });
+      const stack = [...firstPerShape.entries()];
+      if (!stack.length) return undefined;
+      if (behind) {
+        const sel = live.current.selectedBodyIds;
+        const at = stack.findIndex(([id]) => sel.includes(id));
+        return stack[(at + 1) % stack.length][1];
+      }
+      if (live.current.xray && stack.length > 1) {
+        const volume = (id: string) => {
+          const b = bodyOf(id);
+          const bb = b && selectionBounds([b]);
+          return b && bb ? (bb.maxX - bb.minX) * (bb.maxY - bb.minY) * b.extrusionHeight : Infinity;
+        };
+        return stack.reduce((best, cur) => (volume(cur[0]) < volume(best[0]) ? cur : best))[1];
+      }
+      return stack[0][1];
+    };
+
+    const resolveHit = (clientX: number, clientY: number, behind = false): Hit | null => {
       setRay(clientX, clientY);
 
       if (live.current.repeat) {
@@ -663,11 +707,12 @@ export default function ModelViewer3D({
         }
       }
 
-      const sel = pickEdge(clientX, clientY);
+      // Alt-click is about shapes, not edges: it goes straight to the one behind.
+      const sel = behind ? null : pickEdge(clientX, clientY);
       if (sel) return { type: 'edge', sel };
       setRay(clientX, clientY);
 
-      const hit = raycaster.intersectObjects(bodyGroup.children, true)[0];
+      const hit = chooseBodyHit(raycaster.intersectObjects(bodyGroup.children, true), behind);
       if (!hit) return null;
       let obj: THREE.Object3D | null = hit.object;
       while (obj && !obj.userData.bodyId) obj = obj.parent;
@@ -718,14 +763,37 @@ export default function ModelViewer3D({
         const root = entry.body.repeatOf ?? bodyId;
         const selected = root === id || ids.includes(root);
         const hovered = root === hoverBodyId;
-        entry.outline.visible = selected || hovered;
-        (entry.outline.material as THREE.LineBasicMaterial).opacity = selected ? 1 : 0.45;
+        const see = live.current.xray;
+        entry.outline.visible = selected || hovered || see;
+        const line = entry.outline.material as THREE.LineBasicMaterial;
+        line.opacity = selected ? 1 : see ? 0.6 : 0.45;
+        // What is selected shows through whatever covers it, so a shape buried inside another is never lost.
+        line.depthTest = !selected;
+        entry.outline.renderOrder = selected ? 36 : 0;
+        const mesh = entry.group.children[0] as THREE.Mesh;
+        const ghost = mesh.userData.ghost as THREE.MeshStandardMaterial | undefined;
+        if (ghost) ghost.opacity = selected ? 0.42 : 0.2;
       });
       invalidate();
     };
     refreshOutlinesRef.current = refreshOutlines;
 
+    /** Swaps every shape between solid and see-through. */
+    const applyXray = () => {
+      const see = live.current.xray;
+      entriesRef.current.forEach((entry) => {
+        const mesh = entry.group.children[0] as THREE.Mesh;
+        mesh.material = see ? mesh.userData.ghost : mesh.userData.solid;
+        mesh.castShadow = !see;
+        mesh.receiveShadow = !see;
+      });
+      refreshOutlines();
+      invalidate(true);
+    };
+    applyXrayRef.current = applyXray;
+
     const idleHint = () => {
+      if (live.current.xray && !live.current.selectedBodyIds.length) return 'See-through is on: tap anything, even inside another shape · X turns it off';
       if (live.current.draw) return 'Tap to place corners · drag a side to curve it · tap the green corner to finish';
       if (live.current.repeat) return 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels';
       if (live.current.moveOn && live.current.selectedBodyIds.length) return 'Drag an arrow to move along X, Y or Z · two-finger tap to hide';
@@ -1055,9 +1123,11 @@ export default function ModelViewer3D({
         if ((d.moved ?? 0) <= CLICK_SLOP_PX) return; // a tap opens the picker; only a real drag resizes
         setPickerOpen(false);
         const raw = d.initialSize! + (d.startClientY - m.y) * d.mmPerPixel * 0.35;
-        const next = clamp(Math.round(raw * 2) / 2, 0, 30);
+        const owner = bodyOf(d.sels![0].bodyId);
+        const limit = owner && !d.sels!.every((x) => x.kind === 'corner') ? maxBevelSize(owner, d.sels!) : 30;
+        const next = clamp(Math.round(raw * 2) / 2, 0, limit);
         live.current.onEdgeChange(d.sels!, { size: next });
-        text = next > 0 ? `Size ${next} mm` : 'No bevel';
+        text = next <= 0 ? 'No bevel' : next >= limit ? `Size ${next} mm · largest that fits` : `Size ${next} mm`;
       } else if (d.kind === 'corner') {
         const body = bodyOf(d.bodyId);
         const cur = intersectPlane(m.x, m.y, d.planeY!, d.frame);
@@ -1222,7 +1292,7 @@ export default function ModelViewer3D({
         return;
       }
       if (e.button !== 0) return;
-      const hit = resolveHit(e.clientX, e.clientY);
+      const hit = resolveHit(e.clientX, e.clientY, e.altKey);
       candidate = { x: e.clientX, y: e.clientY, hit, pointerId: e.pointerId };
       if (!hit) return; // empty space: let OrbitControls take it
 
@@ -1633,7 +1703,10 @@ export default function ModelViewer3D({
 
       const geometry = buildBodyGeometry(body, { fast });
       if (!geometry) return;
-      const mesh = new THREE.Mesh(geometry, createMaterial(body));
+      const solid = createMaterial(body);
+      const mesh = new THREE.Mesh(geometry, solid);
+      mesh.userData.solid = solid;
+      mesh.userData.ghost = new THREE.MeshStandardMaterial({ color: body.color, roughness: 0.6, transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide });
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       const outline = new THREE.LineSegments(
@@ -1651,8 +1724,7 @@ export default function ModelViewer3D({
       group.add(root);
       entries.set(id, { body, root, group: bodyGroup, outline, signature });
     });
-    refreshOutlinesRef.current();
-    invalidateRef.current(true);
+    applyXrayRef.current();
 
     // A newly added shape may land outside the view: bring everything back into frame, keeping the angle.
     const known = knownIdsRef.current;
@@ -1664,6 +1736,9 @@ export default function ModelViewer3D({
   useEffect(() => {
     refreshOutlinesRef.current();
   }, [selectedBodyId, selectedBodyIds, isSceneReady]);
+  useEffect(() => {
+    applyXrayRef.current();
+  }, [xray, isSceneReady]);
 
   const repeating = !!repeat;
   const drawing = !!draw;
@@ -2157,18 +2232,21 @@ export default function ModelViewer3D({
   const beginPickerDrag = (style: BevelStyle, e: React.PointerEvent<HTMLElement>) => {
     if (!pickerBody) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const start = Math.max(edgeSize(pickerBody, primaryEdge(selectedEdges)), DEFAULT_BEVEL_SIZE);
-    pickerDrag.current = { startY: e.clientY, start, sels: selectedEdges };
+    const limit = maxBevelSize(pickerBody, selectedEdges);
+    const current = edgeSize(pickerBody, primaryEdge(selectedEdges));
+    // A first press gives a bevel you can actually see; pressing the other style keeps the size you had.
+    const start = Math.min(limit, current > 0 ? current : defaultBevelSize(pickerBody));
+    pickerDrag.current = { startY: e.clientY, start, sels: selectedEdges, limit };
     onDragStateChange?.(true);
     onEdgeChange(selectedEdges, { style, size: start });
   };
   const movePickerDrag = (e: React.PointerEvent<HTMLElement>) => {
     const d = pickerDrag.current;
     if (!d) return;
-    const size = clamp(Math.round((d.start + (d.startY - e.clientY) * mmPerPixelRef.current() * 0.35) * 2) / 2, 0, MAX_BEVEL_SIZE);
+    const size = clamp(Math.round((d.start + (d.startY - e.clientY) * mmPerPixelRef.current() * 0.35) * 2) / 2, 0, d.limit);
     onEdgeChange(d.sels, { size });
     const rect = mountRef.current?.getBoundingClientRect();
-    setDragLabel({ text: size > 0 ? `${size} mm` : 'No bevel', x: e.clientX - (rect?.left ?? 0) + 24, y: e.clientY - (rect?.top ?? 0) - 40 });
+    setDragLabel({ text: size <= 0 ? 'No bevel' : size >= d.limit ? `${size} mm · largest that fits` : `${size} mm`, x: e.clientX - (rect?.left ?? 0) + 24, y: e.clientY - (rect?.top ?? 0) - 40 });
   };
   const endPickerDrag = () => {
     if (!pickerDrag.current) return;
@@ -2251,7 +2329,21 @@ export default function ModelViewer3D({
         camera={isSceneReady ? cameraRef.current : null}
         onSelectFace={handleSelectCameraAngle}
         onResetCamera={() => handleSelectCameraAngle('iso')}
-      />
+      >
+        <button
+          type="button"
+          onClick={onToggleXray}
+          aria-pressed={xray}
+          aria-label="See through shapes"
+          title="See through every shape, to pick what is inside another (X). Alt-click picks what is behind."
+          className={`h-7 px-2.5 rounded-full border flex items-center gap-1.5 text-xs transition-colors ${
+            xray ? 'bg-accent-500 border-accent-300 text-white' : 'bg-slate-800/90 border-white/10 text-slate-300 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Eye size={13} />
+          See through
+        </button>
+      </ViewCube>
 
       {dragLabel && (
         <div

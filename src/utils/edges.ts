@@ -117,14 +117,24 @@ function loopEdges(body: Body3D, ctx: Loop, bottom: number, top: number): EdgePa
       const inset = own > 0 ? own * (ownBevel!.style === 'round' ? 0.18 : 0.4) : 0;
       const y0 = kind === 'top' ? top : bottom;
       const sign = kind === 'top' ? -1 : 1;
+      // Where the next edge round the corner is beveled just the same, the two highlight lines meet at one mitred point
+      // (each used to stop square to its own edge, leaving little crosses at every corner of a rim).
+      const sameAs = (side: number) => {
+        const nb = side >= 0 ? findBevel(body, kind, offset + runId(sideRun(outline, n, side))) : undefined;
+        return !!nb && !!ownBevel && nb.style === ownBevel.style && Math.abs(effectiveSize(body, nb) - own) < 0.01;
+      };
       const line = pts.map((p, i) => {
         if (inset <= 0) return { x: p.x, y: y0, z: -p.y };
         const prev = i > 0 ? pts[i - 1] : closed ? pts[pts.length - 1] : null;
         const next = i < pts.length - 1 ? pts[i + 1] : closed ? pts[0] : null;
-        const a = prev ? outwardNormal(prev, p, away) : null;
-        const b = next ? outwardNormal(p, next, away) : null;
-        const nx = ((a?.x ?? b!.x) + (b?.x ?? a!.x)) / 2;
-        const ny = ((a?.y ?? b!.y) + (b?.y ?? a!.y)) / 2;
+        const startNb = !prev && ends && sameAs(ends.beforeSide) ? outwardNormal(outline.points[(ends.start - 1 + m) % m], p, away) : null;
+        const endNb = !next && ends && sameAs(ends.afterSide) ? outwardNormal(p, outline.points[(ends.end + 2) % m], away) : null;
+        const a = prev ? outwardNormal(prev, p, away) : startNb;
+        const b = next ? outwardNormal(p, next, away) : endNb;
+        const a2 = a ?? b!;
+        const b2 = b ?? a!;
+        const nx = (a2.x + b2.x) / 2;
+        const ny = (a2.y + b2.y) / 2;
         const len = Math.hypot(nx, ny) || 1;
         return { x: p.x - (nx / len) * inset, y: y0 + sign * inset, z: -(p.y - (ny / len) * inset) };
       });
@@ -289,10 +299,12 @@ export function applyEdgeChange(
       continue;
     }
     if (!existing && patch.size === undefined && patch.style === undefined) continue;
+    // What you set is what you get: a size beyond what the shape allows is held at the largest that fits.
+    const cap = Math.max(0.5, Math.min(MAX_BEVEL_SIZE, bevelLimit(body, sel.index)));
     const next: EdgeBevel = {
       side: sel.kind,
       edge: sel.index,
-      size: Math.min(MAX_BEVEL_SIZE, patch.size ?? existing?.size ?? DEFAULT_BEVEL_SIZE),
+      size: patch.size !== undefined ? Math.min(cap, patch.size) : existing?.size ?? Math.min(cap, defaultBevelSize(body)),
       style: patch.style ?? existing?.style ?? 'round',
     };
     bevels = existing ? bevels.map((b) => (b === existing ? next : b)) : [...bevels, next];
@@ -419,3 +431,42 @@ export function toggleEdge(current: EdgeSel[], sel: EdgeSel): EdgeSel[] {
 
 /** The edge whose size and style the controls show: a top or bottom edge if there is one, else the first. */
 export const primaryEdge = (sels: EdgeSel[]): EdgeSel => sels.find((e) => e.kind !== 'corner') ?? sels[0];
+
+/** How large a bevel on this run can get: not more than half the body's height, nor than the rounding it wraps around. */
+export function runLimit(height: number, outline: Outline, run: number[], n: number, offset: number): number {
+  let size = height / 2 - 0.05;
+  const corners = outline.radii.filter((r, v) => r > 0 && run.includes(v) && run.includes((v - 1 + n) % n));
+  if (offset > 0) {
+    // A hole's cutter reaches `size + 1` into the hole, so it has to stay well inside it.
+    const xs = outline.points.map((p) => p.x);
+    const ys = outline.points.map((p) => p.y);
+    size = Math.min(size, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
+    if (corners.length) size = Math.min(size, Math.min(...corners) - 1.2);
+  } else if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+  return size;
+}
+
+/** The largest size the bevel on this edge can have before it stops growing. */
+export function bevelLimit(body: Body3D, edge: number): number {
+  const found = loopFor(body, edge);
+  if (!found) return Infinity;
+  const { loop, local } = found;
+  const n = loop.base.length;
+  if (local >= n) return Infinity;
+  return Math.max(0, runLimit(Math.max(1, body.extrusionHeight), loop.outline, sideRun(loop.outline, n, local), n, loop.offset));
+}
+
+
+/** The largest size every selected edge can take at once (corner rounding has its own, larger, range). */
+export function maxBevelSize(body: Body3D, sels: EdgeSel[]): number {
+  const limits = sels.filter((s) => s.kind !== 'corner').map((s) => bevelLimit(body, s.index));
+  return Math.max(0.5, Math.min(MAX_BEVEL_SIZE, ...limits));
+}
+
+/** A first bevel you can see: about an eighth of the shape's smallest size, so it reads at once without eating the shape. */
+export function defaultBevelSize(body: Body3D): number {
+  const xs = body.points.map((p) => p.x);
+  const ys = body.points.map((p) => p.y);
+  const smallest = Math.min(body.extrusionHeight, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  return Math.max(1, Math.min(6, Math.round((smallest / 8) * 2) / 2));
+}

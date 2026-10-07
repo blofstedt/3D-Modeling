@@ -179,6 +179,9 @@ export default function App() {
   /** The open Draw: a sketch on the ground or on the top of a shape, until it becomes a shape or is dropped. */
   const [draw, setDraw] = useState<DrawSession | null>(null);
 
+  /** See-through mode: shapes turn glassy so what is inside another shape can be picked. */
+  const [xray, setXray] = useState(false);
+
   const editingRepeatOf = repeat?.bodyId ?? null;
 
   // Isolation hides the rest of the scene from the viewport.
@@ -796,6 +799,9 @@ export default function App() {
       case 'd':
         handleToggleDraw();
         break;
+      case 'x':
+        setXray((v) => !v);
+        break;
       case 'g':
         if (joinedSelected) notify('This is a joined shape: it already moves as one.');
         else if (selectedGroupId) handleUngroup(selectedGroupId);
@@ -898,6 +904,8 @@ export default function App() {
                   repeat={repeat}
                   onUpdateRepeat={setRepeat}
                   onFinishRepeat={handleFinishRepeat}
+                  xray={xray}
+                  onToggleXray={() => setXray((v) => !v)}
                   draw={draw}
                   onUpdateDraw={setDraw}
                   onFinishDraw={handleFinishDraw}

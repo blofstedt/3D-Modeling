@@ -9,7 +9,7 @@ import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.j
 import { BevelStyle, Body3D, Point2D } from '../types';
 import { cleanPolygonPoints, ensureWinding } from './geometry';
 import { getOutline, outwardNormal, runId, runPath, sideRun } from './outline';
-import { loopFor } from './edges';
+import { loopFor, runLimit } from './edges';
 import { buildCornerCutter } from './cornerBevel';
 
 const toPath = <T extends THREE.Path>(path: T, pts: { x: number; y: number }[]): T => {
@@ -35,7 +35,7 @@ export function buildBodyShape(body: Body3D): THREE.Shape | null {
 // Bevel cutters
 // ---------------------------------------------------------------------------
 
-const ARC_STEPS = 8;
+const ARC_STEPS = 12;
 
 /** Cross-section (h = outward, v = up) of the material a bevel removes at a top edge. */
 function bevelProfile(size: number, style: BevelStyle): THREE.Vector2[] {
@@ -215,6 +215,68 @@ interface ResolvedBevel {
   ends: { start?: Point2D; end?: Point2D };
   /** Overrides the outline's winding (a hole's material is on the other side of its loop). */
   winding?: 1 | -1;
+  /** Which loop of the outline (the outer edge, or one of the holes) the path runs along. */
+  loop: number;
+  /** The size that was asked for, before limits: bevels only join up when they were asked for alike. */
+  requested: number;
+}
+
+const samePoint = (a: Point2D, b: Point2D) => Math.hypot(a.x - b.x, a.y - b.y) < 0.02;
+
+/**
+ * Edges that were beveled alike and meet at a corner become ONE cutter running round that corner, instead of one
+ * cutter per edge. Separate cutters overlap at the corner, and the boolean cut there leaves cracks and doubled faces
+ * (a rim of four edges was not watertight, which shows as dark specks and fails in a slicer). One mitred cutter is clean.
+ */
+function joinBevelRuns(list: ResolvedBevel[]): ResolvedBevel[] {
+  const groups = new Map<string, ResolvedBevel[]>();
+  for (const r of list) {
+    const key = `${r.loop}|${r.side}|${r.style}|${r.requested}`;
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  const out: ResolvedBevel[] = [];
+  groups.forEach((group) => {
+    out.push(...group.filter((r) => r.closed));
+    const open = group.filter((r) => !r.closed);
+    const used = new Set<ResolvedBevel>();
+    for (const first of open) {
+      if (used.has(first)) continue;
+      used.add(first);
+      const chain = [first];
+      let tail = first;
+      for (;;) {
+        const next = open.find((o) => !used.has(o) && samePoint(o.path[0], tail.path[tail.path.length - 1]));
+        if (!next) break;
+        used.add(next);
+        chain.push(next);
+        tail = next;
+      }
+      let head = first;
+      for (;;) {
+        const prev = open.find((o) => !used.has(o) && samePoint(o.path[o.path.length - 1], head.path[0]));
+        if (!prev) break;
+        used.add(prev);
+        chain.unshift(prev);
+        head = prev;
+      }
+      if (chain.length === 1) {
+        out.push(first);
+        continue;
+      }
+      const path: Point2D[] = [];
+      chain.forEach((c, i) => path.push(...(i === 0 ? c.path : c.path.slice(1))));
+      const closed = samePoint(path[0], path[path.length - 1]);
+      if (closed) path.pop();
+      out.push({
+        ...first,
+        size: Math.min(...chain.map((c) => c.size)),
+        path,
+        closed,
+        ends: closed ? {} : { start: chain[0].ends.start, end: chain[chain.length - 1].ends.end },
+      });
+    }
+  });
+  return out;
 }
 
 function resolveBevels(body: Body3D): ResolvedBevel[] {
@@ -235,16 +297,7 @@ function resolveBevels(body: Body3D): ResolvedBevel[] {
     if (done.has(key)) continue;
     done.add(key);
 
-    // A bevel can't be larger than the rounding it wraps around, or than half the body.
-    let size = Math.min(bevel.size, height / 2 - 0.05);
-    const corners = outline.radii.filter((r, v) => r > 0 && run.includes(v) && run.includes((v - 1 + n) % n));
-    if (offset > 0) {
-      // A hole's cutter reaches `size + 1` into the hole, so it has to stay well inside it.
-      const xs = outline.points.map((p) => p.x);
-      const ys = outline.points.map((p) => p.y);
-      size = Math.min(size, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
-      if (corners.length) size = Math.min(size, Math.min(...corners) - 1.2);
-    } else if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+    const size = Math.min(bevel.size, runLimit(height, outline, run, n, offset));
     if (size < 0.1) continue;
 
     const { pts, closed } = runPath(outline, run, n);
@@ -256,9 +309,9 @@ function resolveBevels(body: Body3D): ResolvedBevel[] {
       if (first >= 0) ends.start = outwardNormal(outline.points[(first - 1 + m) % m], pts[0], away);
       if (last >= 0) ends.end = outwardNormal(pts[pts.length - 1], outline.points[(last + 1) % m], away);
     }
-    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends, winding: away });
+    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends, winding: away, loop: offset, requested: bevel.size });
   }
-  return out;
+  return joinBevelRuns(out);
 }
 
 /**
