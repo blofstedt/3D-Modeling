@@ -24,14 +24,14 @@ const download = (data: BlobPart, filename: string, type: string) => {
 export function exportSTL(bodies: Body3D[]): boolean {
   const data = stlBytes(bodies);
   if (!data) return false;
-  download(data as BlobPart, `craft3d-${stamp()}.stl`, 'model/stl');
+  download(data as BlobPart, `autora-3d-${stamp()}.stl`, 'model/stl');
   return true;
 }
 
 export function exportOBJ(bodies: Body3D[]): boolean {
   const data = objText(bodies);
   if (!data) return false;
-  download(data, `craft3d-${stamp()}.obj`, 'text/plain');
+  download(data, `autora-3d-${stamp()}.obj`, 'text/plain');
   return true;
 }
 
@@ -39,10 +39,10 @@ export function exportOBJ(bodies: Body3D[]): boolean {
 export function exportGLB(bodies: Body3D[], options?: GlbOptions): boolean {
   const data = glbBytes(bodies, options);
   if (!data) return false;
-  download(data as BlobPart, `craft3d-${stamp()}.glb`, 'model/gltf-binary');
+  download(data as BlobPart, `autora-3d-${stamp()}.glb`, 'model/gltf-binary');
   return true;
 }
 
 export function exportJSON(bodies: Body3D[]): void {
-  download(JSON.stringify(bodies, null, 2), `craft3d-${stamp()}.json`, 'application/json');
+  download(JSON.stringify(bodies, null, 2), `autora-3d-${stamp()}.json`, 'application/json');
 }

@@ -22,6 +22,7 @@ import {
 } from './types';
 import ModelViewer3D, { ViewerApi } from './components/ModelViewer3D';
 import { installBridge } from './core/bridge';
+import { embedded, useAutoraEmbed } from './embed';
 import type { AgentHost } from './core/agent';
 import Sidebar from './components/Sidebar';
 import BottomBar from './components/BottomBar';
@@ -32,7 +33,7 @@ import { defaultSession } from './utils/repeat';
 import { thumbnailUrl } from './utils/thumbnail';
 import { loadShared, mergeShared, saveShared, SHARED_KEY } from './utils/sharedLibrary';
 import { groupOfSelection, pickInGroups, withGroupMates } from './utils/groups';
-import { Doc, IdGen, parseDoc, settle, starterDoc } from './core/doc';
+import { Doc, IdGen, emptyDoc, parseDoc, settle, starterDoc } from './core/doc';
 import { AgentError } from './core/errors';
 import * as ops from './core/ops';
 import { DrawnOutline, drawnBody, shapeOutline } from './utils/draw';
@@ -61,6 +62,8 @@ import {
 const STORAGE_KEY = 'craft3d:document:v3';
 
 const loadInitialDoc = (): Doc => {
+  // Inside Autora the model lives on its server and comes down once the frame is up (see embed.ts).
+  if (embedded()) return emptyDoc();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? parseDoc(JSON.parse(raw)) : null;
@@ -139,8 +142,9 @@ export default function App() {
   const history = useHistory(doc, setDocRaw);
   trackRef.current = history.track;
 
-  // Autosave
+  // Autosave (not inside Autora: its server keeps the model)
   useEffect(() => {
+    if (embedded()) return;
     const id = window.setTimeout(() => {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
@@ -318,6 +322,9 @@ export default function App() {
       .filter(Boolean);
     return installBridge(host, subscribe, origins);
   }, []);
+
+  // Inside Autora: take the agent's changes, send the person's.
+  useAutoraEmbed(doc, (d) => hostRef.current.setDoc(d));
 
   // ---- Selection ----------------------------------------------------------
   const handleSelectBody = (id: string | null, isMultiSelect?: boolean) => {

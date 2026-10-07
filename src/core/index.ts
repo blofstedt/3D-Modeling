@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// The agent-facing surface of Craft3D. No React, no DOM: import this from Node or from a browser.
+// The agent-facing surface of Autora 3D. No React, no DOM: import this from Node or from a browser.
 export { Engine } from './engine';
 export { execute } from './agent';
 export type { AgentHost, ExecuteOptions, ToolResponse } from './agent';

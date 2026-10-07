@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Craft3D is a browser-based sketch-and-extrude CAD modeler (React + three.js, no backend). It is being grown
+Autora 3D (formerly Craft3D) is a browser-based sketch-and-extrude CAD modeler (React + three.js, no backend). It is being grown
 into a tool that the owner's **Autora** project can drive. Read this before changing anything the user sees.
 
 ## The one rule: it must be obvious

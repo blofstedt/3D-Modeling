@@ -468,7 +468,8 @@ export default function ModelViewer3D({
     const height = container.clientHeight || 500;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(BACKGROUND);
+    // The background follows the theme (Autora sends its own when this is its window).
+    scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--color-slate-950').trim() || BACKGROUND);
     scene.fog = new THREE.Fog(BACKGROUND, 900, 2800);
 
     const camera = new THREE.PerspectiveCamera(40, width / height, 1, 4000);
