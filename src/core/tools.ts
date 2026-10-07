@@ -196,6 +196,9 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'Open a linked copy for editing: its shapes become ordinary, you edit them, then library_save the group to update the library object (all copies follow). With forget:true it becomes separate shapes for good.',
     inputSchema: obj({ group: { type: 'string' }, forget: { type: 'boolean' } }, ['group']),
   },
+  { name: 'library_share', description: 'Keep a library object in the app-wide library too, so every project can place it (shared:false stops that; placed copies stay). Only the live app has an app-wide library; elsewhere use library_export / library_import to carry objects between projects.', inputSchema: obj({ item: { type: 'string' }, shared: { type: 'boolean', description: 'Default true.' } }, ['item']) },
+  { name: 'library_export', description: 'The library objects as JSON (all, or the ones in `items`), to keep or to hand to library_import in another project.', inputSchema: obj({ items: { type: 'array', items: { type: 'string' } } }), readOnly: true },
+  { name: 'library_import', description: 'Add library objects from library_export. An object already here is replaced only by a newer one (its linked copies follow).', inputSchema: obj({ items: { type: 'array', items: { type: 'object' } } }, ['items']) },
   { name: 'library_rename', description: 'Rename a library object.', inputSchema: obj({ item: { type: 'string' }, name: { type: 'string' } }, ['item', 'name']) },
   { name: 'library_remove', description: 'Remove a library object. Its placed copies stay as ordinary shapes.', inputSchema: obj({ item: { type: 'string' } }, ['item']) },
   { name: 'group_remove', description: 'Dissolve one group (its shapes and inner groups stay, moving up into the group around it).', inputSchema: obj({ group: { type: 'string' } }, ['group']) },
@@ -328,6 +331,14 @@ export function runDocTool(ctx: ToolContext, name: string, rawArgs: unknown): To
       return done(ops.placeFromLibrary(doc, ids, a as ops.PlaceArgs));
     case 'object_unlink':
       return done(ops.unlinkObject(doc, ids, a as { group: string; forget?: boolean }));
+    case 'library_share':
+      return done(ops.shareLibraryItem(doc, a as { item: string; shared?: boolean }));
+    case 'library_export': {
+      const want = Array.isArray(a.items) ? new Set<string>(a.items) : null;
+      return { doc, result: { items: doc.library.filter((i) => !want || want.has(i.id)) } };
+    }
+    case 'library_import':
+      return done(ops.importLibrary(doc, a as { items: unknown }));
     case 'library_rename':
       return done(ops.renameLibraryItem(doc, a as { item: string; name: string }));
     case 'library_remove':

@@ -18,6 +18,7 @@ import {
   RepeatSession,
   ShapeGroup,
   SWATCHES,
+  LibraryItem,
 } from './types';
 import ModelViewer3D, { ViewerApi } from './components/ModelViewer3D';
 import { installBridge } from './core/bridge';
@@ -28,6 +29,7 @@ import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import { useHistory } from './hooks/useHistory';
 import { defaultSession } from './utils/repeat';
+import { loadShared, mergeShared, saveShared, SHARED_KEY } from './utils/sharedLibrary';
 import { groupOfSelection, pickInGroups, withGroupMates } from './utils/groups';
 import { Doc, IdGen, parseDoc, settle, starterDoc } from './core/doc';
 import { AgentError } from './core/errors';
@@ -147,6 +149,27 @@ export default function App() {
     }, 500);
     return () => window.clearTimeout(id);
   }, [doc]);
+
+  // The app-wide library: objects kept in this browser for every project. A shared project object and its twin here stay equal.
+  const [sharedItems, setSharedItems] = useState<LibraryItem[]>(() => loadShared());
+  useEffect(() => {
+    const stored = loadShared();
+    const merged = mergeShared(docRef.current.library, stored);
+    if (merged.shared !== stored) saveShared(merged.shared);
+    setSharedItems(merged.shared);
+    if (merged.project !== docRef.current.library) setDoc({ library: merged.project });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.library]);
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== SHARED_KEY) return;
+      const merged = mergeShared(docRef.current.library, loadShared());
+      setSharedItems(merged.shared);
+      if (merged.project !== docRef.current.library) setDoc({ library: merged.project });
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   const [selectedBodyId, setSelectedBodyId] = useState<string | null>(null);
   const [selectedBodyIds, setSelectedBodyIds] = useState<string[]>([]);
@@ -511,8 +534,34 @@ export default function App() {
 
   const handlePlaceItem = (item: string) => {
     const onTop = selectedFace?.kind === 'top' && selectedBody && !selectedBody.frame ? selectedBody.id : undefined;
-    const made = runOp((d, ids) => ops.placeFromLibrary(d, ids, { item, onTopOf: onTop }));
+    // An object that only lives in the app-wide library is brought into this project first, in the same step.
+    const fromShared = !docRef.current.library.some((i) => i.id === item) ? sharedItems.find((i) => i.id === item) : undefined;
+    const made = runOp((d, ids) => {
+      const base = fromShared ? ops.importLibrary(d, { items: [{ ...fromShared, shared: true }] }).doc : d;
+      return ops.placeFromLibrary(base, ids, { item, onTopOf: onTop });
+    });
     if (made) selectGroup(made.group);
+  };
+
+  const handleShareItem = (item: string) => {
+    const now = !docRef.current.library.find((i) => i.id === item)?.shared;
+    if (!runOp((d) => ops.shareLibraryItem(d, { item, shared: now }))) return;
+    if (!now) {
+      const rest = loadShared().filter((i) => i.id !== item);
+      saveShared(rest);
+      setSharedItems(rest);
+    }
+    notify(now ? 'Kept in every project.' : 'Only in this project now.');
+  };
+
+  const handleRemoveItem = (item: string) => {
+    if (docRef.current.library.some((i) => i.id === item)) void runOp((d) => ops.removeLibraryItem(d, { item }));
+    else {
+      const rest = loadShared().filter((i) => i.id !== item);
+      saveShared(rest);
+      setSharedItems(rest);
+      notify('Removed from every project.');
+    }
   };
 
   const handleEditObject = () => {
@@ -1013,9 +1062,13 @@ export default function App() {
         moveOn={moveOn && selectedBodyIds.length > 0}
         addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
         onAddShape={addShape}
-        library={library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length }))}
+        library={[
+          ...library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: !!i.shared, inProject: true })),
+          ...sharedItems.filter((i) => !library.some((x) => x.id === i.id)).map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: true, inProject: false })),
+        ]}
         onPlaceItem={handlePlaceItem}
-        onRemoveItem={(item) => void runOp((d) => ops.removeLibraryItem(d, { item }))}
+        onShareItem={handleShareItem}
+        onRemoveItem={handleRemoveItem}
         onToggleMove={() => setMoveOn((v) => !v)}
         onIsolate={toggleIsolate}
         grouped={!!selectedGroupId}

@@ -296,6 +296,37 @@ _changes the model · headless and live_
 | `group` | string | required |
 | `forget` | boolean |  |
 
+## `library_share`
+
+Keep a library object in the app-wide library too, so every project can place it (shared:false stops that; placed copies stay). Only the live app has an app-wide library; elsewhere use library_export / library_import to carry objects between projects.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `item` | string | required |
+| `shared` | boolean | Default true. |
+
+## `library_export`
+
+The library objects as JSON (all, or the ones in `items`), to keep or to hand to library_import in another project.
+
+_read-only · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `items` | list of string |  |
+
+## `library_import`
+
+Add library objects from library_export. An object already here is replaced only by a newer one (its linked copies follow).
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `items` | list of object | required |
+
 ## `library_rename`
 
 Rename a library object.
