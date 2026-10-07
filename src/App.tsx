@@ -11,6 +11,8 @@ import {
   EdgeSel,
   FaceSel,
   Point2D,
+  DrawForm,
+  DrawSession,
   RepeatLink,
   RepeatSession,
   ShapeGroup,
@@ -24,6 +26,7 @@ import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, getPolygonSignedArea, mergeShapes } from './utils/geometry';
 import { defaultSession, syncRepeats, transformLink } from './utils/repeat';
+import { DrawnOutline, drawnBody, shapeOutline } from './utils/draw';
 import { withOutline } from './utils/outline';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { joinBodies } from './utils/join';
@@ -170,6 +173,9 @@ export default function App() {
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
   const bodyCounter = useRef(bodies.length);
+
+  /** The open Draw: a sketch on the ground or on the top of a shape, until it becomes a shape or is dropped. */
+  const [draw, setDraw] = useState<DrawSession | null>(null);
 
   const editingRepeatOf = repeat?.bodyId ?? null;
 
@@ -509,6 +515,7 @@ export default function App() {
       notify('Select the shape you want to repeat first.');
       return;
     }
+    setDraw(null);
     setSelectedFace(null);
     setSelectedEdges([]);
     setMoveOn(false);
@@ -568,6 +575,53 @@ export default function App() {
     setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...pieces.map((m) => m.id)] : prev));
     selectMany(pieces.map((b) => b.id));
     notify(`Joined ${targets.length} shapes into one.`);
+  };
+
+  /** Draw: press it (or `D`) and sketch. With a top face selected the sketch starts on that face. */
+  const handleToggleDraw = () => {
+    if (draw) {
+      setDraw(null);
+      return;
+    }
+    if (repeat) setRepeat(null);
+    const face = selectedFace?.kind === 'top' ? selectedFace : null;
+    const host = face && bodies.find((b) => b.id === face.bodyId);
+    setDraw({
+      form: 'shape',
+      planeY: host ? Math.round(((host.elevation ?? 0) + host.extrusionHeight) * 100) / 100 : null,
+      points: [],
+      bends: [],
+    });
+    setSelectedFace(null);
+    setSelectedEdges([]);
+    setMoveOn(false);
+  };
+
+  /** A finished sketch becomes an ordinary shape standing on its surface, with its top selected so it can be pulled up at once. */
+  const handleFinishDraw = (outline: DrawnOutline, planeY: number) => {
+    bodyCounter.current += 1;
+    const id = `body_${Date.now()}`;
+    const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
+    const body = drawnBody(outline, planeY, id, `${outline.name} ${bodyCounter.current}`, color);
+    setDraw(null);
+    setBodies((prev) => [...prev, body]);
+    setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
+    setSelectedBodyId(id);
+    setSelectedBodyIds([id]);
+    setSelectedEdges([]);
+    setSelectedFace({ bodyId: id, kind: 'top' });
+  };
+
+  const handleDrawForm = (form: DrawForm) => setDraw((d) => (d ? { ...d, form, points: [], bends: [] } : d));
+
+  /** Finish the corners placed so far (the green tick, or Enter). */
+  const handleDrawDone = () => {
+    const outline = draw && shapeOutline(draw);
+    if (!draw || draw.planeY === null || !outline) {
+      notify('Place at least three corners that make a shape.');
+      return;
+    }
+    handleFinishDraw(outline, draw.planeY);
   };
 
   /** Keeps the repeat: from now on its copies follow the shape and the path. */
@@ -669,6 +723,7 @@ export default function App() {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
       if (openMenu) setOpenMenu(null);
       else if (confirmDeleteIds) setConfirmDeleteIds(null);
+      else if (draw) setDraw(null);
       else if (repeat) setRepeat(null);
       else if (selectedEdges.length) setSelectedEdges([]);
       else if (selectedFace) setSelectedFace(null);
@@ -677,6 +732,16 @@ export default function App() {
       return;
     }
     if (confirmDeleteIds) return;
+    if (draw) {
+      if (key === 'enter') {
+        e.preventDefault();
+        handleDrawDone();
+      } else if (key === 'backspace' || key === 'delete') {
+        e.preventDefault();
+        setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 ? null : d.planeY } : d));
+      } else if (key === 'd') handleToggleDraw();
+      return;
+    }
     if (repeat) {
       if (key === 'enter' || key === 'r') {
         e.preventDefault();
@@ -700,6 +765,9 @@ export default function App() {
         break;
       case 'r':
         handleOpenRepeat();
+        break;
+      case 'd':
+        handleToggleDraw();
         break;
       case 'g':
         if (joinedSelected) notify('This is a joined shape: it already moves as one.');
@@ -803,6 +871,13 @@ export default function App() {
                   repeat={repeat}
                   onUpdateRepeat={setRepeat}
                   onFinishRepeat={handleFinishRepeat}
+                  draw={draw}
+                  onUpdateDraw={setDraw}
+                  onFinishDraw={handleFinishDraw}
+                  onNotify={notify}
+                  onDrawForm={handleDrawForm}
+                  onDrawDone={handleDrawDone}
+                  onDrawCancel={() => setDraw(null)}
                   onDragStateChange={history.hold}
                   onHint={setHint}
                   moveOn={moveOn}
@@ -927,6 +1002,8 @@ export default function App() {
         onJoin={handleMergeSelected}
         onSubtract={handleSubtractSelected}
         repeatOn={!!repeat}
+        drawOn={!!draw}
+        onDraw={handleToggleDraw}
         repeated={selectedBodyIds.some((id) => repeats.some((l) => l.bodyId === id))}
         onBreakRepeat={handleBreakRepeat}
         onPattern={handleOpenRepeat}

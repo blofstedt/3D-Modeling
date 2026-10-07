@@ -6,17 +6,19 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnimatePresence, motion } from 'motion/react';
-import { BevelPicker, MeasureReadout, RepeatChip } from './FloatingControls';
+import { BevelPicker, DrawChip, MeasureReadout, RepeatChip } from './FloatingControls';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatSession } from '../types';
+import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Point2D, RepeatSession } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
+import { DrawApi, createDrawTool } from './drawTool';
+import { DrawnOutline } from '../utils/draw';
 import { BodyTransform, scaleBodyAbout, selectionBounds, transformBody } from '../utils/transform';
 import { bendHandle, bendThrough, copyTransforms, stops, withCopies } from '../utils/repeat';
 import ViewCube, { CubeFace } from './ViewCube';
@@ -90,6 +92,15 @@ export interface ModelViewer3DProps {
   repeat: RepeatSession | null;
   onUpdateRepeat: React.Dispatch<React.SetStateAction<RepeatSession | null>>;
   onFinishRepeat: () => void;
+  /** The open Draw sketch, or null. The viewer shows it and reads the pointer; the app owns it. */
+  draw: DrawSession | null;
+  onUpdateDraw: (next: DrawSession) => void;
+  onFinishDraw: (outline: DrawnOutline, planeY: number) => void;
+  onNotify: (message: string) => void;
+  /** Switch what is being drawn, finish the corners sketched so far, or stop drawing. */
+  onDrawForm: (form: DrawForm) => void;
+  onDrawDone: () => void;
+  onDrawCancel: () => void;
   /** Fired when a drag starts/ends so the app can treat it as a single undo step. */
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
@@ -291,6 +302,13 @@ export default function ModelViewer3D({
   repeat,
   onUpdateRepeat,
   onFinishRepeat,
+  draw,
+  onUpdateDraw,
+  onFinishDraw,
+  onNotify,
+  onDrawForm,
+  onDrawDone,
+  onDrawCancel,
   onDragStateChange,
   onHint,
   moveOn,
@@ -313,6 +331,8 @@ export default function ModelViewer3D({
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
+  const drawApiRef = useRef<DrawApi | null>(null);
+  const drawToolRef = useRef<ReturnType<typeof createDrawTool> | null>(null);
   const repeatAnchorRef = useRef<THREE.Vector3 | null>(null);
   const repeatChipRef = useRef<HTMLDivElement | null>(null);
   const mmPerPixelRef = useRef<() => number>(() => 1);
@@ -369,6 +389,13 @@ export default function ModelViewer3D({
     onEdgeChange,
     onUpdateRepeat,
     onFinishRepeat,
+    draw,
+    onUpdateDraw,
+    onFinishDraw,
+    onNotify,
+    onDrawForm,
+    onDrawDone,
+    onDrawCancel,
     onDragStateChange,
     onHint,
     moveOn,
@@ -653,6 +680,7 @@ export default function ModelViewer3D({
     refreshOutlinesRef.current = refreshOutlines;
 
     const idleHint = () => {
+      if (live.current.draw) return 'Tap to place corners · drag a side to curve it · tap the green corner to finish';
       if (live.current.repeat) return 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels';
       if (live.current.moveOn && live.current.selectedBodyIds.length) return 'Drag an arrow to move along X, Y or Z · two-finger tap to hide';
       const f = live.current.selectedFace;
@@ -663,7 +691,7 @@ export default function ModelViewer3D({
     };
 
     const hover = (clientX: number, clientY: number) => {
-      if (drag || candidate) return;
+      if (drag || candidate || live.current.draw) return;
       const hit = resolveHit(clientX, clientY);
       setHoverEdge(hit?.type === 'edge' ? hit.sel : null);
       const bodyHover = hit?.type === 'body' ? hit.bodyId : hit?.type === 'edge' ? hit.sel.bodyId : null;
@@ -1121,6 +1149,7 @@ export default function ModelViewer3D({
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      if (live.current.draw) return; // the Draw tool reads the pointer while a sketch is open
       trackTouchDown(e);
       pickPx = e.pointerType === 'touch' ? EDGE_PICK_TOUCH_PX : EDGE_PICK_PX;
       // A second finger means the user wants to orbit/pinch: abandon any one-finger drag.
@@ -1174,6 +1203,7 @@ export default function ModelViewer3D({
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      if (live.current.draw) return;
       trackTouchMove(e);
       if (drag || candidate) pending = { x: e.clientX, y: e.clientY, shift: e.shiftKey };
       else if (e.pointerType === 'mouse' && e.buttons === 0) pendingHover = { x: e.clientX, y: e.clientY };
@@ -1214,6 +1244,7 @@ export default function ModelViewer3D({
     };
 
     const finishPointer = (e: PointerEvent, cancelled: boolean) => {
+      if (live.current.draw) return;
       if (!e.isPrimary) return;
       window.clearTimeout(longPress);
       setHold(null);
@@ -1302,6 +1333,17 @@ export default function ModelViewer3D({
       invalidate();
       lowerQualityWhileBusy();
     });
+
+    drawApiRef.current = {
+      scene,
+      camera,
+      controls,
+      dom: renderer.domElement,
+      bodyGroup,
+      invalidate: () => invalidate(),
+      bodies: () => live.current.bodies,
+      setLabel: setDragLabel,
+    };
 
     // ---- Camera framing ---------------------------------------------------
     const frameView = (face: CubeFace | 'keep', instant = false) => {
@@ -1550,6 +1592,8 @@ export default function ModelViewer3D({
   }, [selectedBodyId, selectedBodyIds, isSceneReady]);
 
   const repeating = !!repeat;
+  const drawing = !!draw;
+  const handsOff = repeating || drawing;
   // Opening a repeat brings the whole row into view; dragging it afterwards never moves the camera.
   useEffect(() => {
     if (repeating && isSceneReady) frameViewRef.current('keep');
@@ -1564,8 +1608,8 @@ export default function ModelViewer3D({
     clearGroup(helperGroup);
     heightArrowRef.current = null;
     anchorRef.current = null;
-    if (repeating) {
-      // While copies are placed the shape's own handles step aside so the path handles are the only thing to grab.
+    if (handsOff) {
+      // While copies are placed or a sketch is drawn the shape's own handles step aside so the path handles are the only thing to grab.
       invalidateRef.current();
       return;
     }
@@ -1842,7 +1886,26 @@ export default function ModelViewer3D({
       gizmoGroup.children.forEach((c) => c.scale.setScalar(0.0001));
     }
     invalidateRef.current();
-  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, moveOn, isSceneReady, repeating]);
+  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, moveOn, isSceneReady, handsOff]);
+
+  // ---- Draw tool: lives while a sketch is open --------------------------------
+  useEffect(() => {
+    const api = drawApiRef.current;
+    if (!drawing || !isSceneReady || !api) return;
+    const tool = createDrawTool(api, () => live.current.draw, {
+      set: (next) => live.current.onUpdateDraw(next),
+      finish: (outline, planeY) => live.current.onFinishDraw(outline, planeY),
+      notify: (m) => live.current.onNotify(m),
+    });
+    drawToolRef.current = tool;
+    return () => {
+      tool.dispose();
+      drawToolRef.current = null;
+    };
+  }, [drawing, isSceneReady]);
+  useEffect(() => {
+    drawToolRef.current?.refresh();
+  }, [draw]);
 
   // ---- Repeat preview: ghost copies, the path and its two handles -----------
   useEffect(() => {
@@ -1949,7 +2012,15 @@ export default function ModelViewer3D({
   useEffect(() => {
     clearHoverRef.current();
     onHint?.(
-      repeat
+      draw
+        ? draw.form === 'shape'
+          ? draw.points.length >= 3
+            ? 'Tap to add a corner · drag a side to curve it · tap the green corner to finish'
+            : draw.planeY === null
+              ? 'Tap the ground or the top of a shape to start drawing'
+              : 'Tap to place corners · drag a corner to move it'
+          : 'Drag it out · release to make it'
+        : repeat
         ? 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels'
         : moveOn && selectedBodyIds.length
           ? 'Drag an arrow to move along X, Y or Z · two-finger tap to hide'
@@ -1959,7 +2030,7 @@ export default function ModelViewer3D({
           ? 'Drag to move · hold another shape to add it · arrow = height · dots = walls · ring = rotate'
           : 'Click a shape to select it · drag empty space to orbit'
     );
-  }, [selectedBodyIds, selectedFace, moveOn, repeating, onHint]);
+  }, [selectedBodyIds, selectedFace, moveOn, repeating, drawing, draw?.form, draw?.points.length, draw?.planeY, onHint]);
 
   const pickerBody = selectedEdges.length ? bodies.find((b) => b.id === selectedEdges[0].bodyId) : undefined;
   const pickerStyle: BevelStyle = pickerBody ? edgeStyle(pickerBody, selectedEdges.find((e) => e.kind !== 'corner') ?? selectedEdges[0]) ?? 'round' : 'round';
@@ -2044,6 +2115,16 @@ export default function ModelViewer3D({
           )}
           {pickerOpen && selectedEdges.length > 0 && (
             <BevelPicker current={pickerStyle} onPress={beginPickerDrag} onMove={movePickerDrag} onRelease={endPickerDrag} />
+          )}
+        </AnimatePresence>
+      </div>
+
+      <div className="absolute bottom-12 left-0 right-0 z-20 flex justify-center pointer-events-none">
+        <AnimatePresence>
+          {draw && (
+            <div className="pointer-events-auto">
+              <DrawChip draw={draw} onForm={onDrawForm} onDone={onDrawDone} onCancel={onDrawCancel} />
+            </div>
           )}
         </AnimatePresence>
       </div>

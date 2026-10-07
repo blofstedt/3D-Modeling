@@ -111,6 +111,20 @@ export interface RepeatSession {
 /** A kept repeat. The copies it makes are derived: they are rebuilt whenever the source or the path changes. */
 export type RepeatLink = RepeatSession & { linkId: string };
 
+/** What the Draw tool is making. */
+export type DrawForm = 'shape' | 'rectangle' | 'circle';
+
+/** An open Draw: an outline being sketched on the ground or on the top of a shape. */
+export interface DrawSession {
+  form: DrawForm;
+  /** Height of the surface being drawn on; null until the first tap picks the ground or a top face. */
+  planeY: number | null;
+  /** Corners placed so far (`shape`). */
+  points: Point2D[];
+  /** `bends[i]`: a point the side from corner i to the next passes through, making it a curve. Null = straight. */
+  bends: (Point2D | null)[];
+}
+
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {
     id: 'matte',

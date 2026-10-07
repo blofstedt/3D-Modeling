@@ -85,21 +85,25 @@ Still to do:
   source's outline, so cache one build and transform it). Max is 60 copies today.
 - Duplicate (⌘D) on a repeated shape copies the shape only, not its row.
 
-### 2. Draw tool — Tinkercad's, but with paths that behave
+### 2. Draw tool — Tinkercad's, but with paths that behave (first version built)
 
-Draw a 2D outline on the ground **or on a face**, then extrude it with the existing face-extrude gesture.
+Built: **Draw** (`D`) sketches on the ground or on the top of a shape (`utils/draw.ts`, `components/drawTool.ts`,
+`DrawChip`). No plane step: the first tap's surface is the plane (or a selected top face). Tap to place corners; drag
+a corner to move it; drag a *side* to curve it (it becomes an arc, flattened to points); tap the green first corner
+or Enter to close; Rectangle / Circle (the pill) are dragged out; a circle is a square rounded all the way, like
+the stock cylinder. The result is a normal shape, 20 mm tall, top face selected so the pull-up arrow is right there.
+The tool owns its own pointer handlers while open; the viewer's handlers bail out (`live.current.draw`).
 
-- No plane-picker step: the first tap decides the plane (ground or the face under the finger); the grid
-  and hint show it. A face's outline is shown as the working area.
-- Corners are plain points: tap to add, drag a point to move it, tap the first point to close. To curve a
-  side, **drag the side itself** (it bends into an arc) instead of Bezier handles; corner rounding already
-  exists on shapes. Snap to the grid, axes, and other shapes' corners/edges, with the snap shown.
-- Quick forms for the common cases: drag out a rectangle or circle; hold to draw freehand and simplify.
-- A closed outline becomes a normal shape (immediately extrudable, bevelable, repeatable). Drawing inside
-  an existing shape's face makes a cutout, reusing the existing hole support.
-- Model note: ground/top/bottom faces fit today's model (outline + extrude along Z). **Drawing on a wall**
-  needs a per-shape orientation (a plane transform on `Body3D`) — plan that change deliberately, with a
-  geometry check, before building the UI.
+Still to do:
+- **Drawing on a wall** needs a per-shape orientation (a plane transform on `Body3D`) — plan that with a geometry
+  check before building the UI. Bottom faces and undersides are refused for now.
+- Drawing *inside* a face to make a cutout (reusing hole support), instead of a separate shape on top.
+- Curved sides are flattened into many small sides, so bevelling them is per-segment; smooth runs (like corner
+  rounding's `arcMid`) would let a whole curve be one edge.
+- Freehand (hold to draw, then simplify), and snapping to edges / midpoints with the snap shown.
+- Sketch dimensions you can type while drawing (the number beside the pointer is read-only today).
+- Insert a corner by tapping a side; delete a single corner.
+- Check on a real touch screen: corner/side hit reach is 24 px for touch, untested.
 
 ### 3. Autora integration
 

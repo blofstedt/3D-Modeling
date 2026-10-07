@@ -17,6 +17,7 @@ import {
   Ungroup,
   Move3d,
   Octagon,
+  PenTool,
   Pentagon,
   Repeat,
   SquareMinus,
@@ -68,6 +69,9 @@ interface BottomBarProps {
   onSubtract: () => void;
   /** A repeat is open: the tool shows as on and pressing it keeps the copies. */
   repeatOn: boolean;
+  /** A sketch is open: the Draw tool shows as on. */
+  drawOn: boolean;
+  onDraw: () => void;
   /** The selected shape has a live repeat, so Organize can let its copies go. */
   repeated: boolean;
   onBreakRepeat: () => void;
@@ -90,6 +94,7 @@ interface Tool {
 export default function BottomBar(props: BottomBarProps) {
   const { selectedCount, bodyCount } = props;
   const tools: Tool[] = [
+    { label: 'Draw', key: 'D', icon: PenTool, onClick: props.onDraw, active: props.drawOn },
     { label: 'Move', key: 'M', icon: Move3d, onClick: props.onToggleMove, active: props.moveOn, disabled: selectedCount < 1, hint: 'Select a shape' },
     { label: props.grouped ? 'Ungroup' : 'Group', key: 'G', icon: props.grouped ? Ungroup : Boxes, onClick: props.onGroup, disabled: !props.grouped && selectedCount < 2, hint: 'Hold a shape to add it' },
     { label: 'Repeat', key: 'R', icon: Repeat, onClick: props.onPattern, active: props.repeatOn, disabled: !props.repeatOn && selectedCount < 1, hint: 'Select a shape' },

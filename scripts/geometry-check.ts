@@ -11,6 +11,7 @@ import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
 import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, syncRepeats, transformLink, withCopies, withSpacing } from '../src/utils/repeat';
+import { circleOutline, circleThrough, drawnBody, rectangleOutline, shapeOutline, sketchOutline, snapDrawPoint } from '../src/utils/draw';
 import { RepeatLink, RepeatSession } from '../src/types';
 
 let failures = 0;
@@ -265,6 +266,33 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const orphan = syncRepeats(first.bodies.filter((b) => b.id !== 'src'), first.repeats);
   check('losing the source keeps the copies as plain shapes', orphan.bodies.length === 3 && orphan.bodies.every((b) => !b.repeatOf) && orphan.repeats.length === 0);
   check('copies come along when the shape moves', withCopies(['src'], first.bodies).length === 4);
+}
+
+
+// Draw: sketches become shapes.
+{
+  const tri = shapeOutline({ points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 0, y: 30 }], bends: [] });
+  check('three corners make a shape', !!tri && tri.basePoints.length === 3);
+  check('a flat sketch is not a shape', shapeOutline({ points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 80, y: 0 }], bends: [] }) === null);
+  const cw = shapeOutline({ points: [{ x: 0, y: 0 }, { x: 0, y: 30 }, { x: 40, y: 0 }], bends: [] })!;
+  check('outlines always run the same way round', getPolygonSignedArea(cw.basePoints) > 0 && getPolygonSignedArea(tri!.basePoints) > 0);
+  const c = circleThrough({ x: 10, y: 0 }, { x: 0, y: 10 }, { x: -10, y: 0 })!;
+  check('circle through three points', near(c.cx, 0, 1e-6) && near(c.cy, 0, 1e-6) && near(c.r, 10, 1e-6));
+  const bent = sketchOutline([{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }], [{ x: 20, y: -10 }, null, null, null], true);
+  check('a bent side becomes an arc that reaches its bulge', bent.length > 10 && Math.min(...bent.map((p) => p.y)) < -9.5 && Math.min(...bent.map((p) => p.y)) > -10.5);
+  check('a bent side stays within its two corners', bent.every((p) => p.x > -1 && p.x < 41));
+  const bentOther = sketchOutline([{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }], [{ x: 20, y: 10 }, null, null, null], true);
+  check('bending inwards works too', Math.max(...bentOther.slice(0, 12).map((p) => p.y)) > 9.5);
+  const rectO = rectangleOutline({ x: 10, y: 20 }, { x: -10, y: 5 })!;
+  check('rectangle from any two corners', rectO.basePoints.length === 4 && getPolygonSignedArea(rectO.basePoints) === 300);
+  check('a speck is not a rectangle', rectangleOutline({ x: 0, y: 0 }, { x: 1, y: 30 }) === null);
+  const circ = drawnBody(circleOutline({ x: 5, y: 5 }, { x: 25, y: 5 })!, 40, 'c', 'c', '#fff');
+  const g = buildBodyGeometry(circ);
+  check('a drawn circle is smooth and the right size', circ.points.length > 8 && near(Math.max(...circ.points.map((p) => p.x)) - Math.min(...circ.points.map((p) => p.x)), 40, 0.5));
+  check('a drawn shape sits on its surface', circ.elevation === 40 && circ.extrusionHeight === 20 && g.attributes.position.count > 0);
+  check('points snap to whole millimetres', snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).x === 10 && snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).y === 4);
+  check('points snap to a nearby corner', snapDrawPoint({ x: 10, y: 10 }, [{ x: 12, y: 11 }], null).x === 12);
+  check('points line up with the last corner', snapDrawPoint({ x: 31, y: 50 }, [], { x: 30, y: 0 }).x === 30);
 }
 
 if (failures) {

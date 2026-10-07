@@ -5,10 +5,10 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Check, Minus, Plus, SquareDashed } from 'lucide-react';
-import { BevelStyle, RepeatSession } from '../types';
+import { Check, Minus, Plus, SquareDashed, X } from 'lucide-react';
+import { BevelStyle, DrawForm, DrawSession, RepeatSession } from '../types';
 import { MAX_COPIES, spacing, toAround, toPath, withCount, withSpacing } from '../utils/repeat';
-import { spring } from './controls';
+import { Segmented, spring } from './controls';
 import { formatLength, parseLength } from '../utils/units';
 
 const OPTIONS: { style: BevelStyle; label: string; path: string }[] = [
@@ -226,6 +226,50 @@ export function RepeatChip({
       </button>
       <button type="button" aria-label="Keep the copies" title="Keep the copies (Enter)" className="w-8 h-8 rounded-full bg-accent-500 text-white flex items-center justify-center hover:bg-accent-400" onClick={onDone}>
         <Check size={16} />
+      </button>
+    </motion.div>
+  );
+}
+
+/** What is being drawn, as one small pill: corners, a rectangle or a circle, and a way out. Everything else happens on the surface. */
+export function DrawChip({
+  draw,
+  onForm,
+  onDone,
+  onCancel,
+}: {
+  draw: DrawSession;
+  onForm: (form: DrawForm) => void;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const canFinish = draw.form === 'shape' && draw.points.length >= 3;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 10 }}
+      transition={spring}
+      className="flex items-center gap-2 p-1.5 rounded-full bg-slate-900/95 border border-white/10 shadow-xl backdrop-blur"
+    >
+      <Segmented
+        id="draw-form"
+        label="What to draw"
+        value={draw.form}
+        options={[
+          { value: 'shape', label: 'Corners' },
+          { value: 'rectangle', label: 'Rectangle' },
+          { value: 'circle', label: 'Circle' },
+        ]}
+        onChange={onForm}
+      />
+      {canFinish && (
+        <button type="button" aria-label="Finish the shape" title="Finish (Enter)" className="w-8 h-8 rounded-full bg-accent-500 text-white flex items-center justify-center hover:bg-accent-400" onClick={onDone}>
+          <Check size={16} />
+        </button>
+      )}
+      <button type="button" aria-label="Stop drawing" title="Stop drawing (Esc)" className="w-8 h-8 rounded-full bg-white/6 text-slate-200 flex items-center justify-center hover:bg-white/12" onClick={onCancel}>
+        <X size={16} />
       </button>
     </motion.div>
   );

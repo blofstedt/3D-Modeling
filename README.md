@@ -29,6 +29,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°) |
 | Bevel an edge | Tap an edge (it lights up, and the touch area is generous). **Tap it again** to widen to the whole rim, once more to go back to one edge. **Press and hold** another edge to add it (hold a selected one to drop it); `Shift`-click works on a desktop. Or tap a face and press **Edges** to select every edge around it. The top bar's **Select** menu picks all top edges, bottom edges, vertical corners or every edge. Then tap the yellow dot, press Curved or Flat and drag: every selected edge gets the same bevel and size |
 | Round one corner | Click the vertical corner line the same way |
+| Draw a shape | Press **Draw** (`D`). Tap the ground or the top of a shape to drop the first corner, then tap more; the sketch lands on whatever surface your first tap was on (or on a selected top face). Drag a corner to move it, drag a side to curve it (drag it back flat to straighten), tap the green corner or press `Enter` to finish. **Rectangle** and **Circle** (the pill at the bottom) are drawn by dragging them out. The result is an ordinary shape 20 mm tall with its top selected, so pull it up straight away. `Backspace` removes the last corner, `Esc` stops |
 | Repeat a shape | Select it and press **Repeat** (`R`). Ghost copies appear at once, equally spaced. Drag the white dot to set where they end, the lilac dot to bend the path, `−` / `+` for how many, the gap box to type an exact distance, **Around** to circle the shape, **Turn** to face along the path. `Enter` or the tick keeps them, `Esc` cancels |
 | Edit a repeat | The copies are **live**: change the first shape (height, walls, bevels, colour…) and every copy follows. Tap or drag any copy to work on the first shape; moving or turning it carries the whole row. Select the shape and press **Repeat** again to change the path, count or gap. **Organize → Make copies separate** lets go of them so each can be edited on its own. Deleting the first shape deletes its copies |
 | Delete | Delete in the bottom bar (asks first), or `Del` |
@@ -43,7 +44,7 @@ edge shows its own numbers. The file button exports and clears. The bottom bar i
 list. Everything else disappears from the 3D view until you press `I` or *Show all*.
 Escape steps back one level at a time: edge, face, selection, isolation.
 
-Tools (bottom bar): Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (stick the selected shapes together into one solid, each keeping its own height), Subtract `S`
+Tools (bottom bar): Draw `D`, Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (stick the selected shapes together into one solid, each keeping its own height), Subtract `S`
 (select 2+ shapes; the one you picked last is cut out of the others, but only where they overlap in height), Repeat `R` (see the table). Grouped shapes select and move together.
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
@@ -68,9 +69,11 @@ src/
     TopBar.tsx / BottomBar.tsx / Menu.tsx   the properties bar, the tools bar and their round pop-up menus
     FloatingControls.tsx  edge bevel panel pinned to the selected edge
     Sidebar.tsx           content of the bar menus: properties, material, scene list, export
+    drawTool.ts           the Draw tool's pointer handling and preview (attached while a sketch is open)
     ViewCube.tsx          orientation cube
   utils/
     geometry.ts           polygon booleans, corner rounding
+    draw.ts               sketches to outlines: curved sides, rectangle, circle, snapping
     repeat.ts             equally spaced copies along a line, curve or circle; keeps live copies in step with their shape
     primitives.ts         stock shapes (box, cylinder, triangle, hexagon)
     outline.ts            corner rounding, edge runs (a body = base outline + radii)
