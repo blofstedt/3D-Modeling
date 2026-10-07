@@ -29,6 +29,7 @@ import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import { useHistory } from './hooks/useHistory';
 import { defaultSession } from './utils/repeat';
+import { thumbnailUrl } from './utils/thumbnail';
 import { loadShared, mergeShared, saveShared, SHARED_KEY } from './utils/sharedLibrary';
 import { groupOfSelection, pickInGroups, withGroupMates } from './utils/groups';
 import { Doc, IdGen, parseDoc, settle, starterDoc } from './core/doc';
@@ -1063,8 +1064,8 @@ export default function App() {
         addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
         onAddShape={addShape}
         library={[
-          ...library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: !!i.shared, inProject: true })),
-          ...sharedItems.filter((i) => !library.some((x) => x.id === i.id)).map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: true, inProject: false })),
+          ...library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: !!i.shared, inProject: true, thumb: thumbnailUrl(i, 88) })),
+          ...sharedItems.filter((i) => !library.some((x) => x.id === i.id)).map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length, shared: true, inProject: false, thumb: thumbnailUrl(i, 88) })),
         ]}
         onPlaceItem={handlePlaceItem}
         onShareItem={handleShareItem}

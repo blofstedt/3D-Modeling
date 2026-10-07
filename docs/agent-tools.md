@@ -296,6 +296,18 @@ _changes the model · headless and live_
 | `group` | string | required |
 | `forget` | boolean |  |
 
+## `library_thumbnail`
+
+A small picture of a library object (or of a shape group in the scene via `shapes`) as SVG text: isometric, coloured, no GL needed.
+
+_read-only · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `item` | string |  |
+| `shapes` | list of string |  |
+| `size` | number | Pixels, default 96. |
+
 ## `library_share`
 
 Keep a library object in the app-wide library too, so every project can place it (shared:false stops that; placed copies stay). Only the live app has an app-wide library; elsewhere use library_export / library_import to carry objects between projects.

@@ -221,6 +221,13 @@ const main = async () => {
     const del = (await L.execute('shape_delete', { ids: [copyShapes[0]] })) as any;
     const sc3 = await scene();
     check('deleting a linked copy deletes the whole copy, not the library object', del.ok && copyShapes.length === 4 && sc3.shapes.length === 2 && ((await L.execute('library_list')) as any).result.items.length === 1, JSON.stringify([del.error, copyShapes, sc3.shapes.length, sc3.groups.map((g: any) => g.id)]));
+    const thumb = (await L.execute('library_thumbnail', { item: lib[0].id, size: 64 })) as any;
+    const svg = String(thumb.result?.svg);
+    check('a library object has a thumbnail (SVG, coloured faces, fits its size)', thumb.ok && svg.startsWith('<svg') && svg.includes('viewBox="0 0 64 64"') && (svg.match(/<path/g) ?? []).length >= 4 && /fill="rgb\(/.test(svg), thumb.error);
+    const coords = [...svg.matchAll(/[ML]?(-?\d+\.\d),(-?\d+\.\d)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    check('the thumbnail stays inside its frame', coords.length > 0 && coords.every(([x, y]) => x >= 0 && x <= 64 && y >= 0 && y <= 64), JSON.stringify(coords.slice(0, 3)));
+    const nothing = (await L.execute('library_thumbnail', { item: 'nope' })) as any;
+    check('a thumbnail of an unknown object says so', !nothing.ok && /No library object/.test(nothing.error ?? ''));
     // Sharing and moving objects between projects
     const sh = (await L.execute('library_share', { item: lib[0].id })) as any;
     check('an object can be marked for every project', sh.ok && ((await L.execute('library_list')) as any).result.items[0].shared === true, sh.error);
