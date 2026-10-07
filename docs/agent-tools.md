@@ -231,7 +231,7 @@ _changes the model · headless and live_
 
 ## `group_create`
 
-Group shapes so they select, move and turn together.
+Group shapes so they select, move and turn together, and give the group a name (it becomes the object name in GLB export). Groups nest: a group that is wholly inside the ids is put inside the new one, so group "head" + "body" makes one "character".
 
 _changes the model · headless and live_
 
@@ -240,9 +240,20 @@ _changes the model · headless and live_
 | `ids` | list of string | required · Shape ids. |
 | `name` | string |  |
 
+## `group_rename`
+
+Rename a group (e.g. "head"). Find group ids with scene_get.
+
+_changes the model · headless and live_
+
+| argument | type | |
+| --- | --- | --- |
+| `group` | string | required |
+| `name` | string | required |
+
 ## `group_remove`
 
-Dissolve a group (the shapes stay).
+Dissolve one group (its shapes and inner groups stay, moving up into the group around it).
 
 _changes the model · headless and live_
 

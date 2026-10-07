@@ -173,8 +173,9 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'Duplicate shapes, offset by (35, −35) mm unless by is given.',
     inputSchema: obj({ ids, by: obj({ x: { type: 'number' }, y: { type: 'number' } }) }, ['ids']),
   },
-  { name: 'group_create', description: 'Group shapes so they select, move and turn together.', inputSchema: obj({ ids, name: { type: 'string' } }, ['ids']) },
-  { name: 'group_remove', description: 'Dissolve a group (the shapes stay).', inputSchema: obj({ group: { type: 'string' } }, ['group']) },
+  { name: 'group_create', description: 'Group shapes so they select, move and turn together, and give the group a name (it becomes the object name in GLB export). Groups nest: a group that is wholly inside the ids is put inside the new one, so group "head" + "body" makes one "character".', inputSchema: obj({ ids, name: { type: 'string' } }, ['ids']) },
+  { name: 'group_rename', description: 'Rename a group (e.g. "head"). Find group ids with scene_get.', inputSchema: obj({ group: { type: 'string' }, name: { type: 'string' } }, ['group', 'name']) },
+  { name: 'group_remove', description: 'Dissolve one group (its shapes and inner groups stay, moving up into the group around it).', inputSchema: obj({ group: { type: 'string' } }, ['group']) },
   {
     name: 'shapes_join',
     description: 'Join shapes into one solid: outlines are united wherever they overlap or touch, each keeping its own height and elevation. Bevels on the inputs are not kept.',
@@ -294,6 +295,8 @@ export function runDocTool(ctx: ToolContext, name: string, rawArgs: unknown): To
       return done(ops.duplicateShapes(doc, ids, a as { ids: string[] }));
     case 'group_create':
       return done(ops.groupShapes(doc, ids, a as { ids: string[] }));
+    case 'group_rename':
+      return done(ops.renameGroup(doc, a as { group: string; name: string }));
     case 'group_remove':
       return done(ops.ungroupShapes(doc, a as { group: string }));
     case 'shapes_join':

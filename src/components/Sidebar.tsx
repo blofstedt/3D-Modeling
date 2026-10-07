@@ -420,7 +420,7 @@ export default function Sidebar({
               >
                 <Download size={15} /> Export STL
               </button>
-              <button type="button" onClick={() => runExport(exportGLB)} disabled={bodies.length === 0} className={secondaryButton}>
+              <button type="button" onClick={() => runExport((b) => exportGLB(b, { groups }))} disabled={bodies.length === 0} className={secondaryButton}>
                 <Download size={15} /> Export GLB (games)
               </button>
               <button type="button" onClick={() => runExport(exportOBJ)} disabled={bodies.length === 0} className={secondaryButton}>

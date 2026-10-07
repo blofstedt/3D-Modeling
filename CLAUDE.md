@@ -139,6 +139,16 @@ closed solid, the old three-bvh-csg + `meshHeal.ts` path is the fallback (good, 
 `npm run test:slicer` prints 14 real parts through PrusaSlicer's CLI and ADMesh (`sudo apt install prusa-slicer admesh`; skips
 if absent) and checks manifold, size, bed contact, volume vs `shape_measure`, and G-code. Keep it passing.
 
+### Groups = objects (built: named, nested)
+
+A group is a named object ("head"). Groups nest (`ShapeGroup.parentId`); a body names only its innermost group
+(`Body3D.groupId`) and `bodyIds` is derived, so edits set those two pointers and `settle` → `normalizeGroups`
+(`utils/groups.ts`) repairs the rest (groups under two shapes dissolve; contents move up). Tap = the outermost group,
+tap again = one group deeper, then the shape (`pickInGroups`). Dragging, deleting and turning act on the outermost group.
+Rename by tapping the name in the top bar (or `group_rename`). `group_create` nests any group wholly inside the ids.
+GLB export writes the groups as a node tree. Next: a library of objects (project + app-wide; placed copies linked, like
+repeats), then a way to see/rearrange the hierarchy.
+
 ### Picking things that are buried
 
 `See through` (X, under the view cube) makes every shape glassy and picks the innermost shape under the pointer;

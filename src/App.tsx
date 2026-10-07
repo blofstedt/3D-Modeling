@@ -28,6 +28,7 @@ import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import { useHistory } from './hooks/useHistory';
 import { defaultSession } from './utils/repeat';
+import { groupOfSelection, pickInGroups, withGroupMates } from './utils/groups';
 import { Doc, IdGen, parseDoc, settle, starterDoc } from './core/doc';
 import { AgentError } from './core/errors';
 import * as ops from './core/ops';
@@ -253,7 +254,7 @@ export default function App() {
         const ids = (Array.isArray(args.ids) ? args.ids : []) as string[];
         const found = docRef.current.bodies.filter((b) => ids.includes(b.id) && !b.repeatOf);
         if (!found.length) throw new AgentError('None of those ids exist.', 'Call scene_get to list shapes.');
-        const mates = found.flatMap((b) => (b.groupId ? docRef.current.bodies.filter((x) => x.groupId === b.groupId).map((x) => x.id) : [b.id]));
+        const mates = found.flatMap((b) => withGroupMates(docRef.current.groups, docRef.current.bodies, b.id));
         selectMany([...new Set(mates)]);
         return { selected: [...new Set(mates)] };
       }
@@ -301,8 +302,9 @@ export default function App() {
       return;
     }
     // Clicking a member of a group picks the whole group.
-    const group = bodies.find((b) => b.id === id)?.groupId;
-    const members = group ? bodies.filter((b) => b.groupId === group).map((b) => b.id) : [id];
+    // Tapping it again steps one group deeper, down to the shape itself.
+    const picked = pickInGroups(bodies, groups, id, selectedBodyIds);
+    const members = isMultiSelect ? withGroupMates(groups, bodies, id) : picked.ids;
 
     if (!isMultiSelect) {
       setSelectedBodyId(id);
@@ -364,7 +366,8 @@ export default function App() {
     selectedBodies.length > 1 && selectedBodies[0].groupId && selectedBodies.every((b) => b.groupId === selectedBodies[0].groupId) ? selectedBodies[0].groupId : null;
   /** A joined shape is several pieces that act as one solid; it is never shown as a loose group. */
   const joinedSelected = !!commonGroupId && !!groups.find((g) => g.id === commonGroupId)?.joined;
-  const selectedGroupId = joinedSelected ? null : commonGroupId;
+  const selectedGroup = joinedSelected ? undefined : groupOfSelection(groups, selectedBodyIds);
+  const selectedGroupId = selectedGroup?.id ?? null;
 
   const hideSelected = () => {
     if (!selectedBodyIds.length) return;
@@ -425,7 +428,7 @@ export default function App() {
       return;
     }
     // The shape picked last (and anything grouped with it) is the cutter.
-    const cutterIds = last.groupId ? bodies.filter((b) => b.groupId === last.groupId).map((b) => b.id) : [last.id];
+    const cutterIds = withGroupMates(groups, bodies, last.id);
     const targets = bodies.filter((b) => selectedBodyIds.includes(b.id) && !cutterIds.includes(b.id));
     if (!targets.length) {
       notify('Select another shape to cut from.');
@@ -632,10 +635,7 @@ export default function App() {
       setIsolatedIds(null);
       return;
     }
-    const withGroups = new Set(ids);
-    bodies.forEach((b) => {
-      if (b.groupId && bodies.some((o) => o.groupId === b.groupId && withGroups.has(o.id))) withGroups.add(b.id);
-    });
+    const withGroups = new Set(ids.flatMap((id) => withGroupMates(groups, bodies, id)));
     setIsolatedIds([...withGroups]);
   };
 
@@ -814,6 +814,8 @@ export default function App() {
         onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
         onResize={handleResize}
         onUpdateBody={handleUpdateBody}
+        group={selectedGroup ? { id: selectedGroup.id, name: selectedGroup.name } : undefined}
+        onRenameGroup={(group, name) => void runOp((d) => ops.renameGroup(d, { group, name }))}
         sidebar={sidebarProps}
       />
 
@@ -823,6 +825,7 @@ export default function App() {
           <div className="absolute inset-0">
                 <ModelViewer3D
                   bodies={displayBodies}
+                  groups={groups}
                   selectedBodyId={selectedBodyId}
                   selectedBodyIds={selectedBodyIds}
                   onSelectBody={handleSelectBody}

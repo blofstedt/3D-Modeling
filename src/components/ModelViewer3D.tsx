@@ -12,7 +12,8 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Frame, Point2D, RepeatSession } from '../types';
+import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, DrawForm, DrawSession, Frame, Point2D, RepeatSession, ShapeGroup } from '../types';
+import { withGroupMates } from '../utils/groups';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { EdgePath, defaultBevelSize, maxBevelSize, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
@@ -92,6 +93,7 @@ export interface ViewerApi {
 export interface ModelViewer3DProps {
   apiRef?: React.MutableRefObject<ViewerApi | null>;
   bodies: Body3D[];
+  groups?: ShapeGroup[];
   selectedBodyId: string | null;
   selectedBodyIds: string[];
   onSelectBody: (id: string | null, isMultiSelect?: boolean) => void;
@@ -328,6 +330,7 @@ interface BodyEntry {
 export default function ModelViewer3D({
   apiRef,
   bodies,
+  groups,
   selectedBodyId,
   selectedBodyIds,
   onSelectBody,
@@ -423,6 +426,7 @@ export default function ModelViewer3D({
   live.current = {
     apiRef,
     bodies,
+    groups: groups ?? [],
     selectedBodyId,
     selectedBodyIds,
     selectedEdges,
@@ -901,8 +905,7 @@ export default function ModelViewer3D({
     const movingSet = (id: string): string[] => {
       const { selectedBodyIds: sel, bodies: all } = live.current;
       if (sel.includes(id)) return withCopies(sel, all);
-      const group = all.find((b) => b.id === id)?.groupId;
-      return withCopies(group ? all.filter((b) => b.groupId === group).map((b) => b.id) : [id], all);
+      return withCopies(withGroupMates(live.current.groups, all, id), all);
     };
 
     const restoreGizmos = () => {

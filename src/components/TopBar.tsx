@@ -35,6 +35,9 @@ interface TopBarProps {
   onMove: (dx: number, dy: number, dz: number) => void;
   onResize: (width: number, depth: number) => void;
   onUpdateBody: (id: string, updates: Partial<Body3D>) => void;
+  /** The selection is exactly one group: its name can be changed right here. */
+  group?: { id: string; name: string };
+  onRenameGroup: (id: string, name: string) => void;
   sidebar: Omit<SidebarProps, 'section'>;
 }
 
@@ -44,6 +47,39 @@ const Chip = ({ children, sub }: { children: React.ReactNode; sub?: string }) =>
     {sub && <div className="text-[11px] text-slate-400 whitespace-nowrap">{sub}</div>}
   </div>
 );
+
+/** A group's name, changed by tapping it. Saves on Enter or when you tap away; Escape keeps the old one. */
+function GroupName({ name, onRename }: { name: string; onRename: (name: string) => void }) {
+  const [draft, setDraft] = React.useState<string | null>(null);
+  const done = (keep: boolean) => {
+    if (keep && draft !== null && draft.trim() && draft.trim() !== name) onRename(draft.trim());
+    setDraft(null);
+  };
+  if (draft === null) {
+    return (
+      <button type="button" onClick={() => setDraft(name)} className="shrink-0 px-1 leading-tight text-left" title="Tap to rename">
+        <div className="text-sm font-semibold text-white whitespace-nowrap">{name}</div>
+        <div className="text-[11px] text-slate-400 whitespace-nowrap">Tap to rename · tap a shape again to pick one part</div>
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => done(true)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') done(true);
+        if (e.key === 'Escape') done(false);
+      }}
+      className="h-8 w-40 px-2 rounded-lg bg-slate-800 text-sm text-white outline-none ring-1 ring-accent-500"
+      aria-label="Group name"
+    />
+  );
+}
 
 /** Width, depth, height and where it is: all typed in one small menu. */
 function SizePositionPanel({ selected, onMove, onResize, onUpdateBody }: Pick<TopBarProps, 'selected' | 'onMove' | 'onResize' | 'onUpdateBody'>) {
@@ -204,7 +240,11 @@ export default function TopBar(props: TopBarProps) {
     if (mode === 'multi') {
       return (
         <>
-          <Chip sub={props.joined ? 'Joined · moves as one' : 'Drag one to move them all'}>{props.joined ? selected[0].name : `${selected.length} shapes`}</Chip>
+          {props.group ? (
+            <GroupName key={props.group.id} name={props.group.name} onRename={(n) => props.onRenameGroup(props.group!.id, n)} />
+          ) : (
+            <Chip sub={props.joined ? 'Joined · moves as one' : 'Drag one to move them all'}>{props.joined ? selected[0].name : `${selected.length} shapes`}</Chip>
+          )}
           <MenuButton id="size" openId={openId} setOpenId={setOpenId} label="Position" icon={Move} placement="down">
             <SizePositionPanel {...props} />
           </MenuButton>

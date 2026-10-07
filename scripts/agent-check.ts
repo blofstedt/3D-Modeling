@@ -148,10 +148,44 @@ const main = async () => {
   check('the STL header counts match its size', bytes.readUInt32LE(80) * 50 + 84 === bytes.length, `${bytes.readUInt32LE(80)} triangles, ${bytes.length} bytes`);
   const obj = await m.execute('export', { format: 'obj' });
   check('export an OBJ', obj.ok && String((obj.result as any).text).includes('\nv '));
+  {
+    // Named, nested groups
+    const g = new Engine();
+    const mk = async (x: number) => ((await g.execute('shape_add', { kind: 'box', x, y: 0, width: 10, depth: 10, height: 10 })) as any).shapes[0].id as string;
+    const [a, b, c, d] = [await mk(0), await mk(20), await mk(40), await mk(60)];
+    const head = (await g.execute('group_create', { ids: [a, b], name: 'head' })) as any;
+    const body = (await g.execute('group_create', { ids: [c, d], name: 'body' })) as any;
+    const chr = (await g.execute('group_create', { ids: [a, b, c, d], name: 'character' })) as any;
+    const scene = ((await g.execute('scene_get')) as any).result.groups as any[];
+    const byName = (n: string) => scene.find((x) => x.name === n);
+    check('grouping groups nests them', byName('head')?.parent === chr.result.group && byName('body')?.parent === chr.result.group && byName('character')?.shapes.length === 4, JSON.stringify(scene));
+    check('a group keeps its name', !!head.ok && byName('head').shapes.length === 2);
+    const xs = async () => (((await g.execute('scene_get')) as any).result.shapes as any[]).map((x) => x.center.x);
+    const before = await xs();
+    await g.execute('shape_move', { ids: [a], by: { x: 5 } });
+    check('moving one member moves the whole outer group', (await xs()).every((x, i) => Math.abs(x - before[i] - 5) < 1e-6), (await xs()).join());
+    await g.execute('group_rename', { group: head.result.group, name: 'skull' });
+    check('a group can be renamed', byName('head') && ((await g.execute('scene_get')) as any).result.groups.some((x: any) => x.name === 'skull'));
+    const bad = await g.execute('group_rename', { group: 'nope', name: 'x' });
+    check('renaming an unknown group says so', !bad.ok && /No group/.test(bad.error ?? ''));
+    const glbN = (await g.execute('export', { format: 'glb', pivot: 'shape' })) as any;
+    const gb2 = Buffer.from(glbN.result.data, 'base64');
+    const gj = JSON.parse(gb2.subarray(20, 20 + gb2.readUInt32LE(12)).toString());
+    const named = (n: string) => gj.nodes.find((x: any) => x.name === n);
+    check('GLB nodes follow the groups (character > skull > shapes)', gj.scenes[0].nodes.length === 1 && named('character')?.children.length === 2 && named('skull')?.children.length === 2 && named('body')?.children.length === 2, JSON.stringify(gj.nodes.map((x: any) => [x.name, x.children])));
+    await g.execute('group_remove', { group: chr.result.group });
+    const after = ((await g.execute('scene_get')) as any).result.groups as any[];
+    check('dissolving the outer group leaves the inner ones', after.length === 2 && after.every((x) => !x.parent));
+    await g.execute('shape_delete', { ids: [a] });
+    {
+      const left = ((await g.execute('scene_get')) as any).result;
+      check('deleting one member deletes its group (not the others)', left.groups.length === 1 && left.shapes.length === 2, JSON.stringify(left.groups));
+    }
+  }
   const glb = await m.execute('export', { format: 'glb' });
   const gb = Buffer.from((glb.result as any)?.data ?? '', 'base64');
   const gjson = gb.length ? JSON.parse(gb.subarray(20, 20 + gb.readUInt32LE(12)).toString()) : null;
-  check('export a GLB that is a valid container', glb.ok && gb.toString('ascii', 0, 4) === 'glTF' && gb.readUInt32LE(8) === gb.length && !!gjson && gjson.nodes.length > 0 && gjson.materials.length === gjson.nodes.length, glb.error);
+  check('export a GLB that is a valid container', glb.ok && gb.toString('ascii', 0, 4) === 'glTF' && gb.readUInt32LE(8) === gb.length && !!gjson && gjson.nodes.length > 0 && gjson.materials.length > 0 && gjson.nodes.length >= gjson.materials.length, glb.error);
   const sizeM = gjson ? gjson.accessors[0].max.map((v: number, i: number) => v - gjson.accessors[0].min[i]) : [];
   check('GLB is in metres (a 10 cm part is ~0.1)', sizeM.length === 3 && Math.max(...sizeM) < 5 && Math.max(...sizeM) > 0.001, sizeM.join(','));
   const glbAsset = await m.execute('export', { format: 'glb', pivot: 'asset' });

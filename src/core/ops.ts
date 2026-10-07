@@ -13,6 +13,7 @@ import { MAX_HEIGHT, MIN_HEIGHT, extrudeFace, faceMeasure, setFaceMeasure } from
 import { EdgeGroup, applyEdgeChange, edgesAroundFace, edgesOfKind, edgeSize, maxBevelSize } from '../utils/edges';
 import { DRAWN_HEIGHT, DrawnOutline, circleOutline, drawnBody, rectangleOutline, shapeOutline } from '../utils/draw';
 import { wallFrame } from '../utils/frame';
+import { groupChain } from '../utils/groups';
 import { bendThrough, defaultSession, spacing, toAround, transformLink, withCount, withSpacing } from '../utils/repeat';
 import { Doc, IdGen, settle } from './doc';
 import { fail } from './errors';
@@ -51,13 +52,17 @@ function idList(doc: Doc, ids: unknown, what = 'ids'): Body3D[] {
   return [...new Set(ids as string[])].map((id) => editable(doc, id));
 }
 
-/** The shapes plus everything grouped with them: a group moves, turns and is deleted together. */
+/** The shapes plus everything grouped with them (in the outermost group they belong to): a group moves, turns and is deleted together. */
 function withGroupMates(doc: Doc, bodies: Body3D[]): Body3D[] {
-  const groups = new Set(bodies.map((b) => b.groupId).filter(Boolean));
-  if (!groups.size) return bodies;
+  const inGroup = new Set<string>();
+  bodies.forEach((b) => {
+    const top = groupChain(doc.groups, b.groupId)[0];
+    if (top) top.bodyIds.forEach((id) => inGroup.add(id));
+  });
+  if (!inGroup.size) return bodies;
   const all = new Map(bodies.map((b) => [b.id, b]));
   doc.bodies.forEach((b) => {
-    if (b.groupId && groups.has(b.groupId) && !b.repeatOf) all.set(b.id, b);
+    if (inGroup.has(b.id) && !b.repeatOf) all.set(b.id, b);
   });
   return [...all.values()];
 }
@@ -484,25 +489,47 @@ export function duplicateShapes(doc: Doc, ids: IdGen, a: { ids: string[]; by?: {
   return { doc: { ...doc, bodies: [...doc.bodies, ...clones] }, result: { created: clones.map((c) => c.id) } };
 }
 
+/**
+ * Groups shapes. A group that is wholly inside the selection is nested (it keeps its name and shape), so grouping
+ * "head" and "body" makes one "character" that contains both; the rest become direct members.
+ */
 export function groupShapes(doc: Doc, ids: IdGen, a: { ids: string[]; name?: string }): OpResult<{ group: string }> {
   const bodies = idList(doc, a.ids);
   if (bodies.length < 2) return fail('A group needs at least two shapes.');
   const gid = ids('group');
-  const set = new Set(bodies.map((b) => b.id));
-  const group: ShapeGroup = { id: gid, name: a.name ?? `Group ${doc.groups.length + 1}`, bodyIds: [...set] };
+  const picked = new Set(bodies.map((b) => b.id));
+  // The outermost existing groups that are fully inside the selection become children; a partly selected group is split.
+  const whole = (g: ShapeGroup) => g.bodyIds.every((id) => picked.has(id));
+  const nested = doc.groups.filter((g) => whole(g) && !(g.parentId && whole(doc.groups.find((x) => x.id === g.parentId)!)));
+  const covered = new Set(nested.flatMap((g) => g.bodyIds));
+  const parentOfNew = groupChain(doc.groups, bodies[0].groupId).filter((g) => !whole(g)).pop()?.id;
+  const group: ShapeGroup = { id: gid, name: a.name ?? `Group ${doc.groups.length + 1}`, bodyIds: [...picked], parentId: parentOfNew };
   const next: Doc = {
     ...doc,
-    groups: [...doc.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !set.has(id)) })).filter((g) => g.bodyIds.length > 1), group],
-    bodies: doc.bodies.map((b) => (set.has(b.id) ? { ...b, groupId: gid } : b)),
+    groups: [...doc.groups.map((g) => (nested.includes(g) ? { ...g, parentId: gid } : g)), group],
+    bodies: doc.bodies.map((b) => (picked.has(b.id) && !covered.has(b.id) ? { ...b, groupId: gid } : b)),
   };
   return { doc: next, result: { group: gid } };
 }
 
+export function renameGroup(doc: Doc, a: { group: string; name: string }): OpResult<{ group: string; name: string }> {
+  const g = doc.groups.find((x) => x.id === a.group);
+  if (!g) return fail(`No group "${a.group}".`, `Groups: ${doc.groups.map((x) => `${x.id} (${x.name})`).join(', ') || 'none'}`);
+  const name = String(a.name ?? '').trim();
+  if (!name) return fail('name must not be empty.');
+  return { doc: { ...doc, groups: doc.groups.map((x) => (x.id === g.id ? { ...x, name } : x)) }, result: { group: g.id, name } };
+}
+
+/** Dissolves one level: its shapes and groups move up into whatever group was around it. */
 export function ungroupShapes(doc: Doc, a: { group: string }): OpResult<{ released: string[] }> {
   const g = doc.groups.find((x) => x.id === a.group);
   if (!g) return fail(`No group "${a.group}".`, `Groups: ${doc.groups.map((x) => x.id).join(', ') || 'none'}`);
   return {
-    doc: { ...doc, groups: doc.groups.filter((x) => x.id !== g.id), bodies: doc.bodies.map((b) => (b.groupId === g.id ? { ...b, groupId: undefined } : b)) },
+    doc: {
+      ...doc,
+      groups: doc.groups.filter((x) => x.id !== g.id).map((x) => (x.parentId === g.id ? { ...x, parentId: g.parentId } : x)),
+      bodies: doc.bodies.map((b) => (b.groupId === g.id ? { ...b, groupId: g.parentId } : b)),
+    },
     result: { released: g.bodyIds },
   };
 }

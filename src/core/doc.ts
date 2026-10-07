@@ -4,6 +4,7 @@
  */
 
 import { Body3D, Point2D, RepeatLink, ShapeGroup } from '../types';
+import { normalizeGroups } from '../utils/groups';
 import { syncRepeats } from '../utils/repeat';
 
 /** Everything that is saved: the shapes, how they are grouped, and the live repeats that make some of them. */
@@ -22,7 +23,8 @@ export const emptyDoc = (): Doc => ({ bodies: [], groups: [], repeats: [] });
 /** Settles a document: live-repeat copies are always rebuilt to match their source and path. */
 export const settle = (d: Doc): Doc => {
   const synced = syncRepeats(d.bodies, d.repeats);
-  return synced.bodies === d.bodies && synced.repeats === d.repeats ? d : { ...d, ...synced };
+  const grouped = normalizeGroups(synced.bodies, d.groups);
+  return synced.bodies === d.bodies && synced.repeats === d.repeats && grouped.groups === d.groups && grouped.bodies === d.bodies ? d : { ...d, ...synced, ...grouped };
 };
 
 /** The scene a new document starts with: one plain block. */

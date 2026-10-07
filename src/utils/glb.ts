@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'three';
-import { Body3D, MATERIAL_PRESETS } from '../types';
+import { Body3D, MATERIAL_PRESETS, ShapeGroup } from '../types';
 import { buildBodyGeometry } from './bodyGeometry';
 import { frameMatrix } from './frame';
 
@@ -17,6 +17,8 @@ export interface GlbOptions {
    * base, so each can be moved or spun alone in an engine.
    */
   pivot?: 'scene' | 'asset' | 'shape';
+  /** The document's groups: each becomes a named parent node holding its shapes and inner groups (so "head" arrives as "head"). */
+  groups?: ShapeGroup[];
 }
 
 const pad = (n: number) => (4 - (n % 4)) % 4;
@@ -69,6 +71,8 @@ export function glbBytes(bodies: Body3D[], options: GlbOptions = {}): Uint8Array
   const assetShift = new THREE.Vector3((all.min.x + all.max.x) / 2, all.min.y, (all.min.z + all.max.z) / 2);
 
   const nodes: object[] = [];
+  const partNode = new Map<string, number>();
+  const partOrigin = new Map<string, THREE.Vector3>();
   const meshes: object[] = [];
   const materials: object[] = [];
   const accessors: object[] = [];
@@ -121,12 +125,50 @@ export function glbBytes(bodies: Body3D[], options: GlbOptions = {}): Uint8Array
     if (pivot === 'shape') node.translation = [origin.x * unit, origin.y * unit, origin.z * unit];
     // With "asset" the shift is baked in, so the node stays at the origin.
     nodes.push(node);
+    partNode.set(q.body.id, nodes.length - 1);
+    partOrigin.set(q.body.id, origin.clone());
   }
+
+  // Groups: a named parent node per group. Under "shape" pivots a group's origin is the centre of its base, and children
+  // are placed relative to it.
+  const groups = (options.groups ?? []).filter((g) => g.bodyIds.some((id) => partNode.has(id)));
+  const groupNode = new Map<string, number>();
+  const groupOrigin = new Map<string, THREE.Vector3>();
+  groups.forEach((g) => {
+    const box = new THREE.Box3();
+    parts.forEach((q) => g.bodyIds.includes(q.body.id) && box.union(new THREE.Box3(q.min, q.max)));
+    groupOrigin.set(g.id, pivot === 'shape' ? new THREE.Vector3((box.min.x + box.max.x) / 2, box.min.y, (box.min.z + box.max.z) / 2) : new THREE.Vector3());
+    nodes.push({ name: g.name.replace(/\s+/g, '_'), children: [] as number[] });
+    groupNode.set(g.id, nodes.length - 1);
+  });
+  const rel = (node: Record<string, any>, origin: THREE.Vector3, parent?: THREE.Vector3) => {
+    if (pivot !== 'shape') return;
+    const d = parent ? origin.clone().sub(parent) : origin;
+    node.translation = [d.x * unit, d.y * unit, d.z * unit];
+  };
+  const placed = new Set<number>();
+  groups.forEach((g) => {
+    const me = nodes[groupNode.get(g.id)!] as Record<string, any>;
+    const parent = g.parentId && groupNode.has(g.parentId) ? g.parentId : undefined;
+    rel(me, groupOrigin.get(g.id)!, parent ? groupOrigin.get(parent) : undefined);
+    if (parent) {
+      (nodes[groupNode.get(parent)!] as any).children.push(groupNode.get(g.id)!);
+      placed.add(groupNode.get(g.id)!);
+    }
+  });
+  parts.forEach((q) => {
+    const owner = groups.find((g) => g.id === q.body.groupId);
+    if (!owner) return;
+    const idx = partNode.get(q.body.id)!;
+    rel(nodes[idx] as Record<string, any>, partOrigin.get(q.body.id)!, groupOrigin.get(owner.id));
+    (nodes[groupNode.get(owner.id)!] as any).children.push(idx);
+    placed.add(idx);
+  });
 
   const json = {
     asset: { version: '2.0', generator: 'Craft3D' },
     scene: 0,
-    scenes: [{ nodes: nodes.map((_, i) => i) }],
+    scenes: [{ nodes: nodes.map((_, i) => i).filter((i) => !placed.has(i)) }],
     nodes,
     meshes,
     materials,

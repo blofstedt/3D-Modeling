@@ -99,7 +99,10 @@ export interface EdgeSel {
 export interface ShapeGroup {
   id: string;
   name: string;
+  /** Every shape inside, at any depth. Derived: see utils/groups.ts. */
   bodyIds: string[];
+  /** The group this one sits inside, when groups nest (a "head" inside a "character"). */
+  parentId?: string;
   /** Made by Join or Subtract: the pieces form one solid, so it is presented as a single shape. */
   joined?: boolean;
 }

@@ -220,7 +220,7 @@ export function meshReport(body: Body3D): MeshReport | null {
 
 export interface SceneSummary {
   shapes: ShapeSummary[];
-  groups: { id: string; name: string; shapes: string[]; joined: boolean }[];
+  groups: { id: string; name: string; shapes: string[]; joined: boolean; parent?: string }[];
   bounds: { min: Vec3; max: Vec3 } | null;
   /** How to read the numbers. */
   units: string;
@@ -230,7 +230,7 @@ export function sceneSummary(doc: Doc, options: { includeCopies?: boolean } = {}
   const shown = options.includeCopies ? doc.bodies : doc.bodies.filter((b) => !b.repeatOf);
   const out: SceneSummary = {
     shapes: shown.map((b) => summarize(doc, b)),
-    groups: doc.groups.map((g) => ({ id: g.id, name: g.name, shapes: g.bodyIds, joined: !!g.joined })),
+    groups: doc.groups.map((g) => ({ id: g.id, name: g.name, shapes: g.bodyIds, joined: !!g.joined, parent: g.parentId })),
     bounds: boundsOf(doc.bodies.filter((b) => b.visible)),
     units: 'millimetres. x is to the right, y is away from the front of the view, z is up. A shape stands on its bottom (z) and rises to its top.',
   };
