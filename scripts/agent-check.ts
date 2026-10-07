@@ -1,5 +1,6 @@
 // Headless checks of the agent API: every call goes through Engine.execute, the way an AI agent would use it.
 import { Engine } from '../src/core';
+import { themeStyle } from '../src/embed';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -265,6 +266,10 @@ const main = async () => {
   const loaded = await fresh.execute('doc_set', { doc: saved });
   check('a saved document loads into a new engine', loaded.ok && fresh.getDoc().bodies.length === m.getDoc().bodies.length, loaded.error);
   check('a screen-only tool is refused headless, politely', !(await m.execute('ui_screenshot')).ok);
+  // Autora's theme reaches the app as plain colours only
+  const themed = themeStyle({ '--bg': '#101218', '--accent': 'rgb(110, 91, 255)', '--text': 'url(javascript:alert(1))', '--unknown': '#fff', '--s1': '#14161e;position:fixed' });
+  check('theme: known colour tokens are taken', themed['--color-slate-950'] === '#101218' && themed['--color-accent-500'] === 'rgb(110, 91, 255)');
+  check('theme: anything but a colour is refused', !('--color-slate-100' in themed) && !('--color-slate-900' in themed) && Object.keys(themed).length === 2);
   await m.execute('doc_clear');
   check('clear empties the scene', m.getDoc().bodies.length === 0);
 };

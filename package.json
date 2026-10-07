@@ -41,5 +41,5 @@
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2"
   },
-  "description": "Craft3D \u2014 a browser-based CAD sketch-and-extrude modeler"
+  "description": "Autora 3D \u2014 a sketch-and-extrude CAD modeler for Autora"
 }

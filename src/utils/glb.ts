@@ -166,7 +166,7 @@ export function glbBytes(bodies: Body3D[], options: GlbOptions = {}): Uint8Array
   });
 
   const json = {
-    asset: { version: '2.0', generator: 'Craft3D' },
+    asset: { version: '2.0', generator: 'Autora 3D' },
     scene: 0,
     scenes: [{ nodes: nodes.map((_, i) => i).filter((i) => !placed.has(i)) }],
     nodes,

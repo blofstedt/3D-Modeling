@@ -1,6 +1,6 @@
-# Craft3D
+# Autora 3D
 
-A browser-based CAD modeler in the spirit of Tinkercad: drop in simple shapes, then group, join or subtract
+Autora 3D is a browser-based CAD modeler in the spirit of Tinkercad: drop in simple shapes, then group, join or subtract
 them and refine them with direct-manipulation tools. No backend — everything runs client-side and
 autosaves to `localStorage`.
 
@@ -110,3 +110,10 @@ src/
   hooks/useHistory.ts     debounced undo/redo
 scripts/agent/            MCP (stdio) and HTTP servers over the headless engine
 ```
+
+## Inside Autora
+
+Autora 3D is also a window in [Autora](https://github.com/blofstedt/autora): the same app, wearing Autora's theme, opened beside the
+conversation with `?embed=autora`. Autora keeps the model on its server, so the agent's `cad_*` tools and the person's hands work on one
+document (protocol in `src/embed.ts`; the tools are `docs/agent-tools.md`). Autora carries a copy of this source in `autora-3d/`; change it here
+and sync it there with Autora's `scripts/sync-autora-3d.mjs`.
