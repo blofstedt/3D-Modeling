@@ -9,7 +9,9 @@ import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.j
 import { BevelStyle, Body3D, Point2D } from '../types';
 import { cleanPolygonPoints, ensureWinding } from './geometry';
 import { getOutline, outwardNormal, runId, runPath, sideRun } from './outline';
-import { loopFor } from './edges';
+import { loopFor, runLimit } from './edges';
+import { HEAL, healTriangles, weldVertices } from './meshHeal';
+import { manifoldReady, subtractAll } from './manifoldBoolean';
 import { buildCornerCutter } from './cornerBevel';
 
 const toPath = <T extends THREE.Path>(path: T, pts: { x: number; y: number }[]): T => {
@@ -35,21 +37,32 @@ export function buildBodyShape(body: Body3D): THREE.Shape | null {
 // Bevel cutters
 // ---------------------------------------------------------------------------
 
-const ARC_STEPS = 8;
+const ARC_STEPS = 12;
+
+/**
+ * Used only when the exact engine (Manifold) is not running. A cutter whose surface runs tangent to, or has an edge lying
+ * in, a face of the body is the one thing a triangle-mesh boolean cannot do cleanly (hair-thin slivers along the whole edge),
+ * so the profile is nudged by this much to cross the body's faces at a small angle: far below anything a printer can show.
+ */
+const nudge = () => (manifoldReady() ? 0 : 0.02);
 
 /** Cross-section (h = outward, v = up) of the material a bevel removes at a top edge. */
 function bevelProfile(size: number, style: BevelStyle): THREE.Vector2[] {
   const e = size + 1;
   const pts: THREE.Vector2[] = [];
   if (style === 'round') {
+    // The arc, with its centre a hair out and up: it then meets the top and the wall at a slight angle, not tangent.
     for (let k = 0; k <= ARC_STEPS; k++) {
       const t = (k / ARC_STEPS) * (Math.PI / 2);
-      pts.push(new THREE.Vector2(-size + size * Math.sin(t), -size + size * Math.cos(t)));
+      pts.push(new THREE.Vector2(-size + nudge() + size * Math.sin(t), -size + nudge() + size * Math.cos(t)));
     }
+    pts.push(new THREE.Vector2(e, -size + nudge()));
   } else {
-    pts.push(new THREE.Vector2(-size, 0), new THREE.Vector2(0, -size));
+    // The flat bevel's line, run a hair past both ends so no corner of the cutter sits in the top or the wall.
+    pts.push(new THREE.Vector2(-size - nudge(), nudge()), new THREE.Vector2(nudge(), -size - nudge()));
+    pts.push(new THREE.Vector2(e, -size - nudge()));
   }
-  pts.push(new THREE.Vector2(e, -size), new THREE.Vector2(e, e), new THREE.Vector2(-size, e));
+  pts.push(new THREE.Vector2(e, e), new THREE.Vector2(-size - nudge(), e));
   return pts;
 }
 
@@ -215,6 +228,68 @@ interface ResolvedBevel {
   ends: { start?: Point2D; end?: Point2D };
   /** Overrides the outline's winding (a hole's material is on the other side of its loop). */
   winding?: 1 | -1;
+  /** Which loop of the outline (the outer edge, or one of the holes) the path runs along. */
+  loop: number;
+  /** The size that was asked for, before limits: bevels only join up when they were asked for alike. */
+  requested: number;
+}
+
+const samePoint = (a: Point2D, b: Point2D) => Math.hypot(a.x - b.x, a.y - b.y) < 0.02;
+
+/**
+ * Edges that were beveled alike and meet at a corner become ONE cutter running round that corner, instead of one
+ * cutter per edge. Separate cutters overlap at the corner, and the boolean cut there leaves cracks and doubled faces
+ * (a rim of four edges was not watertight, which shows as dark specks and fails in a slicer). One mitred cutter is clean.
+ */
+function joinBevelRuns(list: ResolvedBevel[]): ResolvedBevel[] {
+  const groups = new Map<string, ResolvedBevel[]>();
+  for (const r of list) {
+    const key = `${r.loop}|${r.side}|${r.style}|${r.requested}`;
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  }
+  const out: ResolvedBevel[] = [];
+  groups.forEach((group) => {
+    out.push(...group.filter((r) => r.closed));
+    const open = group.filter((r) => !r.closed);
+    const used = new Set<ResolvedBevel>();
+    for (const first of open) {
+      if (used.has(first)) continue;
+      used.add(first);
+      const chain = [first];
+      let tail = first;
+      for (;;) {
+        const next = open.find((o) => !used.has(o) && samePoint(o.path[0], tail.path[tail.path.length - 1]));
+        if (!next) break;
+        used.add(next);
+        chain.push(next);
+        tail = next;
+      }
+      let head = first;
+      for (;;) {
+        const prev = open.find((o) => !used.has(o) && samePoint(o.path[o.path.length - 1], head.path[0]));
+        if (!prev) break;
+        used.add(prev);
+        chain.unshift(prev);
+        head = prev;
+      }
+      if (chain.length === 1) {
+        out.push(first);
+        continue;
+      }
+      const path: Point2D[] = [];
+      chain.forEach((c, i) => path.push(...(i === 0 ? c.path : c.path.slice(1))));
+      const closed = samePoint(path[0], path[path.length - 1]);
+      if (closed) path.pop();
+      out.push({
+        ...first,
+        size: Math.min(...chain.map((c) => c.size)),
+        path,
+        closed,
+        ends: closed ? {} : { start: chain[0].ends.start, end: chain[chain.length - 1].ends.end },
+      });
+    }
+  });
+  return out;
 }
 
 function resolveBevels(body: Body3D): ResolvedBevel[] {
@@ -235,16 +310,7 @@ function resolveBevels(body: Body3D): ResolvedBevel[] {
     if (done.has(key)) continue;
     done.add(key);
 
-    // A bevel can't be larger than the rounding it wraps around, or than half the body.
-    let size = Math.min(bevel.size, height / 2 - 0.05);
-    const corners = outline.radii.filter((r, v) => r > 0 && run.includes(v) && run.includes((v - 1 + n) % n));
-    if (offset > 0) {
-      // A hole's cutter reaches `size + 1` into the hole, so it has to stay well inside it.
-      const xs = outline.points.map((p) => p.x);
-      const ys = outline.points.map((p) => p.y);
-      size = Math.min(size, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
-      if (corners.length) size = Math.min(size, Math.min(...corners) - 1.2);
-    } else if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+    const size = Math.min(bevel.size, runLimit(height, outline, run, n, offset));
     if (size < 0.1) continue;
 
     const { pts, closed } = runPath(outline, run, n);
@@ -256,9 +322,9 @@ function resolveBevels(body: Body3D): ResolvedBevel[] {
       if (first >= 0) ends.start = outwardNormal(outline.points[(first - 1 + m) % m], pts[0], away);
       if (last >= 0) ends.end = outwardNormal(pts[pts.length - 1], outline.points[(last + 1) % m], away);
     }
-    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends, winding: away });
+    out.push({ side: bevel.side, size, style: bevel.style, path: pts, closed, ends, winding: away, loop: offset, requested: bevel.size });
   }
-  return out;
+  return joinBevelRuns(out);
 }
 
 /**
@@ -279,35 +345,47 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
   }
   geometry.rotateX(-Math.PI / 2);
 
+  let cutIsExact = false;
   const bevels = !options.fast && body.edgeBevels?.length ? resolveBevels(body) : [];
   const cornerCutters = options.fast ? [] : (body.cornerBevels ?? []).map((cb) => buildCornerCutter(body, cb)).filter((g): g is THREE.BufferGeometry => !!g);
   if (bevels.length || cornerCutters.length) {
-    try {
-      const evaluator = new Evaluator();
-      evaluator.attributes = ['position', 'normal'];
-      evaluator.useGroups = false;
-      let result = asBrush(geometry);
-      for (const b of bevels) {
-        const winding = getOutline(body).winding;
-        const cutter = buildBevelCutter(b.path, b.closed, b.winding ?? winding, b.side, b.size, b.style, b.side === 'top' ? height : 0, b.ends);
-        if (cutter) result = evaluator.evaluate(result, asBrush(cutter), SUBTRACTION);
-      }
-      for (const cutter of cornerCutters) {
-        // Cutters are built in world height; the body is extruded from zero.
-        cutter.translate(0, -(body.elevation ?? 0), 0);
-        result = evaluator.evaluate(result, asBrush(cutter), SUBTRACTION);
-      }
+    const winding = getOutline(body).winding;
+    const cutters: THREE.BufferGeometry[] = [];
+    for (const b of bevels) {
+      const cutter = buildBevelCutter(b.path, b.closed, b.winding ?? winding, b.side, b.size, b.style, b.side === 'top' ? height : 0, b.ends);
+      if (cutter) cutters.push(cutter);
+    }
+    for (const cutter of cornerCutters) {
+      // Cutters are built in world height; the body is extruded from zero.
+      cutter.translate(0, -(body.elevation ?? 0), 0);
+      cutters.push(cutter);
+    }
+    // First choice: Manifold, which always returns a closed solid. If it is not started (or an input is not a clean solid)
+    // fall back to the triangle-mesh cut, whose result is tidied afterwards.
+    const exact = subtractAll(geometry, cutters);
+    if (exact) {
       geometry.dispose();
-      geometry = result.geometry;
-    } catch (err) {
-      console.error(`Bevel failed on "${body.name}"; showing it without bevels`, err);
+      geometry = exact;
+      cutIsExact = true;
+    } else {
+      try {
+        const evaluator = new Evaluator();
+        evaluator.attributes = ['position', 'normal'];
+        evaluator.useGroups = false;
+        let result = asBrush(geometry);
+        for (const cutter of cutters) result = evaluator.evaluate(result, asBrush(cutter), SUBTRACTION);
+        geometry.dispose();
+        geometry = result.geometry;
+      } catch (err) {
+        console.error(`Bevel failed on "${body.name}"; showing it without bevels`, err);
+      }
     }
   }
 
   geometry.deleteAttribute('uv');
   const crease = THREE.MathUtils.degToRad(32);
   // Boolean cuts leave slivers and T-junctions behind: cleanMesh drops the one and closes the other.
-  const smooth = bevels.length || cornerCutters.length ? cleanMesh(geometry, crease) : toCreasedNormals(geometry, crease);
+  const smooth = bevels.length || cornerCutters.length ? cleanMesh(geometry, crease, cutIsExact) : toCreasedNormals(geometry, crease);
   if (smooth !== geometry) geometry.dispose();
   smooth.translate(0, body.elevation ?? 0, 0);
   return smooth;
@@ -317,125 +395,33 @@ export function buildBodyGeometry(body: Body3D, options: { fast?: boolean } = {}
  * blank and render black), and splits triangles where another triangle's vertex sits on their edge, so the surface
  * has no hairline cracks for the background to show through. Returns it with creased normals.
  */
-export function cleanMesh(source: THREE.BufferGeometry, creaseAngle: number): THREE.BufferGeometry {
+export function cleanMesh(source: THREE.BufferGeometry, creaseAngle: number, exact = false): THREE.BufferGeometry {
   const pos = source.getAttribute('position');
   const idx = source.getIndex();
   const count = idx ? idx.count : pos.count;
-  const Q = 1000;
-  const vertexId = new Map<string, number>();
-  const coords: number[] = [];
-  const weld = (i: number) => {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const k = `${Math.round(x * Q)},${Math.round(y * Q)},${Math.round(z * Q)}`;
-    let id = vertexId.get(k);
-    if (id === undefined) {
-      id = coords.length / 3;
-      vertexId.set(k, id);
-      coords.push(x, y, z);
-    }
-    return id;
-  };
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
   const c = new THREE.Vector3();
-  const area2 = (i: number, j: number, k: number) => {
-    a.fromArray(coords, i * 3);
-    b.fromArray(coords, j * 3);
-    c.fromArray(coords, k * 3);
-    return b.sub(a).cross(c.sub(a)).length();
-  };
 
-  const tris: number[][] = [];
+  // Weld what is meant to be one vertex (by distance, not by rounding, so two points a hair apart on either side of a
+  // rounding boundary are still joined), then heal what a boolean cut leaves: slivers, doubled faces, T-junctions, hairline cracks.
+  const corners: number[] = [];
   for (let t = 0; t + 2 < count; t += 3) {
-    const ids = [0, 1, 2].map((k) => weld(idx ? idx.getX(t + k) : t + k));
-    if (ids[0] === ids[1] || ids[1] === ids[2] || ids[2] === ids[0] || area2(ids[0], ids[1], ids[2]) < 1e-6) continue;
-    tris.push(ids);
-  }
-
-  const edgeUses = new Map<string, number>();
-  const ek = (u: number, v: number) => (u < v ? `${u}_${v}` : `${v}_${u}`);
-  tris.forEach((t) => t.forEach((u, k) => edgeUses.set(ek(u, t[(k + 1) % 3]), (edgeUses.get(ek(u, t[(k + 1) % 3])) ?? 0) + 1)));
-
-  const cell = 8;
-  const grid = new Map<string, number[]>();
-  for (let i = 0; i < coords.length / 3; i++) {
-    const k = `${Math.floor(coords[i * 3] / cell)},${Math.floor(coords[i * 3 + 1] / cell)},${Math.floor(coords[i * 3 + 2] / cell)}`;
-    const list = grid.get(k);
-    if (list) list.push(i);
-    else grid.set(k, [i]);
-  }
-  /** Vertices lying inside the edge u→v, in order from u. */
-  const onEdge = (u: number, v: number): number[] => {
-    if (edgeUses.get(ek(u, v)) !== 1) return [];
-    const p = new THREE.Vector3().fromArray(coords, u * 3);
-    const q = new THREE.Vector3().fromArray(coords, v * 3);
-    const dir = q.clone().sub(p);
-    const len2 = dir.lengthSq();
-    const found: { id: number; t: number }[] = [];
-    const w = new THREE.Vector3();
-    for (let cx = Math.floor(Math.min(p.x, q.x) / cell); cx <= Math.floor(Math.max(p.x, q.x) / cell); cx++)
-      for (let cy = Math.floor(Math.min(p.y, q.y) / cell); cy <= Math.floor(Math.max(p.y, q.y) / cell); cy++)
-        for (let cz = Math.floor(Math.min(p.z, q.z) / cell); cz <= Math.floor(Math.max(p.z, q.z) / cell); cz++)
-          for (const id of grid.get(`${cx},${cy},${cz}`) ?? []) {
-            if (id === u || id === v) continue;
-            w.fromArray(coords, id * 3);
-            const t = w.clone().sub(p).dot(dir) / len2;
-            if (t <= 1e-4 || t >= 1 - 1e-4) continue;
-            if (p.clone().addScaledVector(dir, t).distanceToSquared(w) < 4e-6) found.push({ id, t });
-          }
-    return found.sort((m, n) => m.t - n.t).map((f) => f.id);
-  };
-
-  const kept: number[][] = [];
-  const emit = (i: number, j: number, k: number) => {
-    if (area2(i, j, k) >= 1e-6) kept.push([i, j, k]);
-  };
-  for (const [p0, p1, p2] of tris) {
-    const splits = [onEdge(p0, p1), onEdge(p1, p2), onEdge(p2, p0)];
-    const total = splits[0].length + splits[1].length + splits[2].length;
-    if (!total) {
-      emit(p0, p1, p2);
-      continue;
+    for (let k = 0; k < 3; k++) {
+      const i = idx ? idx.getX(t + k) : t + k;
+      corners.push(pos.getX(i), pos.getY(i), pos.getZ(i));
     }
-    const corners = [p0, p1, p2];
-    const only = splits.filter((s) => s.length).length === 1 ? splits.findIndex((s) => s.length) : -1;
-    if (only >= 0) {
-      // Fan from the corner facing the split edge.
-      const apex = corners[(only + 2) % 3];
-      const chain = [corners[only], ...splits[only], corners[(only + 1) % 3]];
-      for (let k = 0; k + 1 < chain.length; k++) emit(chain[k], chain[k + 1], apex);
-      continue;
-    }
-    // Several edges split: clip ears off the (convex) outline, skipping the flat ones between points on one edge.
-    // No new vertex is added, so the smooth normals across curved strips stay intact.
-    const ring = [p0, ...splits[0], p1, ...splits[1], p2, ...splits[2]];
-    const normal = new THREE.Vector3();
-    a.fromArray(coords, p0 * 3);
-    b.fromArray(coords, p1 * 3);
-    c.fromArray(coords, p2 * 3);
-    normal.subVectors(b, a).cross(c.sub(a));
-    const turn = (i: number, j: number, k: number) => {
-      a.fromArray(coords, i * 3);
-      b.fromArray(coords, j * 3).sub(a);
-      c.fromArray(coords, k * 3).sub(a);
-      return b.cross(c).dot(normal);
-    };
-    for (let guard = 0; ring.length > 3 && guard < 200; guard++) {
-      let ear = -1;
-      for (let k = 0; k < ring.length; k++) {
-        if (turn(ring[(k - 1 + ring.length) % ring.length], ring[k], ring[(k + 1) % ring.length]) > 1e-9) {
-          ear = k;
-          break;
-        }
-      }
-      if (ear < 0) break;
-      emit(ring[(ear - 1 + ring.length) % ring.length], ring[ear], ring[(ear + 1) % ring.length]);
-      ring.splice(ear, 1);
-    }
-    if (ring.length === 3) emit(ring[0], ring[1], ring[2]);
   }
+  const welded = weldVertices(corners, exact ? 1e-5 : HEAL.weld);
+  const coords = welded.coords;
+  const soup: number[][] = [];
+  for (let t = 0; t + 2 < welded.ids.length; t += 3) {
+    const [i, j, k] = [welded.ids[t], welded.ids[t + 1], welded.ids[t + 2]];
+    // Welding can fold a sliver onto a line: a triangle with two corners at one point has no area and no place in a solid.
+    if (i !== j && j !== k && k !== i) soup.push([i, j, k]);
+  }
+  // An exact cut is already a closed solid: only a cut made on triangles needs healing.
+  const kept = exact ? soup : healTriangles(coords, soup);
 
   // Creased normals weighted by each triangle's corner angle, so how a surface happens to be cut into triangles
   // does not show (a plain average leans toward whichever side has more slivers and the curve looks banded).

@@ -5,9 +5,10 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { SquareDashed } from 'lucide-react';
-import { BevelStyle } from '../types';
-import { spring } from './controls';
+import { Check, Minus, Plus, SquareDashed, Undo2, X } from 'lucide-react';
+import { BevelStyle, DrawForm, DrawSession, RepeatSession } from '../types';
+import { MAX_COPIES, spacing, toAround, toPath, withCount, withSpacing } from '../utils/repeat';
+import { Segmented, spring } from './controls';
 import { formatLength, parseLength } from '../utils/units';
 
 const OPTIONS: { style: BevelStyle; label: string; path: string }[] = [
@@ -152,6 +153,154 @@ export function MeasureReadout({
           </motion.button>
         </>
       )}
+    </motion.div>
+  );
+}
+
+/**
+ * The few things a repeat needs, in one pill under the original shape: how many, how far apart,
+ * whether to go round a circle or turn with the path, and Done. Everything else is dragged on the shape.
+ */
+export function RepeatChip({
+  session,
+  onChange,
+  onDone,
+  onCancel,
+}: {
+  session: RepeatSession;
+  onChange: (fn: (s: RepeatSession) => RepeatSession) => void;
+  onDone: () => void;
+  /** Drop the changes (Esc on a keyboard; this is the way on a phone). */
+  onCancel: () => void;
+}) {
+  const gap = Math.round(spacing(session) * 10) / 10;
+  const [draft, setDraft] = useState<string | null>(null);
+  const commitGap = () => {
+    const v = parseLength(draft ?? '');
+    setDraft(null);
+    if (v !== null && v > 0) onChange((s) => withSpacing(s, v));
+  };
+  const pill = (on: boolean) =>
+    `h-7 px-3 rounded-full text-xs font-medium transition-colors ${on ? 'bg-accent-500 text-white' : 'bg-white/6 text-slate-200 hover:bg-white/12'}`;
+  const step = 'w-7 h-7 rounded-full bg-white/6 hover:bg-white/12 text-slate-100 flex items-center justify-center disabled:opacity-30';
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.85, y: 8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      transition={spring}
+      // Wraps to two rows on a phone, so every control stays on screen.
+      className="flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-[1.6rem] bg-slate-900/95 border border-white/10 shadow-xl backdrop-blur max-w-[calc(100vw-1rem)]"
+    >
+      <button type="button" aria-label="Fewer copies" className={step} disabled={session.count <= 2} onClick={() => onChange((s) => withCount(s, s.count - 1))}>
+        <Minus size={14} />
+      </button>
+      <span className="min-w-[1.5rem] text-center text-sm font-semibold text-white tabular-nums" aria-label="Number of shapes">
+        {session.count}
+      </span>
+      <button type="button" aria-label="More copies" className={step} disabled={session.count >= MAX_COPIES} onClick={() => onChange((s) => withCount(s, s.count + 1))}>
+        <Plus size={14} />
+      </button>
+      <span className="hidden sm:block w-px h-5 bg-white/10" />
+      <input
+        type="text"
+        inputMode="decimal"
+        value={draft ?? `${gap} mm apart`}
+        onFocus={(e) => {
+          setDraft(String(gap));
+          e.currentTarget.select();
+        }}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commitGap}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+          if (e.key === 'Escape') {
+            setDraft(null);
+            e.stopPropagation();
+            e.currentTarget.blur();
+          }
+        }}
+        aria-label="Distance between copies"
+        className="w-[7.5rem] h-7 px-2 rounded-full bg-white/6 text-xs font-medium text-white tabular-nums text-center focus:outline-none focus:ring-1 focus:ring-accent-400"
+      />
+      <button type="button" aria-pressed={session.kind === 'around'} className={pill(session.kind === 'around')} onClick={() => onChange((s) => (s.kind === 'around' ? toPath(s) : toAround(s)))}>
+        Around
+      </button>
+      <button type="button" aria-pressed={session.follow} className={pill(session.follow)} onClick={() => onChange((s) => ({ ...s, follow: !s.follow }))}>
+        Turn
+      </button>
+      <button type="button" aria-label="Cancel" title="Cancel (Esc)" className="w-8 h-8 rounded-full bg-white/6 text-slate-200 flex items-center justify-center hover:bg-white/12" onClick={onCancel}>
+        <X size={16} />
+      </button>
+      <button type="button" aria-label="Keep the copies" title="Keep the copies (Enter)" className="w-8 h-8 rounded-full bg-accent-500 text-white flex items-center justify-center hover:bg-accent-400" onClick={onDone}>
+        <Check size={16} />
+      </button>
+    </motion.div>
+  );
+}
+
+/** What is being drawn, as one small pill: corners, a rectangle or a circle, and a way out. Everything else happens on the surface. */
+export function DrawChip({
+  draw,
+  onForm,
+  onDone,
+  onCancel,
+  onUndoCorner,
+  onCut,
+}: {
+  draw: DrawSession;
+  onForm: (form: DrawForm) => void;
+  onDone: () => void;
+  onCancel: () => void;
+  /** Take back the last corner (Backspace on a keyboard). */
+  onUndoCorner: () => void;
+  /** Switch between adding a new shape and cutting a hole in the one being drawn on. */
+  onCut: (cut: boolean) => void;
+}) {
+  const canFinish = draw.form === 'shape' && draw.points.length >= 3;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 10 }}
+      transition={spring}
+      className="flex flex-wrap items-center justify-center gap-2 p-1.5 rounded-[1.6rem] bg-slate-900/95 border border-white/10 shadow-xl backdrop-blur max-w-[calc(100vw-1rem)]"
+    >
+      <Segmented
+        id="draw-form"
+        label="What to draw"
+        value={draw.form}
+        options={[
+          { value: 'shape', label: 'Corners' },
+          { value: 'rectangle', label: 'Rectangle' },
+          { value: 'circle', label: 'Circle' },
+        ]}
+        onChange={onForm}
+      />
+      {draw.hostId && !draw.frame && (
+        <Segmented
+          id="draw-mode"
+          label="Add a shape or cut a hole"
+          value={draw.cut ? 'cut' : 'add'}
+          options={[
+            { value: 'add', label: 'Add' },
+            { value: 'cut', label: 'Cut' },
+          ]}
+          onChange={(v) => onCut(v === 'cut')}
+        />
+      )}
+      {draw.form === 'shape' && draw.points.length > 0 && (
+        <button type="button" aria-label="Take back the last corner" title="Take back the last corner (Backspace)" className="w-8 h-8 rounded-full bg-white/6 text-slate-200 flex items-center justify-center hover:bg-white/12" onClick={onUndoCorner}>
+          <Undo2 size={15} />
+        </button>
+      )}
+      {canFinish && (
+        <button type="button" aria-label="Finish the shape" title="Finish (Enter)" className="w-8 h-8 rounded-full bg-accent-500 text-white flex items-center justify-center hover:bg-accent-400" onClick={onDone}>
+          <Check size={16} />
+        </button>
+      )}
+      <button type="button" aria-label="Stop drawing" title="Stop drawing (Esc)" className="w-8 h-8 rounded-full bg-white/6 text-slate-200 flex items-center justify-center hover:bg-white/12" onClick={onCancel}>
+        <X size={16} />
+      </button>
     </motion.div>
   );
 }

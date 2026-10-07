@@ -4,6 +4,7 @@
  */
 
 import { Body3D, Point2D } from '../types';
+import { moveFrame } from './frame';
 import { holeLoops, withHoles, withOutline } from './outline';
 
 export interface BodyTransform {
@@ -20,6 +21,8 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /** Rigid move/rotate of a body. Edge bevels and corner radii are index-based, so they carry over unchanged. */
 export function transformBody(body: Body3D, t: BodyTransform): Partial<Body3D> {
+  // A shape standing on a wall keeps its outline; it is the wall frame that travels.
+  if (body.frame) return { frame: moveFrame(body.frame, t) };
   const cos = Math.cos(t.angle);
   const sin = Math.sin(t.angle);
   const move = (p: Point2D): Point2D => {

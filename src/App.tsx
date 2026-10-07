@@ -11,24 +11,34 @@ import {
   EdgeSel,
   FaceSel,
   Point2D,
-  RepeatConfig,
+  DrawForm,
+  Frame,
+  DrawSession,
+  RepeatLink,
+  RepeatSession,
   ShapeGroup,
   SWATCHES,
 } from './types';
-import ModelViewer3D from './components/ModelViewer3D';
+import ModelViewer3D, { ViewerApi } from './components/ModelViewer3D';
+import { installBridge } from './core/bridge';
+import type { AgentHost } from './core/agent';
 import Sidebar from './components/Sidebar';
 import BottomBar from './components/BottomBar';
 import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
-import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
-import { cutShape, getPolygonSignedArea, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
-import { withOutline } from './utils/outline';
+import { defaultSession } from './utils/repeat';
+import { groupOfSelection, pickInGroups, withGroupMates } from './utils/groups';
+import { Doc, IdGen, parseDoc, settle, starterDoc } from './core/doc';
+import { AgentError } from './core/errors';
+import * as ops from './core/ops';
+import { DrawnOutline, drawnBody, shapeOutline } from './utils/draw';
+import { outwardNormal, wallEnds, withOutline } from './utils/outline';
+import { wallFrame } from './utils/frame';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
-import { joinBodies } from './utils/join';
-import { SHAPE_LABELS, ShapeKind, primitiveOutline } from './utils/primitives';
+import { ShapeKind } from './utils/primitives';
 import { applyEdgeChange, edgeKey } from './utils/edges';
-import { BodyTransform, resizeBody, selectionBounds, transformBody } from './utils/transform';
+import { BodyTransform, resizeBody, selectionBounds } from './utils/transform';
 import {
   Box,
   EyeOff,
@@ -45,46 +55,17 @@ import {
   X,
 } from 'lucide-react';
 
-interface Doc {
-  bodies: Body3D[];
-  groups: ShapeGroup[];
-}
-
 const STORAGE_KEY = 'craft3d:document:v3';
-
-// The starter scene is one plain block.
-const createStarterBodies = (): Body3D[] => {
-  const outline: Point2D[] = [
-    { x: -60, y: -40 },
-    { x: 60, y: -40 },
-    { x: 60, y: 40 },
-    { x: -60, y: 40 },
-  ];
-  return [
-    {
-      id: 'body_block',
-      name: 'Block',
-      points: outline,
-      extrusionHeight: 50,
-      color: '#6f7a93',
-      materialType: 'matte',
-      visible: true,
-      createdAt: new Date().toISOString(),
-    },
-  ];
-};
 
 const loadInitialDoc = (): Doc => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Doc;
-      if (Array.isArray(parsed.bodies) && Array.isArray(parsed.groups)) return parsed;
-    }
+    const parsed = raw ? parseDoc(JSON.parse(raw)) : null;
+    if (parsed) return parsed;
   } catch {
     // storage unavailable or corrupt: fall through to the starter scene
   }
-  return { bodies: createStarterBodies(), groups: [] };
+  return starterDoc();
 };
 
 const isTypingTarget = (target: EventTarget | null) => {
@@ -98,8 +79,48 @@ const isTypingTarget = (target: EventTarget | null) => {
 };
 
 export default function App() {
-  const [doc, setDoc] = useState<Doc>(loadInitialDoc);
-  const { bodies, groups } = doc;
+  const [doc, setDocState] = useState<Doc>(loadInitialDoc);
+  const { bodies, groups, repeats, library } = doc;
+  /** The newest document, updated the moment a change is made (state lags a render behind; agents send changes back to back). */
+  const docRef = useRef(doc);
+  const revRef = useRef(0);
+  const trackRef = useRef<((d: Doc) => void) | null>(null);
+  const listeners = useRef(new Set<(doc: Doc, revision: number) => void>());
+  const setDocRaw = useCallback((next: Doc) => {
+    if (next === docRef.current) return;
+    docRef.current = next;
+    revRef.current++;
+    trackRef.current?.(next);
+    setDocState(next);
+    listeners.current.forEach((fn) => fn(next, revRef.current));
+  }, []);
+
+  /** Every document change goes through here so repeat copies never fall out of step with their source. */
+  const setDoc = useCallback(
+    (update: Partial<Doc> | ((d: Doc) => Partial<Doc>)) => {
+      const d = docRef.current;
+      setDocRaw(settle({ ...d, ...(typeof update === 'function' ? update(d) : update) }));
+    },
+    [setDocRaw]
+  );
+
+  /** Ids for new shapes made by the person at the screen. */
+  const uiIds = useRef<IdGen>((kind) => `${kind}_${Date.now()}_${Math.floor(Math.random() * 1e4)}`);
+
+  /** Runs a shared document operation (the same ones an agent calls) and shows its refusal, if any, to the person. */
+  const runOp = <T,>(fn: (d: Doc, ids: IdGen) => ops.OpResult<T>): T | null => {
+    try {
+      const out = fn(docRef.current, uiIds.current);
+      if (out.doc !== docRef.current) setDocRaw(settle(out.doc));
+      return out.result;
+    } catch (e) {
+      if (e instanceof AgentError) {
+        notify(e.hint ? `${e.message} ${e.hint}` : e.message);
+        return null;
+      }
+      throw e;
+    }
+  };
 
   const setBodies = useCallback(
     (update: Body3D[] | ((prev: Body3D[]) => Body3D[])) =>
@@ -112,7 +133,8 @@ export default function App() {
     []
   );
 
-  const history = useHistory(doc, setDoc);
+  const history = useHistory(doc, setDocRaw);
+  trackRef.current = history.track;
 
   // Autosave
   useEffect(() => {
@@ -140,18 +162,8 @@ export default function App() {
 
   /** Shapes waiting on the "Delete?" confirmation. */
   const [confirmDeleteIds, setConfirmDeleteIds] = useState<string[] | null>(null);
-  const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
-
-  const [repeatConfig, setRepeatConfig] = useState<RepeatConfig>({
-    type: 'linear',
-    count: 4,
-    startPoint: null,
-    controlPoint: null,
-    endPoint: null,
-    followCurve: true,
-    isDrawingLine: false,
-    drawingStep: 'start',
-  });
+  /** The open Repeat: ghost copies stay editable on the shape until it is finished or cancelled. */
+  const [repeat, setRepeat] = useState<RepeatSession | null>(null);
 
   // Toasts
   const [toast, setToast] = useState<string | null>(null);
@@ -165,16 +177,28 @@ export default function App() {
 
   const bodyCounter = useRef(bodies.length);
 
+  /** The open Draw: a sketch on the ground or on the top of a shape, until it becomes a shape or is dropped. */
+  const [draw, setDraw] = useState<DrawSession | null>(null);
+
+  /** See-through mode: shapes turn glassy so what is inside another shape can be picked. */
+  const [xray, setXray] = useState(false);
+
+  const editingRepeatOf = repeat?.bodyId ?? null;
+
   // Isolation hides the rest of the scene from the viewport.
   const displayBodies = useMemo(
-    () => (isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id)) : bodies),
-    [bodies, isolatedIds]
+    () => {
+      // Isolating a shape keeps its live copies; while its repeat is being edited, ghosts stand in for them.
+      const shown = isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id) || (!!b.repeatOf && isolatedIds.includes(b.repeatOf))) : bodies;
+      return editingRepeatOf ? shown.filter((b) => b.repeatOf !== editingRepeatOf) : shown;
+    },
+    [bodies, isolatedIds, editingRepeatOf]
   );
 
-  // Once the pattern path has been drawn in the viewport, bring the dialog back to finish the job.
+  // A repeat can't outlive the shape it copies (deleted or undone away).
   useEffect(() => {
-    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine) setIsRepeatModalOpen(true);
-  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine]);
+    if (repeat && !bodies.some((b) => b.id === repeat.bodyId)) setRepeat(null);
+  }, [bodies, repeat]);
 
   // Drop selections and isolation that no longer exist (after delete / undo).
   useEffect(() => {
@@ -208,6 +232,69 @@ export default function App() {
     setSelectedFace(null);
   };
 
+  // ---- Agent access ---------------------------------------------------------
+  // The same tools the headless engine has, run on the live document so the person sees every change as it lands.
+  const viewerApi = useRef<ViewerApi | null>(null);
+  const hostRef = useRef<AgentHost>(null!);
+  hostRef.current = {
+    getDoc: () => docRef.current,
+    // Each agent change is its own undo step, apart from whatever the person was doing a moment before.
+    setDoc: (d) => {
+      history.commit();
+      setDocRaw(settle(d));
+      history.commit();
+    },
+    newIds: () => uiIds.current,
+    undo: () => history.undo(),
+    redo: () => history.redo(),
+    revision: () => revRef.current,
+    ui: async (name, args) => {
+      const api = viewerApi.current;
+      if (name === 'ui_select') {
+        const ids = (Array.isArray(args.ids) ? args.ids : []) as string[];
+        const found = docRef.current.bodies.filter((b) => ids.includes(b.id) && !b.repeatOf);
+        if (!found.length) throw new AgentError('None of those ids exist.', 'Call scene_get to list shapes.');
+        const mates = found.flatMap((b) => withGroupMates(docRef.current.groups, docRef.current.bodies, b.id));
+        selectMany([...new Set(mates)]);
+        return { selected: [...new Set(mates)] };
+      }
+      if (name === 'ui_view') {
+        if (!api) throw new AgentError('The 3D view is not ready yet.');
+        api.view(args.view);
+        return { view: args.view };
+      }
+      if (name === 'ui_xray') {
+        setXray(!!args.on);
+        return { xray: !!args.on };
+      }
+      if (name === 'ui_screenshot') {
+        if (!api) throw new AgentError('The 3D view is not ready yet.');
+        return { mime: 'image/png', dataUrl: api.screenshot() };
+      }
+      throw new AgentError(`Unknown screen command "${name}".`);
+    },
+  };
+  useEffect(() => {
+    const host: AgentHost = {
+      getDoc: () => hostRef.current.getDoc(),
+      setDoc: (d) => hostRef.current.setDoc(d),
+      newIds: () => hostRef.current.newIds(),
+      undo: () => hostRef.current.undo(),
+      redo: () => hostRef.current.redo(),
+      revision: () => hostRef.current.revision(),
+      ui: (name, args) => hostRef.current.ui!(name, args),
+    };
+    const subscribe = (fn: (doc: Doc, revision: number) => void) => {
+      listeners.current.add(fn);
+      return () => listeners.current.delete(fn);
+    };
+    const origins = String(import.meta.env.VITE_CRAFT3D_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+    return installBridge(host, subscribe, origins);
+  }, []);
+
   // ---- Selection ----------------------------------------------------------
   const handleSelectBody = (id: string | null, isMultiSelect?: boolean) => {
     if (id === null) {
@@ -215,8 +302,9 @@ export default function App() {
       return;
     }
     // Clicking a member of a group picks the whole group.
-    const group = bodies.find((b) => b.id === id)?.groupId;
-    const members = group ? bodies.filter((b) => b.groupId === group).map((b) => b.id) : [id];
+    // Tapping it again steps one group deeper, down to the shape itself.
+    const picked = pickInGroups(bodies, groups, id, selectedBodyIds);
+    const members = isMultiSelect ? withGroupMates(groups, bodies, id) : picked.ids;
 
     if (!isMultiSelect) {
       setSelectedBodyId(id);
@@ -248,10 +336,10 @@ export default function App() {
   /** Rigid move/rotate of several bodies in one update. */
   const transformBodies = useCallback(
     (ids: string[], t: BodyTransform) => {
-      const set = new Set(ids);
-      setBodies((prev) => prev.map((b) => (set.has(b.id) ? { ...b, ...transformBody(b, t) } : b)));
+      // Copies of a live repeat are rebuilt from their shape, so only the shape and its path are moved.
+      setDocRaw(settle(ops.applyTransform(docRef.current, ids, t)));
     },
-    [setBodies]
+    [setDocRaw]
   );
 
   const requestDelete = (targets: string[] = selectedBodyIds) => {
@@ -278,7 +366,8 @@ export default function App() {
     selectedBodies.length > 1 && selectedBodies[0].groupId && selectedBodies.every((b) => b.groupId === selectedBodies[0].groupId) ? selectedBodies[0].groupId : null;
   /** A joined shape is several pieces that act as one solid; it is never shown as a loose group. */
   const joinedSelected = !!commonGroupId && !!groups.find((g) => g.id === commonGroupId)?.joined;
-  const selectedGroupId = joinedSelected ? null : commonGroupId;
+  const selectedGroup = joinedSelected ? undefined : groupOfSelection(groups, selectedBodyIds);
+  const selectedGroupId = selectedGroup?.id ?? null;
 
   const hideSelected = () => {
     if (!selectedBodyIds.length) return;
@@ -298,164 +387,63 @@ export default function App() {
 
   const handleDeleteSelected = (targets: string[] = selectedBodyIds) => {
     if (!targets.length) return;
-    const ids = new Set(targets);
-    const label = targets.length === 1 ? bodies.find((b) => b.id === targets[0])?.name ?? 'shape' : `${ids.size} shapes`;
-    setBodies((prev) => prev.filter((body) => !ids.has(body.id)));
-    setGroups((prev) =>
-      prev
-        .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => !ids.has(bid)) }))
-        .filter((g) => g.bodyIds.length > 1)
-    );
-    notify(`Deleted ${label}. Press ⌘Z to undo.`);
+    const label = targets.length === 1 ? bodies.find((b) => b.id === targets[0])?.name ?? 'shape' : `${new Set(targets).size} shapes`;
+    // A shape takes the copies of its live repeat with it.
+    if (runOp((d) => ops.deleteShapes(d, { ids: targets }))) notify(`Deleted ${label}. Press ⌘Z to undo.`);
     setConfirmDeleteIds(null);
   };
 
   const handleCloneBody = (id: string) => {
-    const target = bodies.find((b) => b.id === id);
-    if (!target) return;
-    const clonedId = `body_${Date.now()}`;
-    const clone: Body3D = {
-      ...target,
-      ...transformBody(target, { dx: 35, dy: -35, dz: 0, angle: 0, cx: 0, cy: 0 }),
-      id: clonedId,
-      name: `${target.name} copy`,
-      groupId: undefined,
-      createdAt: new Date().toISOString(),
-    };
-    setBodies((prev) => [...prev, clone]);
-    selectOnly(clonedId);
+    const made = runOp((d, ids) => ops.duplicateShapes(d, ids, { ids: [id] }));
+    if (!made) return;
+    selectOnly(made.created[0]);
     notify('Duplicated.');
   };
 
   /** Drops a stock shape into the scene: on the selected top face if there is one, otherwise beside what is already there. */
   const addShape = (kind: ShapeKind) => {
-    bodyCounter.current += 1;
-    const id = `body_${Date.now()}`;
-    const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
     const onTop = selectedBody && selectedFace?.kind === 'top' && selectedFace.bodyId === selectedBody.id ? selectedBody : null;
-    let cx = 0;
-    let cy = 0;
-    let elevation = 0;
-    if (onTop) {
-      const b = selectionBounds([onTop])!;
-      cx = b.centerX;
-      cy = b.centerY;
-      elevation = Math.round(((onTop.elevation ?? 0) + onTop.extrusionHeight) * 100) / 100;
-    } else {
-      const b = selectionBounds(bodies.filter((x) => x.visible));
-      if (b) {
-        cx = Math.round(b.maxX + 50);
-        cy = Math.round(b.centerY);
-      }
-    }
-    const outline = primitiveOutline(kind, cx, cy);
-    const body: Body3D = {
-      id,
-      name: `${SHAPE_LABELS[kind]} ${bodyCounter.current}`,
-      ...outline,
-      extrusionHeight: 40,
-      elevation,
-      color,
-      materialType: 'matte',
-      visible: true,
-      createdAt: new Date().toISOString(),
-    };
-    if (outline.cornerRadii) body.points = withOutline(body, { basePoints: outline.basePoints, cornerRadii: outline.cornerRadii }).points;
-    setBodies((prev) => [...prev, body]);
-    setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
-    selectOnly(id);
+    const made = runOp((d, ids) => ops.addShape(d, ids, { kind, onTopOf: onTop?.id }));
+    if (!made) return;
+    bodyCounter.current += 1;
+    setIsolatedIds((prev) => (prev ? [...prev, made.id] : prev));
+    selectOnly(made.id);
   };
 
   /**
    * Subtract: the shape you picked last is cut out of the others. Only the part that overlaps in height is cut,
    * so a short cutter leaves slabs above and below it (kept as one group).
    */
+  const WALL_NOTE = 'Shapes drawn on a wall can be moved, resized, pulled out and repeated, but not joined or cut yet.';
+  const hasWallShape = (ids: string[]) => bodies.some((b) => ids.includes(b.id) && b.frame);
+
   const handleSubtractSelected = () => {
+    if (hasWallShape(selectedBodyIds)) {
+      notify(WALL_NOTE);
+      return;
+    }
     const last = bodies.find((b) => b.id === selectedBodyId);
     if (selectedBodyIds.length < 2 || !last) {
       notify('Select 2+ shapes first: press and hold a shape to add it. The last one you pick is cut out of the others.');
       return;
     }
-    const cutterIds = last.groupId ? bodies.filter((b) => b.groupId === last.groupId).map((b) => b.id) : [last.id];
-    const cutters = bodies.filter((b) => cutterIds.includes(b.id));
+    // The shape picked last (and anything grouped with it) is the cutter.
+    const cutterIds = withGroupMates(groups, bodies, last.id);
     const targets = bodies.filter((b) => selectedBodyIds.includes(b.id) && !cutterIds.includes(b.id));
     if (!targets.length) {
       notify('Select another shape to cut from.');
       return;
     }
-
-    const area = (r: { points: Point2D[]; holes?: Point2D[][] }) =>
-      Math.abs(getPolygonSignedArea(r.points)) - (r.holes ?? []).reduce((sum, h) => sum + Math.abs(getPolygonSignedArea(h)), 0);
-    const stamp = Date.now();
-    let counter = 0;
-    let changed = false;
-
-    const cutOne = (piece: Body3D, cutter: Body3D): Body3D[] => {
-      const tLo = piece.elevation ?? 0;
-      const tHi = tLo + piece.extrusionHeight;
-      const lo = Math.max(tLo, cutter.elevation ?? 0);
-      const hi = Math.min(tHi, (cutter.elevation ?? 0) + cutter.extrusionHeight);
-      if (hi <= lo) return [piece];
-      const results = cutShape(piece.points, piece.holes, cutter.points, cutter.holes);
-      if (results.length === 1 && Math.abs(area(results[0]) - area(piece)) < 0.5) return [piece]; // footprints do not touch
-      changed = true;
-
-      const full = lo <= tLo && hi >= tHi;
-      const clean = { edgeBevels: undefined, cornerBevels: undefined, cornerRadii: undefined };
-      const out: Body3D[] = [];
-      if (!full && lo > tLo) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (base)`, elevation: tLo, extrusionHeight: lo - tLo });
-      results.forEach((r, i) => {
-        out.push({
-          ...piece,
-          ...clean,
-          points: r.points,
-          basePoints: r.points,
-          holes: r.holes,
-          elevation: lo,
-          extrusionHeight: hi - lo,
-          id: i === 0 && full ? piece.id : `body_cut_${stamp}_${counter++}`,
-          name: i === 0 ? piece.name : `${piece.name} (part ${i + 1})`,
-        });
-      });
-      if (!full && hi < tHi) out.push({ ...piece, ...clean, basePoints: piece.points, id: `body_cut_${stamp}_${counter++}`, name: `${piece.name} (top)`, elevation: hi, extrusionHeight: tHi - hi });
-      return out;
-    };
-
-    const replaced = new Map<string, Body3D[]>();
-    targets.forEach((t) => {
-      let pieces: Body3D[] = [t];
-      cutters.forEach((c) => {
-        pieces = pieces.flatMap((p) => cutOne(p, c));
-      });
-      replaced.set(t.id, pieces);
-    });
-    if (!changed) {
+    const out = runOp((d, ids) => ops.subtractShapes(d, ids, { from: targets.map((t) => t.id), cutters: cutterIds }));
+    if (!out) return;
+    if (!out.changed) {
       notify("Those shapes don't overlap, so there is nothing to subtract.");
       return;
     }
-
-    const newGroups: ShapeGroup[] = [];
-    const next: Body3D[] = bodies
-      .filter((b) => !cutterIds.includes(b.id))
-      .flatMap((b) => {
-        const pieces = replaced.get(b.id);
-        if (!pieces) return [b];
-        if (pieces.length > 1) {
-          const gid = b.groupId ?? `group_${stamp}_${b.id}`;
-          if (!b.groupId) newGroups.push({ id: gid, name: `${b.name}`, bodyIds: [], joined: true });
-          return pieces.map((p) => ({ ...p, groupId: gid }));
-        }
-        return pieces;
-      });
-    const allGroups = [...groups, ...newGroups]
-      .map((g) => ({ ...g, bodyIds: next.filter((b) => b.groupId === g.id).map((b) => b.id) }))
-      .filter((g) => g.bodyIds.length > 1);
-    setDoc({ bodies: next, groups: allGroups });
     setIsolatedIds((prev) => (prev ? prev.filter((id) => !cutterIds.includes(id)) : prev));
-    const resultIds = targets.flatMap((t) => (replaced.get(t.id) ?? []).map((p) => p.id));
-    if (resultIds.length) selectMany(resultIds);
+    if (out.created.length) selectMany(out.created);
     else selectOnly(null);
-    notify(`Subtracted ${cutters.length === 1 ? `“${cutters[0].name}”` : 'the last pick'} from ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} shapes`}. ⌘Z undoes.`);
+    notify(`Subtracted ${cutterIds.length === 1 ? `“${last.name}”` : 'the last pick'} from ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} shapes`}. ⌘Z undoes.`);
   };
 
   /** Rounds every vertical corner of a body to the same radius. */
@@ -479,12 +467,22 @@ export default function App() {
   );
 
   // ---- Commands -------------------------------------------------------------
+  /** Repeat opens ghost copies right on the shape; pressing it again (or Enter) keeps them. */
   const handleOpenRepeat = () => {
-    if (!selectedBodyId) {
+    if (repeat) {
+      handleFinishRepeat();
+      return;
+    }
+    if (!selectedBody) {
       notify('Select the shape you want to repeat first.');
       return;
     }
-    setIsRepeatModalOpen(true);
+    setDraw(null);
+    setSelectedFace(null);
+    setSelectedEdges([]);
+    setMoveOn(false);
+    // A shape that already repeats opens its own repeat for editing; any other starts a fresh one.
+    setRepeat(repeats.find((l) => l.bodyId === selectedBody.id) ?? defaultSession(selectedBody));
   };
 
   const handleGroupSelected = () => {
@@ -492,106 +490,170 @@ export default function App() {
       notify('Select at least two shapes to group (Shift-click to add).');
       return;
     }
-    const newGroupId = `group_${Date.now()}`;
-    const newGroup: ShapeGroup = {
-      id: newGroupId,
-      name: `Group ${groups.length + 1}`,
-      bodyIds: [...selectedBodyIds],
-    };
-    setDoc((d) => ({
-      groups: [...d.groups, newGroup],
-      bodies: d.bodies.map((b) => (selectedBodyIds.includes(b.id) ? { ...b, groupId: newGroupId } : b)),
-    }));
-    notify(`Grouped ${selectedBodyIds.length} shapes. They now select and move together.`);
+    if (runOp((d, ids) => ops.groupShapes(d, ids, { ids: selectedBodyIds }))) notify(`Grouped ${selectedBodyIds.length} shapes. They now select and move together.`);
+  };
+
+  /** Selects everything in a group, once the document has settled (its shapes may have new ids). */
+  const selectGroup = (groupId: string) => {
+    const g = docRef.current.groups.find((x) => x.id === groupId);
+    if (g?.bodyIds.length) selectMany(g.bodyIds);
+  };
+
+  const handleSaveToLibrary = () => {
+    const single = selectedBodies.length === 1 && !selectedBodies[0].groupId ? selectedBodies[0] : null;
+    if (!selectedGroup && !single) return;
+    const made = runOp((d, ids) => ops.saveToLibrary(d, ids, selectedGroup ? { group: selectedGroup.id } : { id: single!.id }));
+    if (!made) return;
+    selectGroup(made.group);
+    const name = docRef.current.library.find((i) => i.id === made.item)?.name ?? 'object';
+    notify(made.updated ? `Updated “${name}”: every linked copy follows.` : `Saved “${name}” to the library. Place more from Shape.`);
+  };
+
+  const handlePlaceItem = (item: string) => {
+    const onTop = selectedFace?.kind === 'top' && selectedBody && !selectedBody.frame ? selectedBody.id : undefined;
+    const made = runOp((d, ids) => ops.placeFromLibrary(d, ids, { item, onTopOf: onTop }));
+    if (made) selectGroup(made.group);
+  };
+
+  const handleEditObject = () => {
+    if (!selectedGroup) return;
+    const made = runOp((d, ids) => ops.unlinkObject(d, ids, { group: selectedGroup.id }));
+    if (!made) return;
+    selectGroup(made.group);
+    notify('Open for editing. Change it, then Save: every linked copy follows.');
+  };
+
+  const handleSeparateObject = () => {
+    if (!selectedGroup) return;
+    const made = runOp((d, ids) => ops.unlinkObject(d, ids, { group: selectedGroup.id, forget: true }));
+    if (made) {
+      selectGroup(made.group);
+      notify('Now separate from the library.');
+    }
   };
 
   const handleUngroup = (groupId: string) => {
-    setDoc((d) => ({
-      groups: d.groups.filter((g) => g.id !== groupId),
-      bodies: d.bodies.map((b) => (b.groupId === groupId ? { ...b, groupId: undefined } : b)),
-    }));
-    notify('Group dissolved.');
+    if (runOp((d, ids) => ops.ungroupShapes(d, ids, { group: groupId }))) notify('Group dissolved.');
   };
 
   const handleMergeSelected = () => {
+    if (hasWallShape(selectedBodyIds)) {
+      notify(WALL_NOTE);
+      return;
+    }
     if (selectedBodyIds.length < 2) {
       notify('Select at least two shapes to join (press and hold a shape to add it).');
       return;
     }
-    const targets = bodies.filter((b) => selectedBodyIds.includes(b.id));
-    if (targets.length < 2) return;
-
-    const stamp = Date.now();
-    const merged = joinBodies(targets, stamp);
-    if (!merged.length) return;
-    // Several pieces (steps, or parts that do not touch) are grouped so they still act as one shape.
-    const groupId = merged.length > 1 ? `group_${stamp}` : undefined;
-    const pieces = merged.map((b) => ({ ...b, groupId }));
     const gone = new Set(selectedBodyIds);
-
-    setDoc((d) => ({
-      bodies: [...d.bodies.filter((b) => !gone.has(b.id)), ...pieces],
-      groups: [
-        ...d.groups.map((g) => ({ ...g, bodyIds: g.bodyIds.filter((id) => !gone.has(id)) })).filter((g) => g.bodyIds.length > 1),
-        ...(groupId ? [{ id: groupId, name: `${targets[0].name} (joined)`, bodyIds: pieces.map((b) => b.id), joined: true }] : []),
-      ],
-    }));
-    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...pieces.map((m) => m.id)] : prev));
-    selectMany(pieces.map((b) => b.id));
-    notify(`Joined ${targets.length} shapes into one.`);
+    const out = runOp((d, ids) => ops.joinShapes(d, ids, { ids: selectedBodyIds }));
+    if (!out) return;
+    setIsolatedIds((prev) => (prev ? [...prev.filter((id) => !gone.has(id)), ...out.created] : prev));
+    selectMany(out.created);
+    notify(`Joined ${gone.size} shapes into one.`);
   };
 
-  const handleApplyPattern = (config: RepeatConfig) => {
-    if (!selectedBody) return;
-
-    const n = selectedBody.points.length;
-    const cx = selectedBody.points.reduce((acc, p) => acc + p.x, 0) / n;
-    const cy = selectedBody.points.reduce((acc, p) => acc + p.y, 0) / n;
-
-    const hasPath = config.startPoint && config.endPoint;
-    const sp = hasPath ? config.startPoint! : { x: Math.round(cx), y: Math.round(cy) };
-    const ep = hasPath ? config.endPoint! : { x: Math.round(cx + 180), y: Math.round(cy) };
-
-    const count = Math.max(2, config.count);
-    const transforms =
-      config.type === 'curved' && config.controlPoint
-        ? calculateCurvedPattern(sp, config.controlPoint, ep, count)
-        : calculateLinearPattern(sp, ep, count);
-
-    const stamp = Date.now();
-    const copies: Body3D[] = [];
-    for (let i = 1; i < transforms.length; i++) {
-      // Optionally turn each copy to follow the path tangent, pivoting around the shape's centre.
-      const angle = config.followCurve && config.type === 'curved' ? transforms[i].angle - transforms[0].angle : 0;
-      copies.push({
-        ...selectedBody,
-        ...transformBody(selectedBody, { dx: transforms[i].x - cx, dy: transforms[i].y - cy, dz: 0, angle, cx, cy }),
-        id: `body_repeat_${stamp}_${i}`,
-        name: `${selectedBody.name} copy ${i}`,
-        groupId: undefined,
-        createdAt: new Date().toISOString(),
-      });
+  /** Draw: press it (or `D`) and sketch. With a top face selected the sketch starts on that face. */
+  const handleToggleDraw = () => {
+    if (draw) {
+      setDraw(null);
+      return;
     }
-
-    setBodies((prev) => [...prev, ...copies]);
-    setIsolatedIds((prev) => (prev ? [...prev, ...copies.map((c) => c.id)] : prev));
-    notify(`Created ${copies.length} copies along a ${config.type} path.`);
+    if (repeat) setRepeat(null);
+    const face = selectedFace?.kind === 'top' || selectedFace?.kind === 'wall' ? selectedFace : null;
+    const host = face && bodies.find((b) => b.id === face.bodyId);
+    // A selected wall starts the sketch on that wall, square on to it, at the middle of its height.
+    let frame: Frame | undefined;
+    if (host && face?.kind === 'wall' && face.index !== undefined && !host.frame) {
+      const ends = wallEnds(host, face.index);
+      if (ends) {
+        const n = outwardNormal(ends.a, ends.b, ends.winding);
+        frame = { ...wallFrame({ x: (ends.a.x + ends.b.x) / 2, y: (ends.a.y + ends.b.y) / 2 }, n), h: Math.round((host.elevation ?? 0) + host.extrusionHeight / 2) };
+      }
+    }
+    setDraw({
+      form: 'shape',
+      planeY: frame ? 0 : host && face?.kind === 'top' ? Math.round(((host.elevation ?? 0) + host.extrusionHeight) * 100) / 100 : null,
+      hostId: host && face?.kind === 'top' && !host.frame ? host.repeatOf ?? host.id : undefined,
+      points: [],
+      bends: [],
+      ...(frame ? { frame } : {}),
+    });
+    setSelectedFace(null);
+    setSelectedEdges([]);
+    setMoveOn(false);
   };
 
-  const handleStartDrawingRepeatLine = () => {
-    setRepeatConfig((prev) => ({
-      ...prev,
-      isDrawingLine: true,
-      drawingStep: 'start',
-      startPoint: null,
-      controlPoint: null,
-      endPoint: null,
-    }));
+  /** A finished sketch becomes an ordinary shape standing on its surface, with its top selected so it can be pulled up at once. */
+  const handleFinishDraw = (outline: DrawnOutline, planeY: number, frame?: Frame) => {
+    // Cut mode: the sketch is cut straight down through the shape it was drawn on, instead of becoming a shape.
+    if (draw?.cut && draw.hostId && !frame) {
+      const out = runOp((d, ids) => ops.cutWithOutline(d, ids, { target: draw.hostId!, outline, from: planeY }));
+      setDraw(null);
+      if (!out) return;
+      if (!out.changed) {
+        notify("That doesn't reach the shape, so nothing was cut. Draw on the shape's top face.");
+        return;
+      }
+      selectMany(out.created);
+      notify('Cut. ⌘Z undoes it.');
+      return;
+    }
+    bodyCounter.current += 1;
+    const id = `body_${Date.now()}`;
+    const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
+    const body = drawnBody(outline, planeY, id, `${outline.name} ${bodyCounter.current}`, color, frame);
+    setDraw(null);
+    setBodies((prev) => [...prev, body]);
+    setIsolatedIds((prev) => (prev ? [...prev, id] : prev));
+    setSelectedBodyId(id);
+    setSelectedBodyIds([id]);
+    setSelectedEdges([]);
+    setSelectedFace({ bodyId: id, kind: 'top' });
+  };
+
+  /** Takes back the last corner placed (Backspace, or the undo button on a phone). */
+  const handleDrawUndoCorner = () =>
+    setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 && !d.frame ? null : d.planeY } : d));
+
+  const handleDrawForm = (form: DrawForm) => setDraw((d) => (d ? { ...d, form, points: [], bends: [] } : d));
+
+  /** Finish the corners placed so far (the green tick, or Enter). */
+  const handleDrawDone = () => {
+    const outline = draw && shapeOutline(draw);
+    if (!draw || draw.planeY === null || !outline) {
+      notify('Place at least three corners that make a shape.');
+      return;
+    }
+    handleFinishDraw(outline, draw.planeY, draw.frame);
+  };
+
+  /** Keeps the repeat: from now on its copies follow the shape and the path. */
+  const handleFinishRepeat = () => {
+    const source = repeat && bodies.find((b) => b.id === repeat.bodyId);
+    if (!repeat || !source) {
+      setRepeat(null);
+      return;
+    }
+    const link: RepeatLink = { ...repeat, linkId: repeat.linkId ?? `rep_${Date.now()}` };
+    const fresh = !repeat.linkId;
+    setRepeat(null);
+    setDoc((d) => ({ repeats: [...d.repeats.filter((l) => l.linkId !== link.linkId), link] }));
+    selectOnly(source.id);
+    notify(fresh ? `${link.count} shapes in a row. Edit the first and the rest follow.` : 'Repeat updated.');
+  };
+
+  /** Lets go of a live repeat: its copies stay, as ordinary shapes you can edit one by one. */
+  const handleBreakRepeat = () => {
+    const ids = new Set(selectedBodyIds);
+    if (!repeats.some((l) => ids.has(l.bodyId))) return;
+    setDoc((d) => ({ repeats: d.repeats.filter((l) => !ids.has(l.bodyId)) }));
+    notify('The copies are now separate shapes.');
   };
 
   const handleClearWorkspace = () => {
     if (window.confirm('Remove every shape and start from an empty workspace?')) {
-      setDoc({ bodies: [], groups: [] });
+      setDoc({ bodies: [], groups: [], repeats: [] });
       selectOnly(null);
       setIsolatedIds(null);
       notify('Workspace cleared. Press ⌘Z to bring it back.');
@@ -599,9 +661,9 @@ export default function App() {
   };
 
   const handleLoadDemo = () => {
-    const starter = createStarterBodies();
-    setDoc({ bodies: starter, groups: [] });
-    selectOnly(starter[0].id);
+    const fresh = starterDoc();
+    setDoc(fresh);
+    selectOnly(fresh.bodies[0].id);
     setIsolatedIds(null);
     notify('Loaded the starter block.');
   };
@@ -612,10 +674,7 @@ export default function App() {
       setIsolatedIds(null);
       return;
     }
-    const withGroups = new Set(ids);
-    bodies.forEach((b) => {
-      if (b.groupId && bodies.some((o) => o.groupId === b.groupId && withGroups.has(o.id))) withGroups.add(b.id);
-    });
+    const withGroups = new Set(ids.flatMap((id) => withGroupMates(groups, bodies, id)));
     setIsolatedIds([...withGroups]);
   };
 
@@ -664,18 +723,33 @@ export default function App() {
     if (key === 'escape') {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
       if (openMenu) setOpenMenu(null);
-      else if (confirmDeleteIds || isRepeatModalOpen) {
-        setConfirmDeleteIds(null);
-        setIsRepeatModalOpen(false);
-          } else if (repeatConfig.isDrawingLine) {
-        setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
-      } else if (selectedEdges.length) setSelectedEdges([]);
+      else if (confirmDeleteIds) setConfirmDeleteIds(null);
+      else if (draw) setDraw(null);
+      else if (repeat) setRepeat(null);
+      else if (selectedEdges.length) setSelectedEdges([]);
       else if (selectedFace) setSelectedFace(null);
       else if (selectedBodyIds.length) selectOnly(null);
       else if (isolatedIds) isolate(null);
       return;
     }
-    if (confirmDeleteIds || isRepeatModalOpen) return;
+    if (confirmDeleteIds) return;
+    if (draw) {
+      if (key === 'enter') {
+        e.preventDefault();
+        handleDrawDone();
+      } else if (key === 'backspace' || key === 'delete') {
+        e.preventDefault();
+        handleDrawUndoCorner();
+      } else if (key === 'd') handleToggleDraw();
+      return;
+    }
+    if (repeat) {
+      if (key === 'enter' || key === 'r') {
+        e.preventDefault();
+        handleFinishRepeat();
+      }
+      return; // everything else waits until the repeat is finished
+    }
 
     switch (key) {
       case 'm':
@@ -692,6 +766,12 @@ export default function App() {
         break;
       case 'r':
         handleOpenRepeat();
+        break;
+      case 'd':
+        handleToggleDraw();
+        break;
+      case 'x':
+        setXray((v) => !v);
         break;
       case 'g':
         if (joinedSelected) notify('This is a joined shape: it already moves as one.');
@@ -773,6 +853,20 @@ export default function App() {
         onMove={(dx, dy, dz) => moveSelection(dx, dy, dz)}
         onResize={handleResize}
         onUpdateBody={handleUpdateBody}
+        group={selectedGroup ? { id: selectedGroup.id, name: selectedGroup.name } : undefined}
+        object={
+          selectedGroup?.libraryId
+            ? { state: selectedGroup.place ? 'linked' : 'editing', item: library.find((i) => i.id === selectedGroup.libraryId)?.name ?? 'object' }
+            : undefined
+        }
+        canSave={
+          !selectedGroup?.libraryId &&
+          (selectedGroup ? !selectedGroup.joined : selectedBodies.length === 1 && !selectedBodies[0].groupId && !selectedBodies[0].repeatOf && !selectedBodies[0].instanceOf && !selectedBodies[0].frame)
+        }
+        onSaveToLibrary={handleSaveToLibrary}
+        onEditObject={handleEditObject}
+        onSeparateObject={handleSeparateObject}
+        onRenameGroup={(group, name) => void runOp((d) => ops.renameGroup(d, { group, name }))}
         sidebar={sidebarProps}
       />
 
@@ -782,6 +876,7 @@ export default function App() {
           <div className="absolute inset-0">
                 <ModelViewer3D
                   bodies={displayBodies}
+                  groups={groups}
                   selectedBodyId={selectedBodyId}
                   selectedBodyIds={selectedBodyIds}
                   onSelectBody={handleSelectBody}
@@ -792,8 +887,22 @@ export default function App() {
                   selectedFace={selectedFace}
                   onSelectFace={setSelectedFace}
                   onEdgeChange={handleEdgeChange}
-                  repeatConfig={repeatConfig}
-                  onUpdateRepeatConfig={setRepeatConfig}
+                  repeat={repeat}
+                  onUpdateRepeat={setRepeat}
+                  onFinishRepeat={handleFinishRepeat}
+                  apiRef={viewerApi}
+                  xray={xray}
+                  onToggleXray={() => setXray((v) => !v)}
+                  draw={draw}
+                  onUpdateDraw={setDraw}
+                  onFinishDraw={handleFinishDraw}
+                  onNotify={notify}
+                  onDrawForm={handleDrawForm}
+                  onDrawDone={handleDrawDone}
+                  onDrawCancel={() => setDraw(null)}
+                  onDrawUndoCorner={handleDrawUndoCorner}
+                  onDrawCut={(cut) => setDraw((d) => (d ? { ...d, cut } : d))}
+                  onRepeatCancel={() => setRepeat(null)}
                   onDragStateChange={history.hold}
                   onHint={setHint}
                   moveOn={moveOn}
@@ -904,6 +1013,9 @@ export default function App() {
         moveOn={moveOn && selectedBodyIds.length > 0}
         addOnTop={selectedFace?.kind === 'top' && selectedBodyIds.length === 1}
         onAddShape={addShape}
+        library={library.map((i) => ({ id: i.id, name: i.name, shapes: i.bodies.length }))}
+        onPlaceItem={handlePlaceItem}
+        onRemoveItem={(item) => void runOp((d) => ops.removeLibraryItem(d, { item }))}
         onToggleMove={() => setMoveOn((v) => !v)}
         onIsolate={toggleIsolate}
         grouped={!!selectedGroupId}
@@ -917,6 +1029,11 @@ export default function App() {
         }}
         onJoin={handleMergeSelected}
         onSubtract={handleSubtractSelected}
+        repeatOn={!!repeat}
+        drawOn={!!draw}
+        onDraw={handleToggleDraw}
+        repeated={selectedBodyIds.some((id) => repeats.some((l) => l.bodyId === id))}
+        onBreakRepeat={handleBreakRepeat}
         onPattern={handleOpenRepeat}
         onDelete={() => requestDelete()}
       />
@@ -933,20 +1050,6 @@ export default function App() {
             })()}
             onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
             onCancel={() => setConfirmDeleteIds(null)}
-          />
-        )}
-        {isRepeatModalOpen && selectedBody && (
-          <RepeatPatternModal
-            key="repeat"
-            onClose={() => setIsRepeatModalOpen(false)}
-            selectedBody={selectedBody}
-            repeatConfig={repeatConfig}
-            setRepeatConfig={setRepeatConfig}
-            onStartDrawingLine={() => {
-              setIsRepeatModalOpen(false);
-              handleStartDrawingRepeatLine();
-            }}
-            onApplyPattern={handleApplyPattern}
           />
         )}
       </AnimatePresence>

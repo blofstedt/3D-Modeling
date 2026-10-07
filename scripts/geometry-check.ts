@@ -1,15 +1,24 @@
 /**
  * Headless checks for the geometry the app builds. Run with `npm test`.
  */
+import { initManifold } from '../src/utils/manifoldBoolean';
 import * as THREE from 'three';
 import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
 import { getPolygonSignedArea } from '../src/utils/geometry';
 import { buildOutline, sideRun, wallEnds, withOutline } from '../src/utils/outline';
-import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
+import { applyEdgeChange, defaultBevelSize, maxBevelSize, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isWholeGroup, listEdges } from '../src/utils/edges';
 import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
+import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, syncRepeats, transformLink, withCopies, withSpacing } from '../src/utils/repeat';
+import { circleOutline, circleThrough, drawnBody, rectangleOutline, shapeOutline, sketchOutline, snapDrawPoint } from '../src/utils/draw';
+import * as THREE2 from 'three';
+import { frameMatrix, moveFrame, wallFrame } from '../src/utils/frame';
+import { RepeatLink, RepeatSession } from '../src/types';
+
+await initManifold(); // the exact geometry engine, as the app and the agent API run it
+
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -212,6 +221,212 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const cyl = body({ ...withOutline({ points: rect(-20, -20, 20, 20) }, { cornerRadii: [20, 20, 20, 20] }) });
   const ends = wallEnds(cyl, 0);
   check('a cylinder wall still has handle ends', !!ends && Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y) > 30);
+}
+
+
+// Repeat: copies are equally spaced along the path, on curves too.
+{
+  const base = defaultSession(body({ id: 'r' }));
+  check('default repeat has the original plus copies in a row', stops(base).length === 4 && stops(base).every((p) => near(p.y, 0, 0.01)));
+  const gaps = (s: RepeatSession) => stops(s).slice(1).map((p, i) => Math.hypot(p.x - stops(s)[i].x, p.y - stops(s)[i].y));
+  const line = gaps(base);
+  check('straight repeat gaps are equal', line.every((g) => near(g, line[0], 0.01)), line.join(','));
+  const bent: RepeatSession = { ...base, count: 9, bend: bendThrough(base, { x: base.start.x + (base.end.x - base.start.x) / 2, y: 90 }) };
+  const arc = stops(bent).slice(1).map((p, i) => Math.hypot(p.x - stops(bent)[i].x, p.y - stops(bent)[i].y));
+  // Chords of an even-arc split are near-equal; a split by curve parameter is visibly lumpy.
+  check('curved repeat gaps are equal along the curve', Math.max(...arc) - Math.min(...arc) < 0.02 * Math.max(...arc), arc.join(','));
+  const last = stops(bent)[8];
+  check('the last copy lands on the path end', near(last.x, bent.end.x, 0.2) && near(last.y, bent.end.y, 0.2));
+  const wider = withSpacing(bent, spacing(bent) * 2);
+  check('typing a gap stretches the path', near(spacing(wider), spacing(bent) * 2, 0.5), `${spacing(wider)} vs ${spacing(bent) * 2}`);
+  const ring: RepeatSession = { ...base, kind: 'around', end: { x: 0, y: 100 }, count: 6, start: { x: 0, y: 0 } };
+  const rs = stops(ring);
+  check('around puts every copy on one circle', rs.every((p) => near(Math.hypot(p.x, p.y - 100), 100, 0.01)));
+  check('around spreads the copies evenly', near(Math.hypot(rs[1].x - rs[0].x, rs[1].y - rs[0].y), 100, 0.01));
+  const src = body({ id: 'r' });
+  const copies = makeCopies(src, { ...base, follow: false }, 'x');
+  check('copies keep the shape and move only', copies.length === 3 && near(copies[0].points[0].x - src.points[0].x, spacing(base), 0.01) && copies[0].extrusionHeight === src.extrusionHeight);
+  check('copy transforms match the copy count', copyTransforms(ring).length === 5);
+}
+
+
+// Live repeats: copies follow the source, and the path travels with it.
+{
+  const src = body({ id: 'src' });
+  const link: RepeatLink = { ...defaultSession(src), linkId: 'L' };
+  const first = syncRepeats([src], [link]);
+  check('a live repeat makes its copies', first.bodies.length === 4 && first.bodies.slice(1).every((b) => b.repeatOf === 'src'));
+  const again = syncRepeats(first.bodies, first.repeats);
+  check('syncing again changes nothing', again.bodies.length === 4 && again.bodies[1] === first.bodies[1], 'copy objects are reused');
+  const taller = syncRepeats(first.bodies.map((b) => (b.id === 'src' ? { ...b, extrusionHeight: 90 } : b)), first.repeats);
+  check('editing the source updates every copy', taller.bodies.slice(1).every((b) => b.extrusionHeight === 90));
+  const moved = { ...src, ...transformBody(src, { dx: 25, dy: 10, dz: 0, angle: 0, cx: 0, cy: 0 }) };
+  const row = syncRepeats(first.bodies.map((b) => (b.id === 'src' ? moved : b)), first.repeats);
+  check('moving the source carries the path along', near(row.repeats[0].end.x, link.end.x + 25, 0.05) && near(row.repeats[0].end.y, link.end.y + 10, 0.05));
+  check('copy ids stay the same through edits', row.bodies.slice(1).map((b) => b.id).join() === first.bodies.slice(1).map((b) => b.id).join());
+  const fewer = syncRepeats(first.bodies, [{ ...first.repeats[0], count: 2, end: first.repeats[0].start }]);
+  check('a smaller count removes copies', fewer.bodies.length === 2);
+  const t = { dx: 0, dy: 0, dz: 0, angle: Math.PI / 2, cx: link.start.x, cy: link.start.y };
+  const turned = transformLink(link, t);
+  check('turning a repeat turns its path about the pivot', near(turned.end.x, link.start.x, 0.05) && near(turned.end.y, link.start.y + (link.end.x - link.start.x), 0.05));
+  const orphan = syncRepeats(first.bodies.filter((b) => b.id !== 'src'), first.repeats);
+  check('losing the source keeps the copies as plain shapes', orphan.bodies.length === 3 && orphan.bodies.every((b) => !b.repeatOf) && orphan.repeats.length === 0);
+  check('copies come along when the shape moves', withCopies(['src'], first.bodies).length === 4);
+}
+
+
+// Draw: sketches become shapes.
+{
+  const tri = shapeOutline({ points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 0, y: 30 }], bends: [] });
+  check('three corners make a shape', !!tri && tri.basePoints.length === 3);
+  check('a flat sketch is not a shape', shapeOutline({ points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 80, y: 0 }], bends: [] }) === null);
+  const cw = shapeOutline({ points: [{ x: 0, y: 0 }, { x: 0, y: 30 }, { x: 40, y: 0 }], bends: [] })!;
+  check('outlines always run the same way round', getPolygonSignedArea(cw.basePoints) > 0 && getPolygonSignedArea(tri!.basePoints) > 0);
+  const c = circleThrough({ x: 10, y: 0 }, { x: 0, y: 10 }, { x: -10, y: 0 })!;
+  check('circle through three points', near(c.cx, 0, 1e-6) && near(c.cy, 0, 1e-6) && near(c.r, 10, 1e-6));
+  const bent = sketchOutline([{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }], [{ x: 20, y: -10 }, null, null, null], true);
+  check('a bent side becomes an arc that reaches its bulge', bent.length > 10 && Math.min(...bent.map((p) => p.y)) < -9.5 && Math.min(...bent.map((p) => p.y)) > -10.5);
+  check('a bent side stays within its two corners', bent.every((p) => p.x > -1 && p.x < 41));
+  const bentOther = sketchOutline([{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }], [{ x: 20, y: 10 }, null, null, null], true);
+  check('bending inwards works too', Math.max(...bentOther.slice(0, 12).map((p) => p.y)) > 9.5);
+  const rectO = rectangleOutline({ x: 10, y: 20 }, { x: -10, y: 5 })!;
+  check('rectangle from any two corners', rectO.basePoints.length === 4 && getPolygonSignedArea(rectO.basePoints) === 300);
+  check('a speck is not a rectangle', rectangleOutline({ x: 0, y: 0 }, { x: 1, y: 30 }) === null);
+  const circ = drawnBody(circleOutline({ x: 5, y: 5 }, { x: 25, y: 5 })!, 40, 'c', 'c', '#fff');
+  const g = buildBodyGeometry(circ);
+  check('a drawn circle is smooth and the right size', circ.points.length > 8 && near(Math.max(...circ.points.map((p) => p.x)) - Math.min(...circ.points.map((p) => p.x)), 40, 0.5));
+  check('a drawn shape sits on its surface', circ.elevation === 40 && circ.extrusionHeight === 20 && g.attributes.position.count > 0);
+  check('points snap to whole millimetres', snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).x === 10 && snapDrawPoint({ x: 10.4, y: 3.6 }, [], null).y === 4);
+  check('points snap to a nearby corner', snapDrawPoint({ x: 10, y: 10 }, [{ x: 12, y: 11 }], null).x === 12);
+  check('points line up with the last corner', snapDrawPoint({ x: 31, y: 50 }, [], { x: 30, y: 0 }).x === 30);
+}
+
+
+// Wall shapes: a frame stands the shape on its wall.
+{
+  // A wall facing +Z (outward normal towards the viewer), through plan point (10, -20).
+  const f = wallFrame({ x: 10, y: -20 }, { x: 0, y: -1 });
+  const m = frameMatrix(f);
+  const w = new THREE2.Vector3(5, 3, -7).applyMatrix4(m);
+  check('a wall shape: along the wall, out of it, and up it', near(w.x, 15, 1e-6) && near(w.y, 7, 1e-6) && near(w.z, 23, 1e-6), `${w.x},${w.y},${w.z}`);
+  const east = frameMatrix(wallFrame({ x: 0, y: 0 }, { x: 1, y: 0 }));
+  const e = new THREE2.Vector3(0, 10, 0).applyMatrix4(east);
+  check('a wall facing east grows east', near(e.x, 10, 1e-6) && near(e.z, 0, 1e-6));
+  const up = new THREE2.Vector3(0, 0, -4).applyMatrix4(east);
+  check('local -y is up the wall', near(up.y, 4, 1e-6));
+  const det = m.determinant();
+  check('the frame is a proper turn, not a mirror', near(det, 1, 1e-6));
+  const wallBody = drawnBody(rectangleOutline({ x: 0, y: 0 }, { x: 30, y: 20 })!, 0, 'w', 'w', '#fff', f);
+  check('a drawn wall shape keeps its frame and starts at the wall', !!wallBody.frame && wallBody.elevation === 0);
+  const carried = { ...wallBody, ...transformBody(wallBody, { dx: 5, dy: 5, dz: 12, angle: 0, cx: 0, cy: 0 }) };
+  check('moving a wall shape moves its frame, not its outline', carried.frame!.x === 15 && carried.frame!.y === -15 && carried.frame!.h === 12 && carried.points === wallBody.points);
+  const turned = moveFrame(f, { dx: 0, dy: 0, dz: 0, angle: Math.PI / 2, cx: 0, cy: 0 });
+  check('turning a wall shape turns where it points', near(turned.angle, f.angle + Math.PI / 2, 1e-9));
+}
+
+
+// Bevels: edges beveled alike that meet at a corner must make one clean, closed solid (no cracks, no doubled faces).
+{
+  const boundaryEdges = (b: Body3D) => {
+    const g = buildBodyGeometry(b)!;
+    const pos = g.attributes.position;
+    const n = g.index ? g.index.count : pos.count;
+    const key = (i: number) => `${Math.round(pos.getX(i) * 1000)},${Math.round(pos.getY(i) * 1000)},${Math.round(pos.getZ(i) * 1000)}`;
+    const edges = new Map<string, number>();
+    for (let t = 0; t < n / 3; t++) {
+      const v = [0, 1, 2].map((k) => key(g.index ? g.index.getX(t * 3 + k) : t * 3 + k));
+      for (let k = 0; k < 3; k++) {
+        const a = v[k];
+        const c = v[(k + 1) % 3];
+        if (a === c) continue;
+        const e = a < c ? `${a}|${c}` : `${c}|${a}`;
+        edges.set(e, (edges.get(e) ?? 0) + 1);
+      }
+    }
+    let bad = 0;
+    edges.forEach((c) => {
+      if (c !== 2) bad++;
+    });
+    return bad;
+  };
+  const bev = (n: number, side: 'top' | 'bottom', size: number, style: 'round' | 'chamfer') => Array.from({ length: n }, (_, i) => ({ side, edge: i, size, style }));
+  const box = body({ points: rect(-40, -30, 40, 30), basePoints: rect(-40, -30, 40, 30) });
+  check('a rim of rounded edges is watertight', boundaryEdges({ ...box, edgeBevels: bev(4, 'top', 8, 'round') }) === 0);
+  check('a rim of flat bevels is watertight', boundaryEdges({ ...box, edgeBevels: bev(4, 'top', 8, 'chamfer') }) === 0);
+  check('top and bottom rims together are watertight', boundaryEdges({ ...box, edgeBevels: [...bev(4, 'top', 6, 'chamfer'), ...bev(4, 'bottom', 6, 'round')] }) === 0);
+  check('two neighbouring edges are watertight', boundaryEdges({ ...box, edgeBevels: bev(2, 'top', 8, 'round') }) === 0);
+  check('three edges are watertight', boundaryEdges({ ...box, edgeBevels: bev(3, 'top', 8, 'chamfer') }) === 0);
+  const ell = [{ x: -40, y: -40 }, { x: 40, y: -40 }, { x: 40, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 40 }, { x: -40, y: 40 }];
+  check('an L-shaped rim (an inside corner) is watertight', boundaryEdges(body({ points: ell, basePoints: ell, edgeBevels: bev(6, 'top', 6, 'round') })) === 0);
+  const hole = [{ x: -10, y: -10 }, { x: 10, y: -10 }, { x: 10, y: 10 }, { x: -10, y: 10 }];
+  check('a rim round a hole is watertight', boundaryEdges({ ...box, holes: [hole], edgeBevels: bev(4, 'top', 5, 'chamfer') }) === 0);
+  const rimmed = buildBodyGeometry({ ...box, edgeBevels: bev(4, 'top', 8, 'round') })!;
+  const sep = buildBodyGeometry({ ...box, edgeBevels: bev(1, 'top', 8, 'round') })!;
+  check('a rim is far lighter than four separate cuts', rimmed.attributes.position.count < sep.attributes.position.count * 4);
+}
+
+
+// Bevel sizes are honest: you cannot set one the shape will not show, and a first one is visible.
+{
+  const box = body({ points: rect(-40, -30, 40, 30), basePoints: rect(-40, -30, 40, 30), extrusionHeight: 30 });
+  const top = { bodyId: 't', kind: 'top' as const, index: 0 };
+  check('the largest bevel is half the height', near(maxBevelSize(box, [top]), 14.95, 0.01), String(maxBevelSize(box, [top])));
+  const huge = { ...box, ...applyEdgeChange(box, [top], { size: 25, style: 'round' }) };
+  check('a bevel set too large is held at the largest that fits', near(edgeSize(huge, top), 14.95, 0.01), String(edgeSize(huge, top)));
+  const first = { ...box, ...applyEdgeChange(box, [top], { style: 'chamfer' }) };
+  check('a first bevel is visible, not a hairline', edgeSize(first, top) >= 3, String(edgeSize(first, top)));
+  check('the default grows with the shape but stays modest', defaultBevelSize({ ...box, extrusionHeight: 400 }) <= 6 && defaultBevelSize({ ...box, extrusionHeight: 6 }) < 1.5);
+}
+
+
+// Bevels of different sizes and styles that meet at a corner must still make one closed solid (this is what slicers choke on).
+{
+  const boundaryEdges = (b: Body3D) => {
+    const g = buildBodyGeometry(b)!;
+    const pos = g.attributes.position;
+    const n = g.index ? g.index.count : pos.count;
+    const key = (i: number) => `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
+    const edges = new Map<string, number>();
+    for (let t = 0; t < n / 3; t++) {
+      const v = [0, 1, 2].map((k) => key(g.index ? g.index.getX(t * 3 + k) : t * 3 + k));
+      for (let k = 0; k < 3; k++) {
+        const a = v[k];
+        const c = v[(k + 1) % 3];
+        if (a === c) continue;
+        const e = a < c ? `${a}|${c}` : `${c}|${a}`;
+        edges.set(e, (edges.get(e) ?? 0) + 1);
+      }
+    }
+    let bad = 0;
+    edges.forEach((c) => {
+      if (c !== 2) bad++;
+    });
+    return bad;
+  };
+  let seed = 11;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  const outlines: [string, Point2D[]][] = [
+    ['box', rect(-30, -20, 30, 20)],
+    ['L', [{ x: -30, y: -30 }, { x: 30, y: -30 }, { x: 30, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 30 }, { x: -30, y: 30 }]],
+    ['hexagon', Array.from({ length: 6 }, (_, i) => ({ x: 30 * Math.cos((i * Math.PI) / 3), y: 30 * Math.sin((i * Math.PI) / 3) }))],
+  ];
+  let open = 0;
+  let total = 0;
+  const examples: string[] = [];
+  for (const [name, pts] of outlines) {
+    for (let k = 0; k < 20; k++) {
+      const edgeBevels = pts.flatMap((_, e) =>
+        rnd() < 0.7 ? [{ side: (rnd() < 0.8 ? 'top' : 'bottom') as 'top' | 'bottom', edge: e, size: [2, 3, 4, 5, 6, 8][Math.floor(rnd() * 6)], style: (rnd() < 0.5 ? 'round' : 'chamfer') as 'round' | 'chamfer' }] : []
+      );
+      if (!edgeBevels.length) continue;
+      total++;
+      if (boundaryEdges(body({ points: pts, basePoints: pts, extrusionHeight: 30, edgeBevels })) !== 0) {
+        open++;
+        if (examples.length < 3) examples.push(`${name}#${k}`);
+      }
+    }
+  }
+  check('random mixes of bevel sizes and styles are all closed solids', open === 0, `${open} of ${total} open ${examples.join(' ')}`);
 }
 
 if (failures) {

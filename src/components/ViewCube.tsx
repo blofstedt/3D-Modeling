@@ -13,6 +13,8 @@ interface ViewCubeProps {
   camera: THREE.PerspectiveCamera | null;
   onSelectFace: (face: CubeFace) => void;
   onResetCamera: () => void;
+  /** More view controls, stacked under Home. */
+  children?: React.ReactNode;
 }
 
 const SIZE = 64;
@@ -29,7 +31,7 @@ const FACES: { face: Exclude<CubeFace, 'iso'>; label: string; transform: string 
   { face: 'bottom', label: 'Bottom', transform: `rotateX(-90deg) translateZ(${HALF}px)` },
 ];
 
-export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCubeProps) {
+export default function ViewCube({ camera, onSelectFace, onResetCamera, children }: ViewCubeProps) {
   const cubeRef = useRef<HTMLDivElement | null>(null);
 
   // Mirror the camera orientation straight onto the DOM (no React re-render per frame).
@@ -67,7 +69,7 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
   }, [camera]);
 
   return (
-    <div className="absolute top-3 right-3 z-20 flex flex-col items-center gap-1 pointer-events-auto">
+    <div className="absolute top-3 right-3 z-20 flex flex-col items-center gap-1 pointer-events-auto max-sm:scale-[0.78] max-sm:origin-top-right">
       <div className="relative" style={{ width: SIZE + 28, height: SIZE + 28, perspective: 380 }}>
         <div
           ref={cubeRef}
@@ -104,6 +106,7 @@ export default function ViewCube({ camera, onSelectFace, onResetCamera }: ViewCu
         <House size={13} />
         Home
       </button>
+      {children}
     </div>
   );
 }

@@ -22,7 +22,7 @@ import {
 import { Body3D, EdgeSel, MATERIAL_PRESETS, ShapeGroup, SWATCHES } from '../types';
 import { listFeatures } from '../utils/edges';
 import { getPolygonSignedArea } from '../utils/geometry';
-import { exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
+import { exportGLB, exportJSON, exportOBJ, exportSTL } from '../utils/exporters';
 
 interface SidebarProps {
   bodies: Body3D[];
@@ -235,6 +235,7 @@ export default function Sidebar({
                 onChange={(v) => onUpdateBody(body.id, { extrusionHeight: v })}
               />
 
+              {!body.frame && (
               <NumberSlider
                 label="Elevation"
                 value={body.elevation ?? 0}
@@ -243,6 +244,7 @@ export default function Sidebar({
                 hardMax={1000}
                 onChange={(v) => onUpdateBody(body.id, { elevation: v })}
               />
+              )}
 
               <NumberSlider
                 label="All corners"
@@ -407,7 +409,7 @@ export default function Sidebar({
         {tab === 'export' && (
           <>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Exports every visible body exactly as shown, including cutouts and bevels. STL is Z-up, ready for slicers.
+              Exports every visible body exactly as shown, including cutouts and bevels. STL is Z-up, ready for slicers; GLB is in metres with colours and materials, ready for game engines.
             </p>
             <div className="flex flex-col gap-2">
               <button
@@ -417,6 +419,9 @@ export default function Sidebar({
                 className="h-9 rounded-full bg-accent-500 hover:bg-accent-400 text-white text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:pointer-events-none"
               >
                 <Download size={15} /> Export STL
+              </button>
+              <button type="button" onClick={() => runExport((b) => exportGLB(b, { groups }))} disabled={bodies.length === 0} className={secondaryButton}>
+                <Download size={15} /> Export GLB (games)
               </button>
               <button type="button" onClick={() => runExport(exportOBJ)} disabled={bodies.length === 0} className={secondaryButton}>
                 <Download size={15} /> Export OBJ

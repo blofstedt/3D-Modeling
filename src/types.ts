@@ -38,6 +38,19 @@ export interface CornerBevel {
   style: BevelStyle;
 }
 
+/**
+ * Where a shape that stands on a wall sits in the world. Its outline, height and bevels are ordinary (as if it stood on the ground),
+ * but its "ground" is the wall plane and its "up" points out of the wall. Shapes drawn on the ground or a top face have no frame.
+ */
+export interface Frame {
+  /** The wall point the outline's origin sits on: plan position and height above the ground. */
+  x: number;
+  y: number;
+  h: number;
+  /** Direction the shape grows out of the wall, as an angle in plan (radians, counter-clockwise from +X). */
+  angle: number;
+}
+
 export interface Body3D {
   id: string;
   name: string;
@@ -62,6 +75,12 @@ export interface Body3D {
   visible: boolean;
   createdAt: string;
   groupId?: string;
+  /** Set on a shape drawn on a wall: see Frame. Absent for everything standing upright. */
+  frame?: Frame;
+  /** Set on a derived copy made by a live repeat: the id of the shape it follows. Never edited directly. */
+  repeatOf?: string;
+  /** Set on a shape that belongs to a linked library object: the id of that placed object (a group). Derived from the library, rebuilt on every change. */
+  instanceOf?: string;
 }
 
 /** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
@@ -79,25 +98,85 @@ export interface EdgeSel {
   index: number;
 }
 
+/** Where a placed library object sits: its footprint centre, its underside, and a turn (radians, counter-clockwise from above). */
+export interface Placement {
+  x: number;
+  y: number;
+  z: number;
+  angle: number;
+}
+
+/**
+ * A reusable object kept in the project: a snapshot of a group (or one shape), centred on the ground at the origin.
+ * Placed copies follow it. `bodies[].groupId === ROOT` means directly inside the object.
+ */
+export interface LibraryItem {
+  id: string;
+  name: string;
+  bodies: Body3D[];
+  /** The groups inside the object (not the object itself); their parentId may be ROOT. */
+  groups: ShapeGroup[];
+}
+
+export const ROOT = '@root';
+
 export interface ShapeGroup {
   id: string;
   name: string;
+  /** Every shape inside, at any depth. Derived: see utils/groups.ts. */
   bodyIds: string[];
+  /** The group this one sits inside, when groups nest (a "head" inside a "character"). */
+  parentId?: string;
+  /** A placed library object: the item it follows. With `place` it is linked (its shapes are derived); without, it is open for editing. */
+  libraryId?: string;
+  place?: Placement;
+  /** On the inner groups of a placed object: the placed object they belong to. Derived with the shapes. */
+  instanceOf?: string;
   /** Made by Join or Subtract: the pieces form one solid, so it is presented as a single shape. */
   joined?: boolean;
 }
 
-export interface RepeatConfig {
-  type: 'linear' | 'curved';
+/** An open Repeat: the shape being copied and the path its copies follow, edited live until Done. */
+export interface RepeatSession {
+  bodyId: string;
+  /** `path`: along a line (bent by `bend`). `around`: round the circle centred on `end` that passes through `start`. */
+  kind: 'path' | 'around';
+  /** Centre of the original shape. */
+  start: Point2D;
+  /** End of the path, or the centre of the circle. */
+  end: Point2D;
+  /** Control point of the curve; null keeps the path straight. */
+  bend: Point2D | null;
+  /** Number of shapes including the original. */
   count: number;
-  startPoint: Point2D | null;
-  controlPoint: Point2D | null;
-  endPoint: Point2D | null;
-  followCurve: boolean;
-  isDrawingLine: boolean;
-  drawingStep: 'start' | 'end' | 'curve' | 'done';
+  /** Turn each copy to face along the path. */
+  follow: boolean;
+  /** Set once the repeat is kept: it then lives in the document and its copies follow the source. */
+  linkId?: string;
 }
 
+/** A kept repeat. The copies it makes are derived: they are rebuilt whenever the source or the path changes. */
+export type RepeatLink = RepeatSession & { linkId: string };
+
+/** What the Draw tool is making. */
+export type DrawForm = 'shape' | 'rectangle' | 'circle';
+
+/** An open Draw: an outline being sketched on the ground or on the top of a shape. */
+export interface DrawSession {
+  form: DrawForm;
+  /** Height of the surface being drawn on; null until the first tap picks the ground or a top face. */
+  planeY: number | null;
+  /** Corners placed so far (`shape`). */
+  points: Point2D[];
+  /** `bends[i]`: a point the side from corner i to the next passes through, making it a curve. Null = straight. */
+  bends: (Point2D | null)[];
+  /** Drawing on a wall: the wall the sketch lies on. Absent on the ground or a top face. */
+  frame?: Frame;
+  /** Drawing on the top of this shape. */
+  hostId?: string;
+  /** Cut the sketch out of that shape (a hole straight through) instead of adding a new shape. */
+  cut?: boolean;
+}
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {
