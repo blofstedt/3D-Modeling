@@ -245,6 +245,7 @@ export function DrawChip({
   onDone,
   onCancel,
   onUndoCorner,
+  onCut,
 }: {
   draw: DrawSession;
   onForm: (form: DrawForm) => void;
@@ -252,6 +253,8 @@ export function DrawChip({
   onCancel: () => void;
   /** Take back the last corner (Backspace on a keyboard). */
   onUndoCorner: () => void;
+  /** Switch between adding a new shape and cutting a hole in the one being drawn on. */
+  onCut: (cut: boolean) => void;
 }) {
   const canFinish = draw.form === 'shape' && draw.points.length >= 3;
   return (
@@ -273,6 +276,18 @@ export function DrawChip({
         ]}
         onChange={onForm}
       />
+      {draw.hostId && !draw.frame && (
+        <Segmented
+          id="draw-mode"
+          label="Add a shape or cut a hole"
+          value={draw.cut ? 'cut' : 'add'}
+          options={[
+            { value: 'add', label: 'Add' },
+            { value: 'cut', label: 'Cut' },
+          ]}
+          onChange={(v) => onCut(v === 'cut')}
+        />
+      )}
       {draw.form === 'shape' && draw.points.length > 0 && (
         <button type="button" aria-label="Take back the last corner" title="Take back the last corner (Backspace)" className="w-8 h-8 rounded-full bg-white/6 text-slate-200 flex items-center justify-center hover:bg-white/12" onClick={onUndoCorner}>
           <Undo2 size={15} />

@@ -119,6 +119,7 @@ export interface ModelViewer3DProps {
   onDrawDone: () => void;
   onDrawCancel: () => void;
   onDrawUndoCorner: () => void;
+  onDrawCut: (cut: boolean) => void;
   onRepeatCancel: () => void;
   /** Fired when a drag starts/ends so the app can treat it as a single undo step. */
   onDragStateChange?: (dragging: boolean) => void;
@@ -350,6 +351,7 @@ export default function ModelViewer3D({
   onDrawDone,
   onDrawCancel,
   onDrawUndoCorner,
+  onDrawCut,
   onRepeatCancel,
   onDragStateChange,
   onHint,
@@ -444,6 +446,7 @@ export default function ModelViewer3D({
     onDrawDone,
     onDrawCancel,
     onDrawUndoCorner,
+    onDrawCut,
     onRepeatCancel,
     onDragStateChange,
     onHint,
@@ -989,7 +992,7 @@ export default function ModelViewer3D({
           const r = live.current.repeat;
           const src = bodyOf(r?.bodyId);
           if (!r || !src) return null;
-          return { ...common, kind: 'repeat', repeatHandle: hit.gizmo === 'repeat-end' ? 'end' : 'bend', planeY: (src.elevation ?? 0) + src.extrusionHeight };
+          return { ...common, kind: 'repeat', repeatHandle: hit.gizmo === 'repeat-end' ? 'end' : 'bend', planeY: (src.elevation ?? 0) + src.extrusionHeight, frame: frameOfBody(src) };
         }
         case 'extrude-height':
           return body ? { ...common, axisScreen: axisScreenFor(body), kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
@@ -1066,7 +1069,7 @@ export default function ModelViewer3D({
       if (d.startClientX !== undefined) d.moved = Math.max(d.moved ?? 0, Math.hypot(m.x - d.startClientX, m.y - d.startClientY));
 
       if (d.kind === 'repeat') {
-        const p = intersectPlane(m.x, m.y, d.planeY ?? 0);
+        const p = intersectPlane(m.x, m.y, d.planeY ?? 0, d.frame);
         const r = live.current.repeat;
         if (p && r) {
           let at: Point2D = { x: Math.round(p.x), y: Math.round(-p.z) };
@@ -1079,7 +1082,7 @@ export default function ModelViewer3D({
             at = { x: Math.round(r.start.x + len * Math.cos(ang)), y: Math.round(r.start.y + len * Math.sin(ang)) };
           } else {
             // Snap to a corner of another shape when close.
-            live.current.bodies.forEach((b) => b.id !== r.bodyId && b.points.forEach((pt) => { if (Math.hypot(pt.x - at.x, pt.y - at.y) < 8) at = { x: pt.x, y: pt.y }; }));
+            if (!d.frame) live.current.bodies.forEach((b) => b.id !== r.bodyId && !b.frame && b.points.forEach((pt) => { if (Math.hypot(pt.x - at.x, pt.y - at.y) < 8) at = { x: pt.x, y: pt.y }; }));
           }
           const here = at;
           live.current.onUpdateRepeat((cur) => {
@@ -1517,7 +1520,10 @@ export default function ModelViewer3D({
       });
       // While copies are being placed, frame them too so the whole row is in view.
       const r = live.current.repeat;
-      if (r) stops(r).forEach((p) => box.expandByPoint(new THREE.Vector3(p.x, 0, -p.y)));
+      if (r) {
+        const fm = frameOfBody(bodyOf(r.bodyId));
+        stops(r).forEach((p) => box.expandByPoint(new THREE.Vector3(p.x, 0, -p.y).applyMatrix4(fm ?? IDENTITY)));
+      }
       if (!any) box.set(new THREE.Vector3(-100, 0, -100), new THREE.Vector3(100, 50, 100));
 
       const center = focus ? focus.center.clone() : box.getCenter(new THREE.Vector3());
@@ -2138,6 +2144,11 @@ export default function ModelViewer3D({
     if (!isSceneReady || !group) return;
     clearGroup(group);
     const src = repeat && bodies.find((b) => b.id === repeat.bodyId);
+    // The path and ghosts of a shape on a wall are drawn in its own space and stood on the wall.
+    group.matrixAutoUpdate = false;
+    if (src?.frame) group.matrix.copy(frameMatrix(src.frame));
+    else group.matrix.identity();
+    group.matrixWorldNeedsUpdate = true;
     if (!repeat || !src) {
       invalidateRef.current();
       return;
@@ -2150,7 +2161,7 @@ export default function ModelViewer3D({
 
     // Ghost of every copy: its top face outline, lightly filled, placed with the same move the real copy will get.
     copyTransforms(repeat).forEach((t) => {
-      const pts = transformBody(src, t).points!;
+      const pts = transformBody(src.frame ? { ...src, frame: undefined } : src, t).points!;
       const fill = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, p.y)))), fillMat);
       fill.rotation.x = -Math.PI / 2;
       fill.position.y = top + 0.4;
@@ -2202,7 +2213,7 @@ export default function ModelViewer3D({
     };
     addHandle('end', repeat.end, '#ffffff');
     if (repeat.kind === 'path') addHandle('bend', bendHandle(repeat), ACCENT_LIGHT);
-    repeatAnchorRef.current = new THREE.Vector3(repeat.start.x, 0, -repeat.start.y);
+    repeatAnchorRef.current = new THREE.Vector3(repeat.start.x, 0, -repeat.start.y).applyMatrix4(group.matrix);
     placePanelRef.current();
     invalidateRef.current();
   }, [repeat, bodies, isSceneReady]);
@@ -2244,7 +2255,9 @@ export default function ModelViewer3D({
             : draw.planeY === null
               ? 'Tap the ground, the top of a shape, or a wall to start drawing'
               : 'Tap to place corners · drag a corner to move it · drag empty space to pan'
-          : 'Drag it out · release to make it'
+          : draw.cut
+            ? 'Drag it out · release to cut it through'
+            : 'Drag it out · release to make it'
         : repeat
         ? 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels'
         : moveOn && selectedBodyIds.length
@@ -2351,7 +2364,7 @@ export default function ModelViewer3D({
         <AnimatePresence>
           {draw && (
             <div className="pointer-events-auto">
-              <DrawChip draw={draw} onForm={onDrawForm} onDone={onDrawDone} onCancel={onDrawCancel} onUndoCorner={onDrawUndoCorner} />
+              <DrawChip draw={draw} onForm={onDrawForm} onDone={onDrawDone} onCancel={onDrawCancel} onUndoCorner={onDrawUndoCorner} onCut={onDrawCut} />
             </div>
           )}
         </AnimatePresence>

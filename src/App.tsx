@@ -411,7 +411,7 @@ export default function App() {
    * Subtract: the shape you picked last is cut out of the others. Only the part that overlaps in height is cut,
    * so a short cutter leaves slabs above and below it (kept as one group).
    */
-  const WALL_NOTE = 'Shapes drawn on a wall can be moved, resized and pulled out, but not joined, cut or repeated yet.';
+  const WALL_NOTE = 'Shapes drawn on a wall can be moved, resized, pulled out and repeated, but not joined or cut yet.';
   const hasWallShape = (ids: string[]) => bodies.some((b) => ids.includes(b.id) && b.frame);
 
   const handleSubtractSelected = () => {
@@ -474,10 +474,6 @@ export default function App() {
       notify('Select the shape you want to repeat first.');
       return;
     }
-    if (selectedBody.frame) {
-      notify(WALL_NOTE);
-      return;
-    }
     setDraw(null);
     setSelectedFace(null);
     setSelectedEdges([]);
@@ -536,6 +532,7 @@ export default function App() {
     setDraw({
       form: 'shape',
       planeY: frame ? 0 : host && face?.kind === 'top' ? Math.round(((host.elevation ?? 0) + host.extrusionHeight) * 100) / 100 : null,
+      hostId: host && face?.kind === 'top' && !host.frame ? host.repeatOf ?? host.id : undefined,
       points: [],
       bends: [],
       ...(frame ? { frame } : {}),
@@ -547,6 +544,19 @@ export default function App() {
 
   /** A finished sketch becomes an ordinary shape standing on its surface, with its top selected so it can be pulled up at once. */
   const handleFinishDraw = (outline: DrawnOutline, planeY: number, frame?: Frame) => {
+    // Cut mode: the sketch is cut straight down through the shape it was drawn on, instead of becoming a shape.
+    if (draw?.cut && draw.hostId && !frame) {
+      const out = runOp((d, ids) => ops.cutWithOutline(d, ids, { target: draw.hostId!, outline, from: planeY }));
+      setDraw(null);
+      if (!out) return;
+      if (!out.changed) {
+        notify("That doesn't reach the shape, so nothing was cut. Draw on the shape's top face.");
+        return;
+      }
+      selectMany(out.created);
+      notify('Cut. ⌘Z undoes it.');
+      return;
+    }
     bodyCounter.current += 1;
     const id = `body_${Date.now()}`;
     const color = SWATCHES[(bodyCounter.current - 1) % SWATCHES.length].value;
@@ -837,6 +847,7 @@ export default function App() {
                   onDrawDone={handleDrawDone}
                   onDrawCancel={() => setDraw(null)}
                   onDrawUndoCorner={handleDrawUndoCorner}
+                  onDrawCut={(cut) => setDraw((d) => (d ? { ...d, cut } : d))}
                   onRepeatCancel={() => setRepeat(null)}
                   onDragStateChange={history.hold}
                   onHint={setHint}

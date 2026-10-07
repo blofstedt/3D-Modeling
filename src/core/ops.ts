@@ -327,7 +327,8 @@ export function applyTransform(doc: Doc, ids: string[], t: BodyTransform): Doc {
   return {
     ...doc,
     bodies: doc.bodies.map((b) => (set.has(b.id) && !b.repeatOf ? { ...b, ...transformBody(b, t) } : b)),
-    repeats: doc.repeats.map((l) => (set.has(l.bodyId) ? transformLink(l, t) : l)),
+    // A repeat's path lives in its shape's own space; for a shape on a wall the frame moves and the path stays put.
+    repeats: doc.repeats.map((l) => (set.has(l.bodyId) && !doc.bodies.find((b) => b.id === l.bodyId)?.frame ? transformLink(l, t) : l)),
   };
 }
 
@@ -635,14 +636,21 @@ export function cutInto(doc: Doc, ids: IdGen, a: CutArgs): OpResult<{ created: s
   if (target.frame) return fail('Cutting into shapes drawn on a wall is not supported yet.');
   const surface = resolveSurface(doc, a.surface ?? { topOf: target.id });
   if (surface.frame) return fail('Cutting from a wall is not supported yet.');
-  const top = (target.elevation ?? 0) + target.extrusionHeight;
   const depth = a.depth === undefined ? target.extrusionHeight + 2 : num(a.depth, 'depth');
   if (depth <= 0) return fail('depth must be positive.');
-  const outline = sketchOutline(a as DrawArgs);
+  return cutWithOutline(doc, ids, { target: target.id, outline: sketchOutline(a as DrawArgs), from: surface.elevation, depth });
+}
+
+/** Cuts a drawn outline down into a shape from the height `from` (the top of the shape, by default) by `depth` mm. */
+export function cutWithOutline(doc: Doc, ids: IdGen, a: { target: string; outline: DrawnOutline; from?: number; depth?: number }): OpResult<{ created: string[]; changed: boolean }> {
+  const target = editable(doc, a.target);
+  if (target.frame) return fail('Cutting into shapes drawn on a wall is not supported yet.');
+  const surface = { elevation: a.from ?? round2((target.elevation ?? 0) + target.extrusionHeight) };
+  const depth = a.depth ?? target.extrusionHeight + 2;
+  const outline = a.outline;
   const cutterId = ids('body');
   const lo = Math.max(0, round2(surface.elevation - depth));
   const cutter = { ...drawnBody(outline, lo, cutterId, 'cutter', '#ef4444'), extrusionHeight: round2(Math.max(MIN_HEIGHT, surface.elevation - lo + 1)) };
-  void top;
   const withCutter: Doc = { ...doc, bodies: [...doc.bodies, cutter] };
   return subtractShapes(withCutter, ids, { from: [target.id], cutters: [cutterId] });
 }
@@ -670,7 +678,6 @@ export interface RepeatArgs {
 
 export function setRepeat(doc: Doc, ids: IdGen, a: RepeatArgs): OpResult<{ id: string; copies: string[]; gap: number }> {
   const b = editable(doc, a.id);
-  if (b.frame) return fail('Repeating shapes drawn on a wall is not supported yet.');
   const existing = doc.repeats.find((l) => l.bodyId === b.id);
   let s: RepeatSession = existing ? { ...existing } : defaultSession(b);
   // The path is anchored to the shape's centre.

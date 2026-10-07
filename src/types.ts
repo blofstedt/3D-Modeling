@@ -140,6 +140,10 @@ export interface DrawSession {
   bends: (Point2D | null)[];
   /** Drawing on a wall: the wall the sketch lies on. Absent on the ground or a top face. */
   frame?: Frame;
+  /** Drawing on the top of this shape. */
+  hostId?: string;
+  /** Cut the sketch out of that shape (a hole straight through) instead of adding a new shape. */
+  cut?: boolean;
 }
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [

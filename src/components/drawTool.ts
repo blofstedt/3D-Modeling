@@ -105,7 +105,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
    * Which surface a tap at this spot would draw on: the ground, the top of a shape, or one of its walls.
    * `null` means somewhere that cannot be drawn on (an underside, a slope, a shape that is itself on a wall).
    */
-  type Surface = { y: number; frame?: Frame } | null;
+  type Surface = { y: number; frame?: Frame; hostId?: string } | null;
   const surfaceAt = (cx: number, cy: number): Surface => {
     ray(cx, cy);
     const hit = raycaster.intersectObjects(api.bodyGroup.children, true)[0];
@@ -115,7 +115,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
     const body = obj && api.bodies().find((b) => b.id === obj!.userData.bodyId);
     const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : null;
     if (!body || !n || body.frame) return null;
-    if (n.y > 0.75) return { y: Math.round(((body.elevation ?? 0) + body.extrusionHeight) * 100) / 100 };
+    if (n.y > 0.75) return { y: Math.round(((body.elevation ?? 0) + body.extrusionHeight) * 100) / 100, hostId: body.repeatOf ?? body.id };
     if (Math.abs(n.y) < 0.25) {
       // A wall: the sketch lies in the wall's plane, with its origin where the tap landed.
       const at = { x: Math.round(hit.point.x), y: Math.round(-hit.point.z) };
@@ -280,7 +280,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
       if (s.planeY === null && surface.frame) return void apply({ ...s, planeY: surface.y, frame: surface.frame });
       const a = snapped(e.clientX, e.clientY, surface.y);
       if (!a) return;
-      if (s.planeY === null) apply({ ...s, planeY: surface.y });
+      if (s.planeY === null) apply({ ...s, planeY: surface.y, hostId: surface.hostId });
       return grab({ kind: 'form', anchor: a, planeY: surface.y, current: a, id: e.pointerId }, e);
     }
     // Empty space: a tap places a corner; a drag is left to the camera.
@@ -381,7 +381,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
         apply({ ...s, planeY: surface.y, frame: surface.frame });
       } else {
         const p = snapped(e.clientX, e.clientY, surface.y);
-        if (p && !s.points.some((q) => q.x === p.x && q.y === p.y)) apply({ ...s, planeY: surface.y, points: [...s.points, p], bends: [...s.bends, null] });
+        if (p && !s.points.some((q) => q.x === p.x && q.y === p.y)) apply({ ...s, planeY: surface.y, hostId: s.planeY === null ? surface.hostId : s.hostId, points: [...s.points, p], bends: [...s.bends, null] });
       }
     }
     redraw();

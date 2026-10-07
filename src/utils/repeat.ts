@@ -133,9 +133,11 @@ export function bendHandle(s: RepeatSession): Point2D {
 
 /** The copies of `body` along `s`, with ids that stay the same every time they are rebuilt. */
 export function makeCopies(body: Body3D, s: RepeatSession, idPrefix: string | number): Body3D[] {
+  // A shape on a wall repeats inside its wall: the path is in the shape's own space, so its outline moves and the frame stays.
+  const flat = body.frame ? { ...body, frame: undefined } : body;
   return copyTransforms(s).map((t, i) => ({
     ...body,
-    ...transformBody(body, t),
+    ...transformBody(flat, t),
     id: `${idPrefix}_${i + 1}`,
     name: `${body.name} ${i + 2}`,
     groupId: undefined,

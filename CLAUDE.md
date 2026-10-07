@@ -35,6 +35,12 @@ removed**. When a feature seems to need a panel, a mode or a dialog, first find 
     object itself can't carry the control. If a control only matters for the current selection, it belongs in
     the top bar (properties) or on the object, not the bottom bar (tools).
 
+11. **Touch, desktop and agent parity.** Every capability must work by finger *and* mouse (no hover, `Shift`, `Alt`,
+    right-click or keyboard-only path: a shortcut is an extra, never the only way; a mode you can leave with `Esc`
+    also has a ✕), and must exist as a **tool call** in `src/core` so an AI agent can do it too. Build the operation in
+    `src/core/ops.ts` first, expose it in `src/core/tools.ts`, and have the UI call that same operation (`runOp` in `App.tsx`).
+    Add a case to `scripts/agent-check.ts`, then `npm run agent:docs`.
+
 When in doubt, run the app (`/run`) and try the feature with a thumb, not a mouse: if you have to read the hint
 to know what to do, it isn't obvious enough yet.
 
@@ -96,7 +102,8 @@ While drawing, the camera looks straight at the surface and rotation is off, so 
 
 Still to do:
 - Bottom faces, undersides and slopes are refused for now; so is drawing on a shape that is itself on a wall.
-- Drawing *inside* a face to make a cutout (reusing hole support), instead of a separate shape on top.
+- Cutting from the Draw pill goes straight through; a pocket of a given depth exists only as the `shape_cut` tool (`depth`).
+- Cut-outs into walls, and pockets from a wall, need a mesh-backed body (a wall shape is a sideways prism, which the outline-and-height model cannot subtract from an upright one).
 - Curved sides are flattened into many small sides, so bevelling them is per-segment; smooth runs (like corner
   rounding's `arcMid`) would let a whole curve be one edge.
 - Freehand (hold to draw, then simplify), and snapping to edges / midpoints with the snap shown.
@@ -114,7 +121,7 @@ shape's *own space*, and `frameMatrix(frame)` (utils/frame.ts) stands that space
 - In the viewer, handles for a wall shape are built in its own space inside `gizmoFrame`; pointer rays are read in that
   space (`intersectPlane(..., frame)`, `Drag.frame`), and height drags follow the arrow's direction on screen (`axisScreen`).
   Hits are converted into the shape's space in `resolveHit`.
-- Not yet for wall shapes: bevels / edge picking, move arrows, rotate ring, Join, Subtract, Repeat, drawing on them.
+- Not yet for wall shapes: bevels / edge picking, move arrows, rotate ring, Join, Subtract, cutting, drawing on them. (Repeat works: the path lives in the shape's own space and the frame stays put.)
   Each is refused or hidden rather than half-working. Supporting them means doing that conversion in the matching code.
 - Position X/Y/Z are hidden in the properties bar for them (the size boxes read Across / Up / Out instead).
 
@@ -135,12 +142,19 @@ Alt-click picks the next shape behind. The selected shape's outline ignores dept
 handles this (a web search found nothing specific); the approach follows common CAD conventions (x-ray, pick-behind).
 Not done: box (marquee) selection, which would also reach buried shapes but needs a gesture that doesn't clash with orbit.
 
-### 3. Autora integration
+### 3. Autora integration — the agent API (built)
 
-The Autora repo isn't available in this environment, so no assumptions about its interface are baked in.
-Direction: expose the document model (`Body3D[]` + groups, JSON export already exists) and the pure `utils/`
-operations through a small headless API, so Autora can create/modify shapes, run repeats and export STL/OBJ
-without the UI. Decide the actual contract once Autora's side is known.
+The Autora repo isn't available in this environment, so nothing here assumes its interface; this is the generic surface.
+`src/core` is the single place document edits live: `ops.ts` (pure `(doc, args) → { doc, result }`), `tools.ts` (JSON-Schema
+specs + dispatcher), `agent.ts` (`execute`: results, touched shapes, hints, `ifRevision`, `batch`), `engine.ts` (the headless
+model + history), `bridge.ts` (`window.craft3d` + postMessage in the live app). `scripts/agent/` has the MCP (stdio) and HTTP
+servers. The app itself uses `ops` (`runOp`) for add / duplicate / delete / group / join / subtract / cut, so people and agents
+share one set of rules. **Rules:** no React or DOM in `src/core`; a document change goes through `setDoc`/`runOp`, never straight
+to state; every new capability gets a tool (see rule 11); keep `docs/agent-tools.md` generated (`npm run agent:docs`).
+Details for the Autora side: `docs/agent-api.md`.
+
+Still to do: a screen-less preview (render a PNG headless, so scheduled jobs can show their work); selection-aware tools;
+a way to stream changes to a remote viewer; attaching the embedded app's autosave to a server instead of `localStorage`.
 
 ### 4. General UI/performance pass
 

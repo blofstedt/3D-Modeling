@@ -7,6 +7,8 @@ const check = (name: string, ok: boolean, detail = '') => {
   console.log(`${ok ? 'pass' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
 };
 const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
+/** Where a shape's centre is, up the world (z): for a wall shape that comes from its frame and its outline. */
+const boundsZ = (b: any) => (b.frame ? b.frame.h + b.points.reduce((a: number, p: any) => a + p.y, 0) / b.points.length : (b.elevation ?? 0));
 
 const main = async () => {
   const m = new Engine();
@@ -70,6 +72,14 @@ const main = async () => {
   const bossB = boss.shapes![0].bounds;
   check('the wall shape sticks out of the right wall by its height', near(bossB.max.x, -250 + 40 + 15, 0.5) && near(bossB.min.x, -250 + 40, 0.5), JSON.stringify(bossB));
   check('wall shape is centred on the wall at half height', near(boss.shapes![0].bounds.min.z + boss.shapes![0].bounds.max.z, 60, 0.5));
+  const wallRep = await m.execute('repeat_set', { id: boss.shapes![0].id, kind: 'path', count: 3, direction: 90, gap: 25 });
+  check('repeat a wall shape along its wall', wallRep.ok && (wallRep.result as any).copies.length === 2, wallRep.error);
+  const wallCopies = m.getDoc().bodies.filter((b) => b.repeatOf === boss.shapes![0].id);
+  const zs = wallCopies.map((c) => boundsZ(c)).sort((x, y) => x - y);
+  check('wall copies step up the wall equally', wallCopies.every((c) => !!c.frame) && near(zs[1] - zs[0], 25, 0.6) && near(zs[0] - boundsZ(m.getDoc().bodies.find((b) => b.id === boss.shapes![0].id)!), 25, 0.6), zs.join(','));
+  const bossMove = await m.execute('shape_move', { ids: [boss.shapes![0].id], by: { z: 10 } });
+  check('moving a wall shape carries its repeat', bossMove.ok && wallCopies.length === 2 && near(boundsZ(m.getDoc().bodies.find((b) => b.repeatOf === boss.shapes![0].id)!) - zs[0], 10, 0.6), bossMove.error);
+  await m.execute('repeat_remove', { id: boss.shapes![0].id });
   const refuse = await m.execute('edge_bevel', { id: boss.shapes![0].id, group: 'top', size: 2 });
   check('unsupported wall operations are refused clearly', !refuse.ok && /wall/.test(refuse.error ?? ''), refuse.error);
 
