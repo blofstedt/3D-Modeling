@@ -362,7 +362,7 @@ export default function ModelViewer3D({
   const invalidateRef = useRef<(shadows?: boolean) => void>(() => {});
   const refreshOutlinesRef = useRef<() => void>(() => {});
   const clearHoverRef = useRef<() => void>(() => {});
-  const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean) => void>(() => {});
+  const frameViewRef = useRef<(face: CubeFace | 'keep', instant?: boolean, from?: THREE.Vector3) => void>(() => {});
   const knownIdsRef = useRef<Set<string> | null>(null);
   const tweenRef = useRef<{
     start: number;
@@ -1346,7 +1346,7 @@ export default function ModelViewer3D({
     };
 
     // ---- Camera framing ---------------------------------------------------
-    const frameView = (face: CubeFace | 'keep', instant = false) => {
+    const frameView = (face: CubeFace | 'keep', instant = false, from?: THREE.Vector3) => {
       const box = new THREE.Box3();
       let any = false;
       live.current.bodies.forEach((b) => {
@@ -1378,7 +1378,7 @@ export default function ModelViewer3D({
         right: new THREE.Vector3(1, 0.08, 0),
         left: new THREE.Vector3(-1, 0.08, 0),
       };
-      const dir = face === 'keep' ? camera.position.clone().sub(controls.target) : directions[face].clone();
+      const dir = from ? from.clone() : face === 'keep' ? camera.position.clone().sub(controls.target) : directions[face].clone();
       const toPos = center.clone().add(dir.normalize().multiplyScalar(distance));
 
       if (instant) {
@@ -1907,6 +1907,27 @@ export default function ModelViewer3D({
     drawToolRef.current?.refresh();
   }, [draw]);
 
+  // Drawing is flat work: the camera looks straight down at the surface, turning is off so it stays like paper
+  // (drag pans, pinch or scroll zooms), and the old viewing angle comes back when the sketch is done.
+  useEffect(() => {
+    const api = drawApiRef.current;
+    if (!drawing || !isSceneReady || !api) return;
+    const { camera, controls } = api;
+    const saved = { pos: camera.position.clone(), target: controls.target.clone() };
+    frameViewRef.current('top');
+    controls.enableRotate = false;
+    controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
+    controls.touches.ONE = THREE.TOUCH.PAN;
+    return () => {
+      controls.enableRotate = true;
+      controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      controls.touches.ONE = THREE.TOUCH.ROTATE;
+      // After this commit's other effects (a new shape reframes the view): go back to where the user was looking.
+      // It looks the same way as before, framed so the new shape is in view too.
+      window.setTimeout(() => frameViewRef.current('keep', false, saved.pos.clone().sub(saved.target)), 0);
+    };
+  }, [drawing, isSceneReady]);
+
   // ---- Repeat preview: ghost copies, the path and its two handles -----------
   useEffect(() => {
     const group = previewGroupRef.current;
@@ -2018,7 +2039,7 @@ export default function ModelViewer3D({
             ? 'Tap to add a corner · drag a side to curve it · tap the green corner to finish'
             : draw.planeY === null
               ? 'Tap the ground or the top of a shape to start drawing'
-              : 'Tap to place corners · drag a corner to move it'
+              : 'Tap to place corners · drag a corner to move it · drag empty space to pan'
           : 'Drag it out · release to make it'
         : repeat
         ? 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels'

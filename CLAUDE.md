@@ -92,7 +92,7 @@ Built: **Draw** (`D`) sketches on the ground or on the top of a shape (`utils/dr
 a corner to move it; drag a *side* to curve it (it becomes an arc, flattened to points); tap the green first corner
 or Enter to close; Rectangle / Circle (the pill) are dragged out; a circle is a square rounded all the way, like
 the stock cylinder. The result is a normal shape, 20 mm tall, top face selected so the pull-up arrow is right there.
-The tool owns its own pointer handlers while open; the viewer's handlers bail out (`live.current.draw`).
+While drawing, the camera looks straight at the surface and rotation is off, so it feels like flat paper (drag pans); the old viewing angle returns afterwards. Drawing on a wall must do the same, facing the wall head-on. The tool owns its own pointer handlers while open; the viewer's handlers bail out (`live.current.draw`).
 
 Still to do:
 - **Drawing on a wall** needs a per-shape orientation (a plane transform on `Body3D`) — plan that with a geometry
