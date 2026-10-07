@@ -248,6 +248,7 @@ export function libraryItems(doc: Doc) {
     return {
       id: item.id,
       name: item.name,
+      shared: !!item.shared,
       shapes: item.bodies.length,
       size: { x: round2(box.maxX - box.minX), y: round2(box.maxY - box.minY), z: round2(box.maxTop - box.minElevation) },
       placed: doc.groups.filter((g) => g.libraryId === item.id && g.place).map((g) => g.id),

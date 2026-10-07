@@ -795,7 +795,7 @@ export function saveToLibrary(doc: Doc, ids: IdGen, a: { group?: string; id?: st
   if (typeof made === 'string') return fail(made);
   const existing = group?.libraryId ? doc.library.find((i) => i.id === group!.libraryId) : undefined;
   const name = (a.name ?? existing?.name ?? group?.name ?? single?.name ?? 'Object').trim() || 'Object';
-  const item: LibraryItem = { id: existing?.id ?? ids('item'), name, ...made.item };
+  const item: LibraryItem = { id: existing?.id ?? ids('item'), name, shared: existing?.shared, rev: Date.now(), ...made.item };
   const gone = new Set((group ? group.bodyIds : [single!.id]));
   const innerGroups = new Set(group ? descendantGroups(doc.groups, group.id).map((g) => g.id) : []);
   const gid = group?.id ?? ids('group');
@@ -877,7 +877,7 @@ export function renameLibraryItem(doc: Doc, a: { item: string; name: string }): 
   const item = itemOf(doc, a.item);
   const name = String(a.name ?? '').trim();
   if (!name) return fail('name must not be empty.');
-  return { doc: { ...doc, library: doc.library.map((i) => (i.id === item.id ? { ...i, name } : i)) }, result: { item: item.id, name } };
+  return { doc: { ...doc, library: doc.library.map((i) => (i.id === item.id ? { ...i, name, rev: Date.now() } : i)) }, result: { item: item.id, name } };
 }
 
 /** Removes a library object. Placed copies stay in the scene as ordinary shapes. */
@@ -885,4 +885,38 @@ export function removeLibraryItem(doc: Doc, a: { item: string }): OpResult<{ ite
   const item = itemOf(doc, a.item);
   const kept = doc.groups.filter((g) => g.libraryId === item.id).length;
   return { doc: settle({ ...doc, library: doc.library.filter((i) => i.id !== item.id) }), result: { item: item.id, keptAsShapes: kept } };
+}
+
+/** Keeps a library object in the app-wide library too (every project can then place it), or stops doing so. */
+export function shareLibraryItem(doc: Doc, a: { item: string; shared?: boolean }): OpResult<{ item: string; shared: boolean }> {
+  const item = itemOf(doc, a.item);
+  const shared = a.shared !== false;
+  return { doc: { ...doc, library: doc.library.map((i) => (i.id === item.id ? { ...i, shared, rev: shared ? i.rev ?? Date.now() : i.rev } : i)) }, result: { item: item.id, shared } };
+}
+
+const isItem = (x: any): x is LibraryItem => !!x && typeof x.id === 'string' && typeof x.name === 'string' && Array.isArray(x.bodies) && x.bodies.length > 0 && Array.isArray(x.groups ?? []);
+
+/** Adds library objects (from the app-wide library, a file, or another project). A newer copy of an object already here replaces it, and its linked copies follow. */
+export function importLibrary(doc: Doc, a: { items: unknown }): OpResult<{ added: string[]; updated: string[]; skipped: number }> {
+  if (!Array.isArray(a.items)) return fail('items must be a list of library objects (from library_export).');
+  const added: string[] = [];
+  const updated: string[] = [];
+  let skipped = 0;
+  let library = doc.library;
+  for (const raw of a.items) {
+    if (!isItem(raw)) {
+      skipped++;
+      continue;
+    }
+    const item: LibraryItem = { ...raw, groups: raw.groups ?? [] };
+    const have = library.find((i) => i.id === item.id);
+    if (!have) {
+      library = [...library, item];
+      added.push(item.id);
+    } else if ((item.rev ?? 0) > (have.rev ?? 0)) {
+      library = library.map((i) => (i.id === item.id ? { ...item, shared: item.shared ?? have.shared } : i));
+      updated.push(item.id);
+    }
+  }
+  return { doc: library === doc.library ? doc : settle({ ...doc, library }), result: { added, updated, skipped } };
 }

@@ -6,6 +6,8 @@
 import { Body3D } from '../types';
 import { Doc, IdGen } from './doc';
 import { fail } from './errors';
+import { AgentError } from './errors';
+import { thumbnailSvg } from '../utils/thumbnail';
 import { describeEdgesOf, describeFaces, libraryItems, meshReport, sceneSummary, summarize } from './inspect';
 import * as ops from './ops';
 
@@ -196,6 +198,10 @@ export const TOOL_SPECS: ToolSpec[] = [
     description: 'Open a linked copy for editing: its shapes become ordinary, you edit them, then library_save the group to update the library object (all copies follow). With forget:true it becomes separate shapes for good.',
     inputSchema: obj({ group: { type: 'string' }, forget: { type: 'boolean' } }, ['group']),
   },
+  { name: 'library_thumbnail', description: 'A small picture of a library object (or of a shape group in the scene via `shapes`) as SVG text: isometric, coloured, no GL needed.', inputSchema: obj({ item: { type: 'string' }, shapes: { type: 'array', items: { type: 'string' } }, size: { type: 'number', description: 'Pixels, default 96.' } }), readOnly: true },
+  { name: 'library_share', description: 'Keep a library object in the app-wide library too, so every project can place it (shared:false stops that; placed copies stay). Only the live app has an app-wide library; elsewhere use library_export / library_import to carry objects between projects.', inputSchema: obj({ item: { type: 'string' }, shared: { type: 'boolean', description: 'Default true.' } }, ['item']) },
+  { name: 'library_export', description: 'The library objects as JSON (all, or the ones in `items`), to keep or to hand to library_import in another project.', inputSchema: obj({ items: { type: 'array', items: { type: 'string' } } }), readOnly: true },
+  { name: 'library_import', description: 'Add library objects from library_export. An object already here is replaced only by a newer one (its linked copies follow).', inputSchema: obj({ items: { type: 'array', items: { type: 'object' } } }, ['items']) },
   { name: 'library_rename', description: 'Rename a library object.', inputSchema: obj({ item: { type: 'string' }, name: { type: 'string' } }, ['item', 'name']) },
   { name: 'library_remove', description: 'Remove a library object. Its placed copies stay as ordinary shapes.', inputSchema: obj({ item: { type: 'string' } }, ['item']) },
   { name: 'group_remove', description: 'Dissolve one group (its shapes and inner groups stay, moving up into the group around it).', inputSchema: obj({ group: { type: 'string' } }, ['group']) },
@@ -328,6 +334,21 @@ export function runDocTool(ctx: ToolContext, name: string, rawArgs: unknown): To
       return done(ops.placeFromLibrary(doc, ids, a as ops.PlaceArgs));
     case 'object_unlink':
       return done(ops.unlinkObject(doc, ids, a as { group: string; forget?: boolean }));
+    case 'library_thumbnail': {
+      const size = Math.max(16, Math.min(512, Number(a.size) || 96));
+      if (Array.isArray(a.shapes)) return { doc, result: { svg: thumbnailSvg(a.shapes.map((id: string) => ops.need(doc, id)), size) } };
+      const item = doc.library.find((i) => i.id === a.item);
+      if (!item) throw new AgentError(`No library object "${String(a.item)}".`, `Library: ${doc.library.map((i) => i.id).join(', ') || 'empty'}`);
+      return { doc, result: { item: item.id, svg: thumbnailSvg(item.bodies, size) } };
+    }
+    case 'library_share':
+      return done(ops.shareLibraryItem(doc, a as { item: string; shared?: boolean }));
+    case 'library_export': {
+      const want = Array.isArray(a.items) ? new Set<string>(a.items) : null;
+      return { doc, result: { items: doc.library.filter((i) => !want || want.has(i.id)) } };
+    }
+    case 'library_import':
+      return done(ops.importLibrary(doc, a as { items: unknown }));
     case 'library_rename':
       return done(ops.renameLibraryItem(doc, a as { item: string; name: string }));
     case 'library_remove':

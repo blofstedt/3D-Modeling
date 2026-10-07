@@ -1,6 +1,7 @@
 /**
  * Headless checks for the geometry the app builds. Run with `npm test`.
  */
+import { mergeShared } from '../src/utils/sharedLibrary';
 import { initManifold } from '../src/utils/manifoldBoolean';
 import * as THREE from 'three';
 import { Body3D, Point2D } from '../src/types';
@@ -434,3 +435,20 @@ if (failures) {
   process.exit(1);
 }
 console.log('\nall geometry checks passed');
+
+
+// App-wide library: a shared project object and its twin stay equal, the newer one winning.
+{
+  const item = (id: string, rev: number, shared = true): any => ({ id, name: id, rev, shared, bodies: [], groups: [] });
+  const a = mergeShared([item('a', 5)], []);
+  check('a shared object is copied to the app-wide library', a.shared.length === 1 && a.project.length === 1);
+  const b = mergeShared([item('a', 5)], [item('a', 9)]);
+  check('a newer app-wide copy updates the project', b.project[0].rev === 9 && b.shared.length === 1);
+  const c = mergeShared([item('a', 9)], [item('a', 5)]);
+  check('a newer project copy updates the app-wide library', c.shared[0].rev === 9);
+  const d = mergeShared([item('a', 5, false)], [item('a', 9)]);
+  check('an object kept only in this project is left alone', d.project[0].rev === 5 && d.shared[0].rev === 9);
+  const same = [item('a', 5)];
+  const stable = mergeShared(same, [item('a', 5)]);
+  check('merging settles: nothing changes the second time', stable.project === same);
+}

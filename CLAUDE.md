@@ -157,7 +157,17 @@ Rules: tap picks the whole copy (never steps inside); move/turn only change `pla
 its group; editing one of its shapes is refused with the way out. **Edit** (`object_unlink`) turns a copy into ordinary
 shapes that remember the item; **Save** (`library_save`) on it updates the item and every copy follows; **Separate**
 (`forget`) cuts the link. Removing an item leaves its copies as plain shapes. Tools: `library_list/save/place/rename/remove`,
-`object_unlink`. Next: an app-wide library (localStorage + export/import, same item shape), item thumbnails, per-copy colour overrides,
+`object_unlink`.
+
+**Thumbnails (built):** `utils/thumbnail.ts` draws any shapes as an isometric SVG (no GL, no DOM, bevels not drawn), cached per item;
+the library rows show it and `library_thumbnail` gives agents the same picture.
+
+**App-wide library (built):** a project object marked `shared` (globe button in Shape → Your objects, or `library_share`) is also
+kept in `localStorage` (`utils/sharedLibrary.ts`, key `craft3d:library:v1`). Items carry `rev` (ms); `mergeShared` keeps a
+project object and its twin (same id) equal, newer wins, and an update flows to every linked copy in the project. Objects that
+only live app-wide show in the list too; placing one imports it into the project first (`library_import`), so projects stay
+self-contained. The sync lives in `App.tsx` (the browser is the only host with that storage); the headless/agent route is
+`library_export` / `library_import`. Next: file import/export in the UI, a server-backed store for Autora, per-copy colour overrides,
 saving wall shapes, and a hierarchy view.
 
 ### Picking things that are buried

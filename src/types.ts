@@ -113,6 +113,10 @@ export interface Placement {
 export interface LibraryItem {
   id: string;
   name: string;
+  /** Also kept in the app-wide library, so every project can place it. */
+  shared?: boolean;
+  /** When it was last changed (ms). The newer copy wins when a project and the app-wide library disagree. */
+  rev?: number;
   bodies: Body3D[];
   /** The groups inside the object (not the object itself); their parentId may be ROOT. */
   groups: ShapeGroup[];

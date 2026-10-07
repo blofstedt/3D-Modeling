@@ -30,6 +30,7 @@ import {
   Triangle,
   TriangleRight,
   type LucideIcon,
+  Globe,
 } from 'lucide-react';
 import { SHAPE_LABELS, ShapeKind } from '../utils/primitives';
 import MenuButton from './Menu';
@@ -58,8 +59,9 @@ interface BottomBarProps {
   addOnTop: boolean;
   onAddShape: (kind: ShapeKind) => void;
   /** The project's saved objects: tapping one places a linked copy. */
-  library: { id: string; name: string; shapes: number }[];
+  library: { id: string; name: string; shapes: number; shared: boolean; inProject: boolean; thumb: string }[];
   onPlaceItem: (id: string) => void;
+  onShareItem: (id: string) => void;
   onRemoveItem: (id: string) => void;
   onToggleMove: () => void;
   onIsolate: () => void;
@@ -172,8 +174,8 @@ export default function BottomBar(props: BottomBarProps) {
           </div>
           {props.library.length > 0 && (
             <div className="mt-3 pt-3 border-t border-white/8">
-              <p className="px-2 pb-2 text-xs text-slate-400">Your objects · placed copies stay linked</p>
-              <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+              <p className="px-2 pb-2 text-xs text-slate-400">Your objects · placed copies stay linked · globe = in every project</p>
+              <div className="flex flex-col gap-1 max-h-60 overflow-y-auto">
                 {props.library.map((item) => (
                   <div key={item.id} className="flex items-center gap-1">
                     <button
@@ -182,16 +184,31 @@ export default function BottomBar(props: BottomBarProps) {
                         props.onPlaceItem(item.id);
                         props.setOpenId(null);
                       }}
-                      className="flex-1 min-w-0 h-11 px-4 rounded-full bg-white/6 hover:bg-white/12 text-left text-sm font-medium text-slate-100 flex items-center gap-2 transition-colors"
+                      className="flex-1 min-w-0 h-14 pl-2 pr-4 rounded-full bg-white/6 hover:bg-white/12 text-left text-sm font-medium text-slate-100 flex items-center gap-2.5 transition-colors"
                     >
+                      <img src={item.thumb} alt="" width={44} height={44} className="w-11 h-11 shrink-0 rounded-full bg-slate-950/60" draggable={false} />
                       <span className="truncate">{item.name}</span>
                       <span className="ml-auto text-[11px] text-slate-400">{item.shapes} {item.shapes === 1 ? 'shape' : 'shapes'}</span>
                     </button>
+                    {item.inProject ? (
+                      <button
+                        type="button"
+                        onClick={() => props.onShareItem(item.id)}
+                        aria-pressed={item.shared}
+                        aria-label={item.shared ? `${item.name} is in every project: tap to keep it in this project only` : `Keep ${item.name} in every project`}
+                        title={item.shared ? 'In every project (tap to keep it only here)' : 'Keep in every project'}
+                        className={`w-11 h-11 shrink-0 rounded-full flex items-center justify-center transition-colors ${item.shared ? 'bg-accent-500/25 text-accent-200' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
+                      >
+                        <Globe size={16} />
+                      </button>
+                    ) : (
+                      <span className="w-11 h-11 shrink-0 flex items-center justify-center text-accent-200" title="From the app-wide library"><Globe size={16} /></span>
+                    )}
                     <button
                       type="button"
                       onClick={() => props.onRemoveItem(item.id)}
-                      aria-label={`Remove ${item.name} from the library`}
-                      title="Remove from the library (placed copies stay as shapes)"
+                      aria-label={item.inProject ? `Remove ${item.name} from this project's library` : `Remove ${item.name} from every project`}
+                      title={item.inProject ? 'Remove from this project (placed copies stay as shapes)' : 'Remove from every project'}
                       className="w-11 h-11 shrink-0 rounded-full text-slate-400 hover:text-rose-300 hover:bg-rose-500/15 flex items-center justify-center transition-colors"
                     >
                       <Trash2 size={16} />
