@@ -64,7 +64,15 @@ export function useHistory<T>(value: T, apply: (value: T) => void, delay = 600) 
     return true;
   }, [apply, flush]);
 
+  /** Tells the history about a change before the next render, so an undo right after it (an agent's) still sees it. */
+  const track = useCallback((v: T) => {
+    current.current = v;
+  }, []);
+
   return {
+    track,
+    /** Close the current history entry now (instead of waiting for changes to settle). */
+    commit: flush,
     hold,
     undo,
     redo,

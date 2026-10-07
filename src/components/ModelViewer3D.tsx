@@ -82,7 +82,15 @@ interface Drag {
   angle?: number;
 }
 
+/** What the app (and through it, an agent) can ask of the 3D view. */
+export interface ViewerApi {
+  view(view: CubeFace | 'fit'): void;
+  /** A PNG of the current view, as a data URL. */
+  screenshot(): string;
+}
+
 export interface ModelViewer3DProps {
+  apiRef?: React.MutableRefObject<ViewerApi | null>;
   bodies: Body3D[];
   selectedBodyId: string | null;
   selectedBodyIds: string[];
@@ -310,6 +318,7 @@ interface BodyEntry {
 }
 
 export default function ModelViewer3D({
+  apiRef,
   bodies,
   selectedBodyId,
   selectedBodyIds,
@@ -401,6 +410,7 @@ export default function ModelViewer3D({
   // Latest props for long-lived event handlers
   const live = useRef({} as ModelViewer3DProps);
   live.current = {
+    apiRef,
     bodies,
     selectedBodyId,
     selectedBodyIds,
@@ -1532,6 +1542,15 @@ export default function ModelViewer3D({
       invalidate();
     };
     frameViewRef.current = frameView;
+    if (live.current.apiRef) {
+      live.current.apiRef.current = {
+        view: (v) => frameView(v === 'fit' ? 'keep' : v),
+        screenshot: () => {
+          renderer.render(scene, camera);
+          return renderer.domElement.toDataURL('image/png');
+        },
+      };
+    }
     frameView('iso', true);
 
     // ---- Resize + render loop ---------------------------------------------

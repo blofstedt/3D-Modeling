@@ -23,7 +23,7 @@ const sig = (fp: Footprint[]) =>
  * where it is tall. Stacks with the same outline become a single taller shape. When the result needs more than
  * one extrusion (steps, or parts that do not touch) it comes back as several bodies for the caller to group.
  */
-export function joinBodies(targets: Body3D[], stamp: number): Body3D[] {
+export function joinBodies(targets: Body3D[], stamp: number | string): Body3D[] {
   if (targets.length < 2) return targets;
   const first = targets[0];
   const levels = [...new Set(targets.flatMap((b) => [round2(b.elevation ?? 0), round2((b.elevation ?? 0) + b.extrusionHeight)]))].sort((a, b) => a - b);

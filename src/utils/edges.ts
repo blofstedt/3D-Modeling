@@ -432,6 +432,43 @@ export function toggleEdge(current: EdgeSel[], sel: EdgeSel): EdgeSel[] {
 /** The edge whose size and style the controls show: a top or bottom edge if there is one, else the first. */
 export const primaryEdge = (sels: EdgeSel[]): EdgeSel => sels.find((e) => e.kind !== 'corner') ?? sels[0];
 
+const inradiusCache = new WeakMap<Point2D[], number>();
+
+/** The radius of the biggest circle that fits inside an outline (found on a grid, so approximate). A bevel cannot be deeper than this: past it the top face would be gone. */
+export function inradius(points: Point2D[]): number {
+  const cached = inradiusCache.get(points);
+  if (cached !== undefined) return cached;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const w = Math.max(...xs) - x0;
+  const h = Math.max(...ys) - y0;
+  const N = 36;
+  let best = 0;
+  for (let i = 0; i <= N; i++) {
+    for (let j = 0; j <= N; j++) {
+      const px = x0 + (w * i) / N;
+      const py = y0 + (h * j) / N;
+      let inside = false;
+      let d = Infinity;
+      for (let k = 0, m = points.length; k < m; k++) {
+        const a = points[k];
+        const b = points[(k + 1) % m];
+        if (a.y > py !== b.y > py && px < ((b.x - a.x) * (py - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (dx * dx + dy * dy || 1)));
+        d = Math.min(d, Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy)));
+      }
+      if (inside && d > best) best = d;
+    }
+  }
+  // The grid can only miss the very middle, so this errs on the small, safe side.
+  inradiusCache.set(points, best);
+  return best;
+}
+
 /** How large a bevel on this run can get: not more than half the body's height, nor than the rounding it wraps around. */
 export function runLimit(height: number, outline: Outline, run: number[], n: number, offset: number): number {
   let size = height / 2 - 0.05;
@@ -442,7 +479,11 @@ export function runLimit(height: number, outline: Outline, run: number[], n: num
     const ys = outline.points.map((p) => p.y);
     size = Math.min(size, (Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.5) / 1.5 - 1);
     if (corners.length) size = Math.min(size, Math.min(...corners) - 1.2);
-  } else if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+  } else {
+    // Deeper than the shape is wide, and the top face is gone and the cut folds over itself.
+    size = Math.min(size, inradius(outline.points) * 0.97 - 0.05);
+    if (corners.length) size = Math.min(size, Math.min(...corners) * 0.9);
+  }
   return size;
 }
 

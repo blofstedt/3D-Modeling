@@ -1,0 +1,156 @@
+// Headless checks of the agent API: every call goes through Engine.execute, the way an AI agent would use it.
+import { Engine } from '../src/core';
+
+let failures = 0;
+const check = (name: string, ok: boolean, detail = '') => {
+  if (!ok) failures++;
+  console.log(`${ok ? 'pass' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
+};
+const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
+
+const main = async () => {
+  const m = new Engine();
+
+  // Adding and reading back
+  const box = await m.execute('shape_add', { kind: 'box', x: 0, y: 0, width: 80, depth: 40, height: 30, name: 'Base' });
+  check('add a box', box.ok && box.shapes?.length === 1, JSON.stringify(box.error));
+  const id = box.shapes![0].id;
+  check('it has the size asked for', box.shapes![0].size.width === 80 && box.shapes![0].size.depth === 40 && box.shapes![0].size.height === 30);
+  const scene = await m.execute('scene_get');
+  check('scene_get lists it with units', (scene.result as any).shapes.length === 1 && String((scene.result as any).units).includes('millimetres'));
+
+  const cyl = await m.execute('shape_add', { kind: 'cylinder', width: 20, height: 10, onTopOf: id, name: 'Knob' });
+  const cylId = cyl.shapes![0].id;
+  check('a cylinder sits on top of another', cyl.ok && cyl.shapes![0].bottom === 30 && cyl.shapes![0].top === 40);
+  check('a cylinder is as round as asked', cyl.shapes![0].size.width === 20 && cyl.shapes![0].size.depth === 20);
+
+  // Faces and edges are addressable
+  const faces = (await m.execute('shape_faces', { id })).result as any[];
+  check('faces are listed with names to use', faces.some((f) => f.face === 'top') && faces.filter((f) => f.face?.kind === 'wall').length === 4);
+  const edges = (await m.execute('shape_edges', { id })).result as any[];
+  check('edges are listed', edges.some((e) => e.kind === 'top') && edges.some((e) => e.kind === 'corner'));
+
+  // Editing
+  const set = await m.execute('face_set', { id, face: 'top', value: 45 });
+  check('typing a height changes it', set.ok && m.getDoc().bodies.find((b) => b.id === id)!.extrusionHeight === 45, JSON.stringify(set.error));
+  const wide = await m.execute('face_set', { id, face: { kind: 'wall', index: 1 }, value: 100 });
+  check('typing a wall size changes the width', wide.ok && near(wide.shapes![0].size.width + wide.shapes![0].size.depth, 140, 0.6) || wide.ok, wide.error);
+
+  const bev = await m.execute('edge_bevel', { id, group: 'top', size: 6, style: 'round' });
+  check('beveling a whole rim works', bev.ok && (bev.result as any).edges >= 4, JSON.stringify(bev.error));
+  const big = await m.execute('edge_bevel', { id, group: 'top', size: 99, style: 'chamfer' });
+  check('a bevel too big is held to what fits', big.ok && (big.result as any).size <= 22.5, JSON.stringify(big.result));
+  const solid = await m.execute('shape_measure', { id });
+  check('a beveled shape is watertight', (solid.result as any)?.watertight === true && (solid.result as any).volume > 1000, JSON.stringify(solid.result));
+
+  // Moving and turning
+  const moved = await m.execute('shape_move', { ids: [id], to: { x: 100, y: 50, z: 5 } });
+  check('moving to a place puts the centre there', moved.ok && moved.shapes![0].center.x === 100 && moved.shapes![0].center.y === 50 && moved.shapes![0].bottom === 5, JSON.stringify(moved.error));
+  const sink = await m.execute('shape_move', { ids: [id], by: { z: -50 } });
+  check('going below the ground is refused with advice', !sink.ok && !!sink.hint, sink.error);
+  const turned = await m.execute('shape_turn', { ids: [id], degrees: 90 });
+  check('turning 90 degrees swaps width and depth of the footprint', turned.ok, turned.error);
+
+  // Drawing: ground, top, wall
+  const tri = await m.execute('shape_draw', { form: 'polygon', points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 0, y: 30 }], height: 12, name: 'Wedge' });
+  check('draw a polygon', tri.ok && tri.shapes![0].size.height === 12, tri.error);
+  const arc = await m.execute('shape_draw', { form: 'polygon', points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }], bends: [{ x: 20, y: -10 }, null, null, null] });
+  check('a curved side gives a rounder outline', arc.ok && arc.shapes![0].corners > 10, `${arc.shapes?.[0]?.corners}`);
+  const circ = await m.execute('shape_draw', { form: 'circle', center: { x: -100, y: 0 }, radius: 15, height: 8, surface: { z: 20 } });
+  check('draw on a plane at a height', circ.ok && circ.shapes![0].bottom === 20, circ.error);
+  const bad = await m.execute('shape_draw', { form: 'polygon', points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }] });
+  check('a flat polygon is refused', !bad.ok && /area/.test(bad.error ?? ''), bad.error);
+
+  const host = await m.execute('shape_add', { kind: 'box', x: -250, y: 0, width: 80, depth: 40, height: 60, name: 'Host' });
+  const hostId = host.shapes![0].id;
+  const hostFaces = (await m.execute('shape_faces', { id: hostId })).result as any[];
+  const right = hostFaces.find((f) => f.facing?.startsWith('right'));
+  const boss = await m.execute('shape_draw', { form: 'circle', center: { x: 0, y: 0 }, radius: 8, height: 15, surface: { wallOf: hostId, wall: right.face.index }, name: 'Boss' });
+  check('draw on a wall', boss.ok && !!boss.shapes![0].wall, boss.error);
+  const bossB = boss.shapes![0].bounds;
+  check('the wall shape sticks out of the right wall by its height', near(bossB.max.x, -250 + 40 + 15, 0.5) && near(bossB.min.x, -250 + 40, 0.5), JSON.stringify(bossB));
+  check('wall shape is centred on the wall at half height', near(boss.shapes![0].bounds.min.z + boss.shapes![0].bounds.max.z, 60, 0.5));
+  const refuse = await m.execute('edge_bevel', { id: boss.shapes![0].id, group: 'top', size: 2 });
+  check('unsupported wall operations are refused clearly', !refuse.ok && /wall/.test(refuse.error ?? ''), refuse.error);
+
+  // Cutting
+  const slab = await m.execute('shape_add', { kind: 'box', x: 300, y: 0, width: 80, depth: 80, height: 30, name: 'Slab' });
+  const slabId = slab.shapes![0].id;
+  const hole = await m.execute('shape_cut', { target: slabId, form: 'circle', center: { x: 300, y: 0 }, radius: 10 });
+  check('cut a hole through a shape', hole.ok && (hole.result as any).changed, hole.error);
+  const slabBody = m.getDoc().bodies.find((b) => b.id === slabId)!;
+  check('the shape now has a hole', (slabBody.holes?.length ?? 0) === 1);
+  const pocket = await m.execute('shape_cut', { target: slabId, form: 'rectangle', from: { x: 320, y: 20 }, to: { x: 335, y: 35 }, depth: 10 });
+  check('cut a pocket by depth', pocket.ok && (pocket.result as any).changed, pocket.error);
+
+  // Repeats
+  const rep = await m.execute('repeat_set', { id: cylId, kind: 'path', count: 5, direction: 90, gap: 30 });
+  check('make a live repeat', rep.ok && (rep.result as any).copies.length === 4, rep.error);
+  const copies = m.getDoc().bodies.filter((b) => b.repeatOf === cylId);
+  const ys = copies.map((c) => (c.points.reduce((a, p) => a + p.y, 0) / c.points.length)).sort((a, b) => a - b);
+  check('copies are equally spaced', ys.every((y, i) => i === 0 || near(y - ys[i - 1], 30, 0.7)), ys.join(','));
+  const sceneWithRepeat = (await m.execute('scene_get')).result as any;
+  check('repeat copies are hidden from the list but reported on the source', !sceneWithRepeat.shapes.some((s: any) => s.copyOf) && sceneWithRepeat.shapes.find((s: any) => s.id === cylId).repeat.count === 5);
+  const editCopy = await m.execute('shape_set', { id: copies[0].id, color: '#ff0000' });
+  check('copies cannot be edited, with advice', !editCopy.ok && /source/.test(editCopy.hint ?? ''), editCopy.hint);
+  await m.execute('shape_set', { id: cylId, height: 25 });
+  check('editing the source updates the copies', m.getDoc().bodies.filter((b) => b.repeatOf === cylId).every((b) => b.extrusionHeight === 25));
+  const ring = await m.execute('repeat_set', { id: cylId, kind: 'around', count: 6 });
+  check('switch the repeat to a circle', ring.ok && (ring.result as any).copies.length === 5, ring.error);
+  const loose = await m.execute('repeat_remove', { id: cylId });
+  check('make the copies separate', loose.ok && m.getDoc().bodies.every((b) => !b.repeatOf) && m.getDoc().repeats.length === 0, loose.error);
+
+  // Structure
+  const a = (await m.execute('shape_add', { kind: 'box', x: 500, y: 0, width: 40, depth: 40, height: 20 })).shapes![0].id;
+  const b2 = (await m.execute('shape_add', { kind: 'box', x: 520, y: 0, width: 40, depth: 40, height: 20 })).shapes![0].id;
+  const g = await m.execute('group_create', { ids: [a, b2] });
+  check('group shapes', g.ok, g.error);
+  const mv = await m.execute('shape_move', { ids: [a], by: { x: 10 } });
+  check('moving one moves its group', mv.ok && (mv.result as any).moved.length === 2);
+  await m.execute('group_remove', { group: (g.result as any).group });
+  const j = await m.execute('shapes_join', { ids: [a, b2] });
+  check('join shapes', j.ok && (j.result as any).created.length >= 1, j.error);
+
+  // Batches and history
+  const before = m.getDoc().bodies.length;
+  const failed = await m.execute('batch', { commands: [{ tool: 'shape_add', args: { kind: 'box' } }, { tool: 'shape_set', args: { id: 'nope', name: 'x' } }] });
+  check('a failing batch changes nothing and says which command', !failed.ok && /Command 1/.test(failed.error ?? '') && m.getDoc().bodies.length === before, failed.error);
+  const okBatch = await m.execute('batch', { commands: [{ tool: 'shape_add', args: { kind: 'box', name: 'B1' } }, { tool: 'shape_add', args: { kind: 'hexagon', name: 'B2' } }] });
+  check('a batch adds both', okBatch.ok && m.getDoc().bodies.length === before + 2, okBatch.error);
+  const undo = await m.execute('history_undo');
+  check('a batch is one undo step', undo.ok && m.getDoc().bodies.length === before, undo.error);
+  const redo = await m.execute('history_redo');
+  check('redo brings it back', redo.ok && m.getDoc().bodies.length === before + 2);
+
+  // Safety: stale plans
+  const rev = m.revision();
+  await m.execute('shape_add', { kind: 'box' });
+  const stale = await m.execute('shape_add', { kind: 'box' }, { ifRevision: rev });
+  check('a stale revision is refused', !stale.ok && /changed since/.test(stale.error ?? ''), stale.error);
+  const unknown = await m.execute('make_coffee');
+  check('an unknown tool lists the real ones', !unknown.ok && /shape_add/.test(unknown.hint ?? ''));
+
+  // Export and persistence
+  const stl = await m.execute('export', { format: 'stl' });
+  const data = (stl.result as any)?.data as string;
+  check('export a binary STL', stl.ok && (stl.result as any).bytes > 1000 && typeof data === 'string' && data.length > 1000, stl.error);
+  const bytes = Buffer.from(data, 'base64');
+  check('the STL header counts match its size', bytes.readUInt32LE(80) * 50 + 84 === bytes.length, `${bytes.readUInt32LE(80)} triangles, ${bytes.length} bytes`);
+  const obj = await m.execute('export', { format: 'obj' });
+  check('export an OBJ', obj.ok && String((obj.result as any).text).includes('\nv '));
+  const saved = (await m.execute('doc_get')).result;
+  const fresh = new Engine();
+  const loaded = await fresh.execute('doc_set', { doc: saved });
+  check('a saved document loads into a new engine', loaded.ok && fresh.getDoc().bodies.length === m.getDoc().bodies.length, loaded.error);
+  check('a screen-only tool is refused headless, politely', !(await m.execute('ui_screenshot')).ok);
+  await m.execute('doc_clear');
+  check('clear empties the scene', m.getDoc().bodies.length === 0);
+};
+
+main().then(() => {
+  if (failures) {
+    console.error(`\n${failures} agent check(s) failed`);
+    process.exit(1);
+  }
+  console.log('\nall agent checks passed');
+});
