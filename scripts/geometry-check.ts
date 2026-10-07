@@ -1,6 +1,7 @@
 /**
  * Headless checks for the geometry the app builds. Run with `npm test`.
  */
+import { initManifold } from '../src/utils/manifoldBoolean';
 import * as THREE from 'three';
 import { Body3D, Point2D } from '../src/types';
 import { buildBodyGeometry } from '../src/utils/bodyGeometry';
@@ -15,6 +16,9 @@ import { circleOutline, circleThrough, drawnBody, rectangleOutline, shapeOutline
 import * as THREE2 from 'three';
 import { frameMatrix, moveFrame, wallFrame } from '../src/utils/frame';
 import { RepeatLink, RepeatSession } from '../src/types';
+
+await initManifold(); // the exact geometry engine, as the app and the agent API run it
+
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -372,6 +376,57 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const first = { ...box, ...applyEdgeChange(box, [top], { style: 'chamfer' }) };
   check('a first bevel is visible, not a hairline', edgeSize(first, top) >= 3, String(edgeSize(first, top)));
   check('the default grows with the shape but stays modest', defaultBevelSize({ ...box, extrusionHeight: 400 }) <= 6 && defaultBevelSize({ ...box, extrusionHeight: 6 }) < 1.5);
+}
+
+
+// Bevels of different sizes and styles that meet at a corner must still make one closed solid (this is what slicers choke on).
+{
+  const boundaryEdges = (b: Body3D) => {
+    const g = buildBodyGeometry(b)!;
+    const pos = g.attributes.position;
+    const n = g.index ? g.index.count : pos.count;
+    const key = (i: number) => `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
+    const edges = new Map<string, number>();
+    for (let t = 0; t < n / 3; t++) {
+      const v = [0, 1, 2].map((k) => key(g.index ? g.index.getX(t * 3 + k) : t * 3 + k));
+      for (let k = 0; k < 3; k++) {
+        const a = v[k];
+        const c = v[(k + 1) % 3];
+        if (a === c) continue;
+        const e = a < c ? `${a}|${c}` : `${c}|${a}`;
+        edges.set(e, (edges.get(e) ?? 0) + 1);
+      }
+    }
+    let bad = 0;
+    edges.forEach((c) => {
+      if (c !== 2) bad++;
+    });
+    return bad;
+  };
+  let seed = 11;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+  const outlines: [string, Point2D[]][] = [
+    ['box', rect(-30, -20, 30, 20)],
+    ['L', [{ x: -30, y: -30 }, { x: 30, y: -30 }, { x: 30, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 30 }, { x: -30, y: 30 }]],
+    ['hexagon', Array.from({ length: 6 }, (_, i) => ({ x: 30 * Math.cos((i * Math.PI) / 3), y: 30 * Math.sin((i * Math.PI) / 3) }))],
+  ];
+  let open = 0;
+  let total = 0;
+  const examples: string[] = [];
+  for (const [name, pts] of outlines) {
+    for (let k = 0; k < 20; k++) {
+      const edgeBevels = pts.flatMap((_, e) =>
+        rnd() < 0.7 ? [{ side: (rnd() < 0.8 ? 'top' : 'bottom') as 'top' | 'bottom', edge: e, size: [2, 3, 4, 5, 6, 8][Math.floor(rnd() * 6)], style: (rnd() < 0.5 ? 'round' : 'chamfer') as 'round' | 'chamfer' }] : []
+      );
+      if (!edgeBevels.length) continue;
+      total++;
+      if (boundaryEdges(body({ points: pts, basePoints: pts, extrusionHeight: 30, edgeBevels })) !== 0) {
+        open++;
+        if (examples.length < 3) examples.push(`${name}#${k}`);
+      }
+    }
+  }
+  check('random mixes of bevel sizes and styles are all closed solids', open === 0, `${open} of ${total} open ${examples.join(' ')}`);
 }
 
 if (failures) {

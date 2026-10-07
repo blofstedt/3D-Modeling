@@ -12,6 +12,7 @@ npm run dev      # http://localhost:3000
 npm run build    # production bundle in dist/
 npm run lint     # type-check (tsc --noEmit)
 npm test         # headless geometry, agent-API and server checks
+npm run test:slicer  # prints parts through PrusaSlicer + ADMesh (needs them installed; skips otherwise)
 ```
 
 ## Using it

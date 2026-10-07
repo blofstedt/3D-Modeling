@@ -8,11 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "esbuild scripts/geometry-check.ts --bundle --platform=node --format=esm --outfile=.scratch/geometry-check.mjs --log-level=error && node .scratch/geometry-check.mjs && esbuild scripts/agent-check.ts --bundle --platform=node --format=esm --outfile=.scratch/agent-check.mjs --log-level=error && node .scratch/agent-check.mjs && npm run -s agent:build && node scripts/agent-servers-check.mjs",
-    "agent:build": "esbuild scripts/agent/mcp.ts scripts/agent/http.ts --bundle --platform=node --format=esm --outdir=dist-agent --out-extension:.js=.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && esbuild src/core/index.ts --bundle --platform=node --format=esm --outfile=dist-agent/craft3d-core.mjs --log-level=error",
+    "test": "esbuild scripts/geometry-check.ts --bundle --platform=node --format=esm --outfile=.scratch/geometry-check.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && cp node_modules/manifold-3d/manifold.wasm .scratch/manifold.wasm && node .scratch/geometry-check.mjs && esbuild scripts/agent-check.ts --bundle --platform=node --format=esm --outfile=.scratch/agent-check.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && node .scratch/agent-check.mjs && npm run -s agent:build && node scripts/agent-servers-check.mjs",
+    "agent:build": "esbuild scripts/agent/mcp.ts scripts/agent/http.ts --bundle --platform=node --format=esm --outdir=dist-agent --out-extension:.js=.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && esbuild src/core/index.ts --bundle --platform=node --format=esm --outfile=dist-agent/craft3d-core.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && cp node_modules/manifold-3d/manifold.wasm dist-agent/manifold.wasm",
     "agent:mcp": "npm run -s agent:build && node dist-agent/mcp.mjs",
     "agent:http": "npm run -s agent:build && node dist-agent/http.mjs",
-    "agent:docs": "esbuild scripts/agent-docs.ts --bundle --platform=node --format=esm --outfile=.scratch/agent-docs.mjs --log-level=error && node .scratch/agent-docs.mjs"
+    "agent:docs": "esbuild scripts/agent-docs.ts --bundle --platform=node --format=esm --outfile=.scratch/agent-docs.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && node .scratch/agent-docs.mjs",
+    "test:slicer": "esbuild scripts/slicer-check.ts --bundle --platform=node --format=esm --outfile=.scratch/slicer-check.mjs --log-level=error --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\" && cp node_modules/manifold-3d/manifold.wasm .scratch/manifold.wasm && node .scratch/slicer-check.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -20,6 +21,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "lucide-react": "^0.546.0",
+    "manifold-3d": "^3.5.4",
     "motion": "^12.23.24",
     "polygon-clipping": "^0.15.7",
     "react": "^19.0.1",

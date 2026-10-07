@@ -4,6 +4,7 @@
  */
 
 import { objText, stlBytes, toBase64 } from '../utils/serialize';
+import { initManifold } from '../utils/manifoldBoolean';
 import { Doc, IdGen, emptyDoc, parseDoc, settle } from './doc';
 import { AgentError } from './errors';
 import { ShapeSummary, summarize } from './inspect';
@@ -49,6 +50,8 @@ export async function execute(host: AgentHost, name: string, args: unknown = {},
     return { ok: false, error: e instanceof Error ? `Internal error: ${e.message}` : String(e), changed: false, revision: host.revision() };
   };
   try {
+    // The exact geometry engine starts once, on the first call (a no-op after that).
+    await initManifold().catch(() => undefined);
     if (options.ifRevision !== undefined && options.ifRevision !== host.revision() && !READ_ONLY.has(name)) {
       throw new AgentError(`The model changed since you looked (revision ${host.revision()}, you had ${options.ifRevision}).`, 'Call scene_get again and redo your plan.');
     }

@@ -132,8 +132,12 @@ separate cutters overlapped at corners and left cracks and doubled faces (dark s
 checks that rims, partial runs, L-shapes and holes are watertight; keep that true. Sizes are honest: you can't set a
 size the shape won't show (`maxBevelSize`), a first bevel is visible (`defaultBevelSize`), and the picker/label says
 "largest that fits". The highlight on a beveled rim hugs the bevel and mitres at corners.
-Known gap: neighbouring edges with *different* sizes still use separate cutters and can crack at the corner.
-A variable-size sweep (a step at the joint) would fix it.
+Cuts are done by Manifold (`utils/manifoldBoolean.ts`, WebAssembly), which always returns a closed solid, so neighbouring edges
+with *different* sizes no longer crack. It starts asynchronously: `await initManifold()` before building geometry (`main.tsx`,
+`execute`, and the test scripts do; Node needs `manifold.wasm` beside the bundle). If it is not ready, or an input is not a
+closed solid, the old three-bvh-csg + `meshHeal.ts` path is the fallback (good, not exact).
+`npm run test:slicer` prints 14 real parts through PrusaSlicer's CLI and ADMesh (`sudo apt install prusa-slicer admesh`; skips
+if absent) and checks manifold, size, bed contact, volume vs `shape_measure`, and G-code. Keep it passing.
 
 ### Picking things that are buried
 
