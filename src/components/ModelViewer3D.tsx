@@ -118,6 +118,8 @@ export interface ModelViewer3DProps {
   onDrawForm: (form: DrawForm) => void;
   onDrawDone: () => void;
   onDrawCancel: () => void;
+  onDrawUndoCorner: () => void;
+  onRepeatCancel: () => void;
   /** Fired when a drag starts/ends so the app can treat it as a single undo step. */
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
@@ -141,6 +143,11 @@ const EDGE_PICK_TOUCH_PX = 18;
 const MAX_WALL_HANDLES = 16;
 
 const IDENTITY = new THREE.Matrix4();
+/** Turns that land within 3° of a 15° step snap to it: a fingertip can't hold Shift, so the common angles come to you. */
+const magnet15 = (deg: number) => {
+  const near = Math.round(deg / 15) * 15;
+  return Math.abs(deg - near) <= 3 ? near : deg;
+};
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n)}`;
 
@@ -342,6 +349,8 @@ export default function ModelViewer3D({
   onDrawForm,
   onDrawDone,
   onDrawCancel,
+  onDrawUndoCorner,
+  onRepeatCancel,
   onDragStateChange,
   onHint,
   moveOn,
@@ -434,6 +443,8 @@ export default function ModelViewer3D({
     onDrawForm,
     onDrawDone,
     onDrawCancel,
+    onDrawUndoCorner,
+    onRepeatCancel,
     onDragStateChange,
     onHint,
     moveOn,
@@ -1059,9 +1070,11 @@ export default function ModelViewer3D({
         const r = live.current.repeat;
         if (p && r) {
           let at: Point2D = { x: Math.round(p.x), y: Math.round(-p.z) };
-          if (m.shift) {
-            // Shift keeps the path to 15° steps from the original.
-            const ang = Math.round(Math.atan2(at.y - r.start.y, at.x - r.start.x) / (Math.PI / 12)) * (Math.PI / 12);
+          const here0 = (Math.atan2(at.y - r.start.y, at.x - r.start.x) * 180) / Math.PI;
+          // Shift keeps the path to 15° steps from the original; without it the common angles still pull the path in.
+          const snapDeg = m.shift ? Math.round(here0 / 15) * 15 : magnet15(here0);
+          if (m.shift || snapDeg !== here0) {
+            const ang = (snapDeg * Math.PI) / 180;
             const len = Math.hypot(at.x - r.start.x, at.y - r.start.y);
             at = { x: Math.round(r.start.x + len * Math.cos(ang)), y: Math.round(r.start.y + len * Math.sin(ang)) };
           } else {
@@ -1196,7 +1209,7 @@ export default function ModelViewer3D({
         while (delta > Math.PI) delta -= 2 * Math.PI;
         while (delta < -Math.PI) delta += 2 * Math.PI;
         const step = m.shift ? 15 : 1;
-        const deg = Math.round((delta * 180) / Math.PI / step) * step;
+        const deg = m.shift ? Math.round((delta * 180) / Math.PI / step) * step : magnet15(Math.round((delta * 180) / Math.PI));
         const angle = (deg * Math.PI) / 180;
         d.angle = angle;
         const pivot = new THREE.Vector3(d.center!.x, 0, -d.center!.y);
@@ -2302,7 +2315,7 @@ export default function ModelViewer3D({
 
       <div ref={repeatChipRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
         <AnimatePresence>
-          {repeat && <RepeatChip session={repeat} onChange={onUpdateRepeat as (fn: (s: RepeatSession) => RepeatSession) => void} onDone={onFinishRepeat} />}
+          {repeat && <RepeatChip session={repeat} onChange={onUpdateRepeat as (fn: (s: RepeatSession) => RepeatSession) => void} onDone={onFinishRepeat} onCancel={onRepeatCancel} />}
         </AnimatePresence>
       </div>
 
@@ -2338,7 +2351,7 @@ export default function ModelViewer3D({
         <AnimatePresence>
           {draw && (
             <div className="pointer-events-auto">
-              <DrawChip draw={draw} onForm={onDrawForm} onDone={onDrawDone} onCancel={onDrawCancel} />
+              <DrawChip draw={draw} onForm={onDrawForm} onDone={onDrawDone} onCancel={onDrawCancel} onUndoCorner={onDrawUndoCorner} />
             </div>
           )}
         </AnimatePresence>

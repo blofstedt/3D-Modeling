@@ -560,6 +560,10 @@ export default function App() {
     setSelectedFace({ bodyId: id, kind: 'top' });
   };
 
+  /** Takes back the last corner placed (Backspace, or the undo button on a phone). */
+  const handleDrawUndoCorner = () =>
+    setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 && !d.frame ? null : d.planeY } : d));
+
   const handleDrawForm = (form: DrawForm) => setDraw((d) => (d ? { ...d, form, points: [], bends: [] } : d));
 
   /** Finish the corners placed so far (the green tick, or Enter). */
@@ -686,7 +690,7 @@ export default function App() {
         handleDrawDone();
       } else if (key === 'backspace' || key === 'delete') {
         e.preventDefault();
-        setDraw((d) => (d && d.points.length ? { ...d, points: d.points.slice(0, -1), bends: d.bends.slice(0, Math.max(0, d.points.length - 1)), planeY: d.points.length === 1 && !d.frame ? null : d.planeY } : d));
+        handleDrawUndoCorner();
       } else if (key === 'd') handleToggleDraw();
       return;
     }
@@ -832,6 +836,8 @@ export default function App() {
                   onDrawForm={handleDrawForm}
                   onDrawDone={handleDrawDone}
                   onDrawCancel={() => setDraw(null)}
+                  onDrawUndoCorner={handleDrawUndoCorner}
+                  onRepeatCancel={() => setRepeat(null)}
                   onDragStateChange={history.hold}
                   onHint={setHint}
                   moveOn={moveOn}

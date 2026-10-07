@@ -32,7 +32,8 @@ export interface DrawCallbacks {
 
 const ACCENT = '#8b7cf6';
 const ACCENT_LIGHT = '#a99dff';
-const TAP_SLOP = 5;
+/** How far a press may wander and still be a tap: a fingertip drifts more than a mouse. */
+const tapSlop = (e: { pointerType: string }) => (e.pointerType === 'touch' ? 10 : 5);
 const NO_SURFACE = 'Draw on the ground, the top of a shape, or one of its walls.';
 const LIFT = 0.6;
 
@@ -62,7 +63,7 @@ type Gesture =
   | { kind: 'point'; index: number; moved: boolean; id: number }
   | { kind: 'bend'; index: number; id: number }
   | { kind: 'form'; anchor: Point2D; planeY: number; current: Point2D; id: number }
-  | { kind: 'tap'; x: number; y: number; id: number };
+  | { kind: 'tap'; x: number; y: number; id: number; slop: number };
 
 /**
  * Sketching on the ground or on the top of a shape. Tap to place corners, drag a corner to move it, drag a side to curve it,
@@ -283,7 +284,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
       return grab({ kind: 'form', anchor: a, planeY: surface.y, current: a, id: e.pointerId }, e);
     }
     // Empty space: a tap places a corner; a drag is left to the camera.
-    gesture = { kind: 'tap', x: e.clientX, y: e.clientY, id: e.pointerId };
+    gesture = { kind: 'tap', x: e.clientX, y: e.clientY, id: e.pointerId, slop: tapSlop(e) };
   };
 
   const grab = (g: Gesture, e: PointerEvent) => {
@@ -335,7 +336,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
       return;
     }
     if (gesture?.kind === 'tap') {
-      if (Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > TAP_SLOP) gesture = null; // it is a camera drag
+      if (Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > gesture.slop) gesture = null; // it is a camera drag
       return;
     }
     // Hovering (mouse): show where a tap would land.
@@ -371,7 +372,7 @@ export function createDrawTool(api: DrawApi, getSession: () => DrawSession | nul
       const o = s.form === 'rectangle' ? rectangleOutline(g.anchor, g.current) : circleOutline(g.anchor, g.current);
       if (o) cb.finish(o, g.planeY, s.frame);
       else redraw();
-    } else if (g.kind === 'tap' && Math.hypot(e.clientX - g.x, e.clientY - g.y) <= TAP_SLOP) {
+    } else if (g.kind === 'tap' && Math.hypot(e.clientX - g.x, e.clientY - g.y) <= g.slop) {
       const surface = s.planeY !== null ? { y: s.planeY, frame: s.frame } : surfaceAt(e.clientX, e.clientY);
       if (!surface) {
         cb.notify(NO_SURFACE);

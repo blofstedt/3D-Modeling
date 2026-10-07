@@ -224,7 +224,7 @@ export default function TopBar(props: TopBarProps) {
         <IconButton icon={Redo2} label="Redo (⇧⌘Z)" onClick={props.onRedo} />
       </div>
 
-      <div className="flex-1 min-w-0 overflow-x-auto no-scrollbar">
+      <div className="flex-1 min-w-0 overflow-x-auto no-scrollbar [mask-image:linear-gradient(to_right,black_calc(100%-16px),transparent)]">
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={mode}

@@ -138,7 +138,7 @@ export default function BottomBar(props: BottomBarProps) {
       };
 
   return (
-    <nav aria-label="Tools" className="shrink-0 h-16 bg-slate-900 border-t border-white/8 z-40 flex items-center justify-evenly sm:justify-center sm:gap-1.5 px-2 sm:px-3">
+    <nav aria-label="Tools" className="shrink-0 h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] bg-slate-900 border-t border-white/8 z-40 flex items-center justify-evenly sm:justify-center sm:gap-1.5 px-2 sm:px-3">
       <MenuButton id="shapes" openId={props.openId} setOpenId={props.setOpenId} label="Shape" icon={Shapes} placement="up" title="Add a shape" stackedOnMobile>
         <div className="p-3 w-[min(19rem,calc(100vw-1.5rem))]">
           <p className="px-2 pb-2 text-xs text-slate-400">{props.addOnTop ? 'Adds on top of the selected face' : 'Add a shape'}</p>
