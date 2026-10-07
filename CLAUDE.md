@@ -64,22 +64,20 @@ Run `lint` and `test` before committing. UI changes need to be tried in the brow
 
 ## Roadmap (agreed direction, not yet built)
 
-### 1. Repeat along a path — make it direct and truly equally spaced
+### 1. Repeat along a path — direct, equally spaced (first version built)
 
-Today (`RepeatPatternModal`, `calculateLinearPattern/CurvedPattern`, `App.handleApplyPattern`) it is a modal
-dialog; the path is a 2-point line or one quadratic curve drawn on the ground only; there is no live preview;
-copies are loose shapes that can't be edited afterwards; and curved spacing samples equal *Bezier parameter*
-steps, so copies are **not** equally spaced along a curve. Target behaviour:
+Built: `R` opens ghost copies on the shape with no dialog (`utils/repeat.ts`, `RepeatChip`, the preview effect in
+`ModelViewer3D`). Spacing is by arc length (checked in `scripts/geometry-check.ts`). Drag the end dot, drag the
+middle dot to bend, `− +` count, type a gap, **Around** (circle), **Turn** (follow the path). Enter keeps the
+copies as ordinary shapes, all selected; Esc cancels; one Undo reverses it.
 
-- Select a shape → **Repeat** → ghost copies appear immediately beside it with two handles: drag the end to
-  set the line, drag the middle to bend it, drag the count dot (or tap its number) to change how many. No dialog.
-- Spacing is by **arc length**, and the user picks the meaning on the object: *N copies fit between the ends* or
-  *a fixed gap* (drag to resize the gap, copies fill the path). Optional: turn copies to follow the path.
-- The path can be any rail, not just a custom line: tap an existing edge, a drawn path or a shape outline
-  and the copies follow it. Circular repeat (around a point) is a first-class path, not an extra feature.
-- The repeat stays **live**: store `{source, path, count/gap, follow}` so changing the source, path or
-  count updates every copy; a tap on "Make independent" bakes them to plain shapes.
-- Works in 3D (path may rise/fall), not only on the ground plane.
+Still to do:
+- Keep the repeat **live** after Done: store `{source, path, count/gap, follow}` so editing the source or path
+  updates every copy; "Make independent" bakes them to plain shapes.
+- Use any existing edge, drawn path or outline as the rail (tap it) instead of only a line/curve/circle.
+- Paths that rise and fall (3D), not only on the ground plane.
+- "Turn" pivots about the shape's bounding-box centre; very asymmetric shapes may want a pivot handle.
+- Reuse geometry across identical copies for large counts (max is 60 today).
 
 ### 2. Draw tool — Tinkercad's, but with paths that behave
 

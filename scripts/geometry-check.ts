@@ -10,6 +10,8 @@ import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isW
 import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
+import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, withSpacing } from '../src/utils/repeat';
+import { RepeatSession } from '../src/types';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -212,6 +214,32 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   const cyl = body({ ...withOutline({ points: rect(-20, -20, 20, 20) }, { cornerRadii: [20, 20, 20, 20] }) });
   const ends = wallEnds(cyl, 0);
   check('a cylinder wall still has handle ends', !!ends && Math.hypot(ends.b.x - ends.a.x, ends.b.y - ends.a.y) > 30);
+}
+
+
+// Repeat: copies are equally spaced along the path, on curves too.
+{
+  const base = defaultSession(body({ id: 'r' }));
+  check('default repeat has the original plus copies in a row', stops(base).length === 4 && stops(base).every((p) => near(p.y, 0, 0.01)));
+  const gaps = (s: RepeatSession) => stops(s).slice(1).map((p, i) => Math.hypot(p.x - stops(s)[i].x, p.y - stops(s)[i].y));
+  const line = gaps(base);
+  check('straight repeat gaps are equal', line.every((g) => near(g, line[0], 0.01)), line.join(','));
+  const bent: RepeatSession = { ...base, count: 9, bend: bendThrough(base, { x: base.start.x + (base.end.x - base.start.x) / 2, y: 90 }) };
+  const arc = stops(bent).slice(1).map((p, i) => Math.hypot(p.x - stops(bent)[i].x, p.y - stops(bent)[i].y));
+  // Chords of an even-arc split are near-equal; a split by curve parameter is visibly lumpy.
+  check('curved repeat gaps are equal along the curve', Math.max(...arc) - Math.min(...arc) < 0.02 * Math.max(...arc), arc.join(','));
+  const last = stops(bent)[8];
+  check('the last copy lands on the path end', near(last.x, bent.end.x, 0.2) && near(last.y, bent.end.y, 0.2));
+  const wider = withSpacing(bent, spacing(bent) * 2);
+  check('typing a gap stretches the path', near(spacing(wider), spacing(bent) * 2, 0.5), `${spacing(wider)} vs ${spacing(bent) * 2}`);
+  const ring: RepeatSession = { ...base, kind: 'around', end: { x: 0, y: 100 }, count: 6, start: { x: 0, y: 0 } };
+  const rs = stops(ring);
+  check('around puts every copy on one circle', rs.every((p) => near(Math.hypot(p.x, p.y - 100), 100, 0.01)));
+  check('around spreads the copies evenly', near(Math.hypot(rs[1].x - rs[0].x, rs[1].y - rs[0].y), 100, 0.01));
+  const src = body({ id: 'r' });
+  const copies = makeCopies(src, { ...base, follow: false }, 1);
+  check('copies keep the shape and move only', copies.length === 3 && near(copies[0].points[0].x - src.points[0].x, spacing(base), 0.01) && copies[0].extrusionHeight === src.extrusionHeight);
+  check('copy transforms match the copy count', copyTransforms(ring).length === 5);
 }
 
 if (failures) {

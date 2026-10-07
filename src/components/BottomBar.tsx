@@ -65,6 +65,8 @@ interface BottomBarProps {
   onGroup: () => void;
   onJoin: () => void;
   onSubtract: () => void;
+  /** A repeat is open: the tool shows as on and pressing it keeps the copies. */
+  repeatOn: boolean;
   onPattern: () => void;
   onDelete: () => void;
 }
@@ -86,7 +88,7 @@ export default function BottomBar(props: BottomBarProps) {
   const tools: Tool[] = [
     { label: 'Move', key: 'M', icon: Move3d, onClick: props.onToggleMove, active: props.moveOn, disabled: selectedCount < 1, hint: 'Select a shape' },
     { label: props.grouped ? 'Ungroup' : 'Group', key: 'G', icon: props.grouped ? Ungroup : Boxes, onClick: props.onGroup, disabled: !props.grouped && selectedCount < 2, hint: 'Hold a shape to add it' },
-    { label: 'Repeat', key: 'R', icon: Repeat, onClick: props.onPattern, disabled: selectedCount < 1, hint: 'Select a shape' },
+    { label: 'Repeat', key: 'R', icon: Repeat, onClick: props.onPattern, active: props.repeatOn, disabled: !props.repeatOn && selectedCount < 1, hint: 'Select a shape' },
   ];
   const organize: Tool[] = [
     { label: 'Join', key: 'J', icon: Combine, onClick: props.onJoin, disabled: selectedCount < 2, hint: 'Hold a shape to add it' },

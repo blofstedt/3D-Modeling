@@ -87,17 +87,22 @@ export interface ShapeGroup {
   joined?: boolean;
 }
 
-export interface RepeatConfig {
-  type: 'linear' | 'curved';
+/** An open Repeat: the shape being copied and the path its copies follow, edited live until Done. */
+export interface RepeatSession {
+  bodyId: string;
+  /** `path`: along a line (bent by `bend`). `around`: round the circle centred on `end` that passes through `start`. */
+  kind: 'path' | 'around';
+  /** Centre of the original shape. */
+  start: Point2D;
+  /** End of the path, or the centre of the circle. */
+  end: Point2D;
+  /** Control point of the curve; null keeps the path straight. */
+  bend: Point2D | null;
+  /** Number of shapes including the original. */
   count: number;
-  startPoint: Point2D | null;
-  controlPoint: Point2D | null;
-  endPoint: Point2D | null;
-  followCurve: boolean;
-  isDrawingLine: boolean;
-  drawingStep: 'start' | 'end' | 'curve' | 'done';
+  /** Turn each copy to face along the path. */
+  follow: boolean;
 }
-
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {

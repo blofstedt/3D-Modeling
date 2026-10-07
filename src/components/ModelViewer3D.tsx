@@ -6,21 +6,22 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { AnimatePresence, motion } from 'motion/react';
-import { BevelPicker, MeasureReadout } from './FloatingControls';
+import { BevelPicker, MeasureReadout, RepeatChip } from './FloatingControls';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatConfig } from '../types';
+import { BevelStyle, Body3D, EdgeSel, FaceSel, MATERIAL_PRESETS, Point2D, RepeatSession } from '../types';
 import { buildBodyGeometry, buildBodyShape, featureEdges, getInteriorAnchor } from '../utils/bodyGeometry';
 import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } from '../utils/faces';
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
-import { BodyTransform, scaleBodyAbout, selectionBounds } from '../utils/transform';
+import { BodyTransform, scaleBodyAbout, selectionBounds, transformBody } from '../utils/transform';
+import { bendHandle, bendThrough, copyTransforms, stops } from '../utils/repeat';
 import ViewCube, { CubeFace } from './ViewCube';
 
-type GizmoKind = 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'scale-corner' | 'edge-size' | 'rotate' | 'move-axis';
+type GizmoKind = 'repeat-end' | 'repeat-bend' | 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'scale-corner' | 'edge-size' | 'rotate' | 'move-axis';
 type Axis = 'x' | 'y' | 'z';
 
 type Hit =
@@ -29,7 +30,9 @@ type Hit =
   | { type: 'body'; bodyId: string; point: THREE.Vector3; face: FaceSel };
 
 interface Drag {
-  kind: 'height' | 'bottom' | 'wall' | 'corner' | 'edge-size' | 'move' | 'rotate' | 'axis';
+  kind: 'height' | 'bottom' | 'wall' | 'corner' | 'edge-size' | 'move' | 'rotate' | 'axis' | 'repeat';
+  /** Which repeat handle is being dragged. */
+  repeatHandle?: 'end' | 'bend';
   startClientY: number;
   startClientX?: number;
   /** Furthest the pointer travelled from where it went down (px): tells a tap from a drag. */
@@ -83,8 +86,10 @@ export interface ModelViewer3DProps {
   selectedFace: FaceSel | null;
   onSelectFace: (face: FaceSel | null) => void;
   onEdgeChange: (edges: EdgeSel[], patch: { size?: number; style?: BevelStyle }) => void;
-  repeatConfig: RepeatConfig;
-  onUpdateRepeatConfig: React.Dispatch<React.SetStateAction<RepeatConfig>>;
+  /** The open Repeat, drawn as ghost copies with handles; null when none. */
+  repeat: RepeatSession | null;
+  onUpdateRepeat: React.Dispatch<React.SetStateAction<RepeatSession | null>>;
+  onFinishRepeat: () => void;
   /** Fired when a drag starts/ends so the app can treat it as a single undo step. */
   onDragStateChange?: (dragging: boolean) => void;
   /** One line saying what the pointer is over and what dragging it will do. */
@@ -283,8 +288,9 @@ export default function ModelViewer3D({
   selectedFace,
   onSelectFace,
   onEdgeChange,
-  repeatConfig,
-  onUpdateRepeatConfig,
+  repeat,
+  onUpdateRepeat,
+  onFinishRepeat,
   onDragStateChange,
   onHint,
   moveOn,
@@ -307,6 +313,8 @@ export default function ModelViewer3D({
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** Where the floating panel is pinned: a world point, plus how far above it (px) the card floats. */
   const anchorRef = useRef<{ pos: THREE.Vector3; lift: number } | null>(null);
+  const repeatAnchorRef = useRef<THREE.Vector3 | null>(null);
+  const repeatChipRef = useRef<HTMLDivElement | null>(null);
   const mmPerPixelRef = useRef<() => number>(() => 1);
   const tipRef = useRef(0);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -353,13 +361,14 @@ export default function ModelViewer3D({
     selectedEdges,
     selectedFace,
     onSelectFace,
-    repeatConfig,
+    repeat,
     onSelectBody,
     onUpdateBody,
     onTransformBodies,
     onSelectEdges,
     onEdgeChange,
-    onUpdateRepeatConfig,
+    onUpdateRepeat,
+    onFinishRepeat,
     onDragStateChange,
     onHint,
     moveOn,
@@ -563,6 +572,12 @@ export default function ModelViewer3D({
     const resolveHit = (clientX: number, clientY: number): Hit | null => {
       setRay(clientX, clientY);
 
+      if (live.current.repeat) {
+        const handleHit = raycaster.intersectObjects(previewGroup.children, true).find((h) => h.object.userData.repeatHandle || h.object.parent?.userData.repeatHandle);
+        const handle = handleHit && (handleHit.object.userData.repeatHandle ? handleHit.object : handleHit.object.parent!);
+        return handle ? { type: 'gizmo', gizmo: handle.userData.repeatHandle === 'end' ? 'repeat-end' : 'repeat-bend' } : null;
+      }
+
       if (gizmoGroup.visible && gizmoGroup.children.length) {
         const gizmoHit = raycaster.intersectObjects(gizmoGroup.children, true)[0];
         if (gizmoHit) {
@@ -577,11 +592,9 @@ export default function ModelViewer3D({
         }
       }
 
-      if (!live.current.repeatConfig.isDrawingLine) {
-        const sel = pickEdge(clientX, clientY);
-        if (sel) return { type: 'edge', sel };
-        setRay(clientX, clientY);
-      }
+      const sel = pickEdge(clientX, clientY);
+      if (sel) return { type: 'edge', sel };
+      setRay(clientX, clientY);
 
       const hit = raycaster.intersectObjects(bodyGroup.children, true)[0];
       if (!hit) return null;
@@ -636,7 +649,7 @@ export default function ModelViewer3D({
     refreshOutlinesRef.current = refreshOutlines;
 
     const idleHint = () => {
-      if (live.current.repeatConfig.isDrawingLine) return 'Click the ground or a corner to place the pattern path';
+      if (live.current.repeat) return 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels';
       if (live.current.moveOn && live.current.selectedBodyIds.length) return 'Drag an arrow to move along X, Y or Z · two-finger tap to hide';
       const f = live.current.selectedFace;
       if (f) return 'Drag the highlighted face (or its arrow) to extrude it · drag the rest of the shape to move it';
@@ -657,8 +670,10 @@ export default function ModelViewer3D({
 
       let cursor = 'default';
       let text = idleHint();
-      if (live.current.repeatConfig.isDrawingLine) cursor = 'crosshair';
-      else if (hit?.type === 'gizmo') {
+      if (hit?.type === 'gizmo' && (hit.gizmo === 'repeat-end' || hit.gizmo === 'repeat-bend')) {
+        cursor = 'grab';
+        text = hit.gizmo === 'repeat-end' ? 'Drag to set where the copies end' : 'Drag to bend the path';
+      } else if (hit?.type === 'gizmo') {
         cursor = hit.gizmo === 'move-axis' ? (hit.axis === 'z' ? 'ns-resize' : 'ew-resize') : hit.gizmo === 'extrude-height' || hit.gizmo === 'extrude-bottom' || hit.gizmo === 'edge-size' ? 'ns-resize' : 'grab';
         text =
           hit.gizmo === 'move-axis'
@@ -733,7 +748,7 @@ export default function ModelViewer3D({
       controls.enabled = false;
       renderer.domElement.setPointerCapture(pointerId);
       // Show only the handle being dragged; the rest would be stale until the edit lands.
-      gizmoGroup.visible = d.kind === 'height' || d.kind === 'bottom' || d.kind === 'edge-size' || d.kind === 'axis';
+      gizmoGroup.visible = d.kind === 'repeat' || d.kind === 'height' || d.kind === 'bottom' || d.kind === 'edge-size' || d.kind === 'axis';
       helperGroup.visible = d.kind === 'edge-size';
       if (d.kind === 'height' || d.kind === 'bottom') gizmoGroup.children.forEach((c) => (c.visible = c === heightArrowRef.current));
       setHoverEdge(null);
@@ -800,6 +815,13 @@ export default function ModelViewer3D({
       const body = bodyOf(hit.bodyId);
       const common = { startClientY: e.clientY, startClientX: e.clientX, mmPerPixel: mmPerPixel() };
       switch (hit.gizmo) {
+        case 'repeat-end':
+        case 'repeat-bend': {
+          const r = live.current.repeat;
+          const src = bodyOf(r?.bodyId);
+          if (!r || !src) return null;
+          return { ...common, kind: 'repeat', repeatHandle: hit.gizmo === 'repeat-end' ? 'end' : 'bend', planeY: (src.elevation ?? 0) + src.extrusionHeight };
+        }
         case 'extrude-height':
           return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
         case 'move-axis': {
@@ -870,6 +892,31 @@ export default function ModelViewer3D({
       let text = '';
       lowerQualityWhileBusy();
       if (d.startClientX !== undefined) d.moved = Math.max(d.moved ?? 0, Math.hypot(m.x - d.startClientX, m.y - d.startClientY));
+
+      if (d.kind === 'repeat') {
+        const p = intersectPlane(m.x, m.y, d.planeY ?? 0);
+        const r = live.current.repeat;
+        if (p && r) {
+          let at: Point2D = { x: Math.round(p.x), y: Math.round(-p.z) };
+          if (m.shift) {
+            // Shift keeps the path to 15° steps from the original.
+            const ang = Math.round(Math.atan2(at.y - r.start.y, at.x - r.start.x) / (Math.PI / 12)) * (Math.PI / 12);
+            const len = Math.hypot(at.x - r.start.x, at.y - r.start.y);
+            at = { x: Math.round(r.start.x + len * Math.cos(ang)), y: Math.round(r.start.y + len * Math.sin(ang)) };
+          } else {
+            // Snap to a corner of another shape when close.
+            live.current.bodies.forEach((b) => b.id !== r.bodyId && b.points.forEach((pt) => { if (Math.hypot(pt.x - at.x, pt.y - at.y) < 8) at = { x: pt.x, y: pt.y }; }));
+          }
+          const here = at;
+          live.current.onUpdateRepeat((cur) => {
+            if (!cur) return cur;
+            if (d.repeatHandle === 'end') return { ...cur, end: here, bend: cur.bend ? cur.bend : null };
+            return { ...cur, bend: bendThrough(cur, here) };
+          });
+        }
+        invalidate();
+        return;
+      }
 
       if (d.kind === 'height') {
         const next = clamp(Math.round(d.initialHeight! + (d.startClientY - m.y) * d.mmPerPixel), 2, 600);
@@ -1039,30 +1086,6 @@ export default function ModelViewer3D({
     };
 
     // ---- Pointer pipeline -------------------------------------------------
-    const handleRepeatClick = (clientX: number, clientY: number) => {
-      const point = intersectPlane(clientX, clientY, 0);
-      if (!point) return;
-      let snap: Point2D = { x: Math.round(point.x), y: Math.round(-point.z) };
-      live.current.bodies.forEach((b) =>
-        b.points.forEach((pt) => {
-          if (Math.hypot(pt.x - snap.x, pt.y - snap.y) < 25) snap = { x: pt.x, y: pt.y };
-        })
-      );
-      const cfg = live.current.repeatConfig;
-      const update = live.current.onUpdateRepeatConfig;
-      if (cfg.drawingStep === 'start') {
-        update((p) => ({ ...p, startPoint: snap, drawingStep: 'end' }));
-      } else if (cfg.drawingStep === 'end') {
-        update((p) =>
-          cfg.type === 'curved'
-            ? { ...p, endPoint: snap, drawingStep: 'curve' }
-            : { ...p, endPoint: snap, isDrawingLine: false, drawingStep: 'done' }
-        );
-      } else if (cfg.drawingStep === 'curve') {
-        update((p) => ({ ...p, controlPoint: snap, isDrawingLine: false, drawingStep: 'done' }));
-      }
-    };
-
     // Press and hold another shape while something is selected: add it to the selection (hold a selected one to drop it).
     let longPress = 0;
     let longFired = false;
@@ -1103,10 +1126,9 @@ export default function ModelViewer3D({
         return;
       }
       if (e.button !== 0) return;
-      const drawing = live.current.repeatConfig.isDrawingLine;
-      const hit = drawing ? null : resolveHit(e.clientX, e.clientY);
+      const hit = resolveHit(e.clientX, e.clientY);
       candidate = { x: e.clientX, y: e.clientY, hit, pointerId: e.pointerId };
-      if (drawing || !hit) return; // empty space: let OrbitControls take it
+      if (!hit) return; // empty space: let OrbitControls take it
 
       if (hit.type === 'gizmo') {
         const d = startGizmoDrag(hit, e);
@@ -1214,10 +1236,7 @@ export default function ModelViewer3D({
       if (cancelled || !down || down.pointerId !== e.pointerId) return;
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_SLOP_PX) return; // it was an orbit/pan
 
-      if (live.current.repeatConfig.isDrawingLine) {
-        handleRepeatClick(e.clientX, e.clientY);
-        return;
-      }
+      if (live.current.repeat) return; // taps do nothing while copies are being placed
 
       const multi = e.shiftKey || e.metaKey || e.ctrlKey;
       const hit = down.hit;
@@ -1293,6 +1312,9 @@ export default function ModelViewer3D({
           box.expandByPoint(new THREE.Vector3(p.x, lo + b.extrusionHeight, -p.y));
         });
       });
+      // While copies are being placed, frame them too so the whole row is in view.
+      const r = live.current.repeat;
+      if (r) stops(r).forEach((p) => box.expandByPoint(new THREE.Vector3(p.x, 0, -p.y)));
       if (!any) box.set(new THREE.Vector3(-100, 0, -100), new THREE.Vector3(100, 50, 100));
 
       const center = box.getCenter(new THREE.Vector3());
@@ -1347,6 +1369,19 @@ export default function ModelViewer3D({
     resizeObserver.observe(container);
 
     const placePanel = () => {
+      const chip = repeatChipRef.current;
+      const ra = repeatAnchorRef.current;
+      if (chip && ra) {
+        // The repeat pill sits under the original shape, clear of the path and its handles.
+        const v = ra.clone().project(camera);
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        const x = clamp((v.x * 0.5 + 0.5) * w - chip.offsetWidth / 2, 8, Math.max(8, w - chip.offsetWidth - 8));
+        let y = (-v.y * 0.5 + 0.5) * h + 22;
+        y = clamp(y, 8, Math.max(8, h - chip.offsetHeight - 8));
+        chip.style.transform = `translate(${x}px, ${y}px)`;
+        chip.style.visibility = v.z > 1 || !live.current.repeat ? 'hidden' : 'visible';
+      }
       const el = panelRef.current;
       const anchor = anchorRef.current;
       if (!el) return;
@@ -1510,6 +1545,12 @@ export default function ModelViewer3D({
     refreshOutlinesRef.current();
   }, [selectedBodyId, selectedBodyIds, isSceneReady]);
 
+  const repeating = !!repeat;
+  // Opening a repeat brings the whole row into view; dragging it afterwards never moves the camera.
+  useEffect(() => {
+    if (repeating && isSceneReady) frameViewRef.current('keep');
+  }, [repeating, isSceneReady]);
+
   // ---- Handles for what is selected ---------------------------------------
   useLayoutEffect(() => {
     const gizmoGroup = gizmoGroupRef.current;
@@ -1519,6 +1560,11 @@ export default function ModelViewer3D({
     clearGroup(helperGroup);
     heightArrowRef.current = null;
     anchorRef.current = null;
+    if (repeating) {
+      // While copies are placed the shape's own handles step aside so the path handles are the only thing to grab.
+      invalidateRef.current();
+      return;
+    }
 
     const ids = selectedBodyIds.length ? selectedBodyIds : selectedBodyId ? [selectedBodyId] : [];
     const picked = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
@@ -1790,41 +1836,82 @@ export default function ModelViewer3D({
       gizmoGroup.children.forEach((c) => c.scale.setScalar(0.0001));
     }
     invalidateRef.current();
-  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, moveOn, isSceneReady]);
+  }, [bodies, selectedBodyId, selectedBodyIds, selectedEdges, selectedFace, moveOn, isSceneReady, repeating]);
 
-  // ---- Pattern path preview ----------------------------------------------
+  // ---- Repeat preview: ghost copies, the path and its two handles -----------
   useEffect(() => {
     const group = previewGroupRef.current;
     if (!isSceneReady || !group) return;
     clearGroup(group);
+    const src = repeat && bodies.find((b) => b.id === repeat.bodyId);
+    if (!repeat || !src) {
+      invalidateRef.current();
+      return;
+    }
 
-    const { startPoint, endPoint, controlPoint, type, isDrawingLine, drawingStep } = repeatConfig;
-    if (isDrawingLine || drawingStep === 'done') {
-      const toWorld = (p: Point2D) => new THREE.Vector3(p.x, 0.6, -p.y);
-      const markerMat = shared(new THREE.MeshBasicMaterial({ color: ACCENT, depthTest: false }));
-      [startPoint, controlPoint, endPoint].forEach((p) => {
-        if (!p) return;
-        const m = new THREE.Mesh(HANDLE.dot, markerMat);
-        m.scale.setScalar(3.2);
-        m.position.copy(toWorld(p));
-        m.renderOrder = 40;
-        group.add(m);
-      });
-      if (startPoint && endPoint) {
-        const curve =
-          type === 'curved' && controlPoint
-            ? new THREE.QuadraticBezierCurve3(toWorld(startPoint), toWorld(controlPoint), toWorld(endPoint))
-            : new THREE.LineCurve3(toWorld(startPoint), toWorld(endPoint));
-        const line = new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(curve.getPoints(48)),
-          new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false })
+    const top = (src.elevation ?? 0) + src.extrusionHeight;
+    const at = (p: Point2D, lift = 0.6) => new THREE.Vector3(p.x, top + lift, -p.y);
+    const fillMat = shared(new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide }));
+    const edgeMat = shared(new THREE.LineBasicMaterial({ color: ACCENT_LIGHT, transparent: true, opacity: 0.9 }));
+
+    // Ghost of every copy: its top face outline, lightly filled, placed with the same move the real copy will get.
+    copyTransforms(repeat).forEach((t) => {
+      const pts = transformBody(src, t).points!;
+      const fill = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, p.y)))), fillMat);
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.y = top + 0.4;
+      fill.renderOrder = 37;
+      const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts.map((p) => at(p, 0.5))), edgeMat);
+      edge.renderOrder = 38;
+      group.add(fill, edge);
+    });
+
+    // The path itself.
+    const toWorld = (p: Point2D) => at(p);
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 64; i++) {
+      const u = i / 64;
+      if (repeat.kind === 'around') {
+        const r = Math.hypot(repeat.start.x - repeat.end.x, repeat.start.y - repeat.end.y);
+        const a0 = Math.atan2(repeat.start.y - repeat.end.y, repeat.start.x - repeat.end.x);
+        pts.push(toWorld({ x: repeat.end.x + r * Math.cos(a0 + u * 2 * Math.PI), y: repeat.end.y + r * Math.sin(a0 + u * 2 * Math.PI) }));
+      } else {
+        const c = repeat.bend;
+        const v = 1 - u;
+        pts.push(
+          toWorld(
+            c
+              ? { x: v * v * repeat.start.x + 2 * v * u * c.x + u * u * repeat.end.x, y: v * v * repeat.start.y + 2 * v * u * c.y + u * u * repeat.end.y }
+              : { x: repeat.start.x + (repeat.end.x - repeat.start.x) * u, y: repeat.start.y + (repeat.end.y - repeat.start.y) * u }
+          )
         );
-        line.renderOrder = 39;
-        group.add(line);
       }
     }
+    const pathLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: ACCENT, depthTest: false }));
+    pathLine.renderOrder = 39;
+    group.add(pathLine);
+
+    // Handles: where the copies end (or the circle's centre), and the middle of the path to bend it.
+    const sizeNow = Math.max(...src.points.map((p) => Math.hypot(p.x - repeat.start.x, p.y - repeat.start.y)), 10);
+    const s = clamp(sizeNow / 22, 0.7, 2.4);
+    const addHandle = (kind: 'end' | 'bend', p: Point2D, color: string) => {
+      const h = new THREE.Group();
+      h.position.copy(at(p));
+      h.userData.repeatHandle = kind;
+      const knob = new THREE.Mesh(HANDLE.dot, handleMaterial(color));
+      knob.scale.setScalar(3.4 * s);
+      knob.renderOrder = 42;
+      const hit = new THREE.Mesh(HANDLE.dot, hiddenMaterial);
+      hit.scale.setScalar(9 * s);
+      h.add(knob, hit);
+      group.add(h);
+    };
+    addHandle('end', repeat.end, '#ffffff');
+    if (repeat.kind === 'path') addHandle('bend', bendHandle(repeat), ACCENT_LIGHT);
+    repeatAnchorRef.current = new THREE.Vector3(repeat.start.x, 0, -repeat.start.y);
+    placePanelRef.current();
     invalidateRef.current();
-  }, [repeatConfig, isSceneReady]);
+  }, [repeat, bodies, isSceneReady]);
 
   useEffect(() => setPickerOpen(false), [selectedEdges]);
 
@@ -1850,14 +1937,14 @@ export default function ModelViewer3D({
   useLayoutEffect(() => {
     invalidateRef.current();
     placePanelRef.current();
-  }, [pickerOpen, readout?.key, isSceneReady]);
+  }, [pickerOpen, readout?.key, isSceneReady, repeat?.count, repeat?.kind]);
 
   // The idle hint depends on selection; hover text takes over while the pointer is over something.
   useEffect(() => {
     clearHoverRef.current();
     onHint?.(
-      repeatConfig.isDrawingLine
-        ? 'Click the ground or a corner to place the pattern path'
+      repeat
+        ? 'Drag a dot to place the copies · − + sets how many · Enter keeps them · Esc cancels'
         : moveOn && selectedBodyIds.length
           ? 'Drag an arrow to move along X, Y or Z · two-finger tap to hide'
           : selectedFace
@@ -1866,7 +1953,7 @@ export default function ModelViewer3D({
           ? 'Drag to move · hold another shape to add it · arrow = height · dots = walls · ring = rotate'
           : 'Click a shape to select it · drag empty space to orbit'
     );
-  }, [selectedBodyIds, selectedFace, moveOn, repeatConfig.isDrawingLine, onHint]);
+  }, [selectedBodyIds, selectedFace, moveOn, repeating, onHint]);
 
   const pickerBody = selectedEdges.length ? bodies.find((b) => b.id === selectedEdges[0].bodyId) : undefined;
   const pickerStyle: BevelStyle = pickerBody ? edgeStyle(pickerBody, selectedEdges.find((e) => e.kind !== 'corner') ?? selectedEdges[0]) ?? 'round' : 'round';
@@ -1920,6 +2007,12 @@ export default function ModelViewer3D({
           />
         </svg>
       )}
+
+      <div ref={repeatChipRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
+        <AnimatePresence>
+          {repeat && <RepeatChip session={repeat} onChange={onUpdateRepeat as (fn: (s: RepeatSession) => RepeatSession) => void} onDone={onFinishRepeat} />}
+        </AnimatePresence>
+      </div>
 
       <div ref={panelRef} className="absolute left-0 top-0 z-20 will-change-transform" style={{ visibility: 'hidden' }}>
         <AnimatePresence mode="wait">

@@ -29,6 +29,7 @@ There are no tools to pick. Point at something and drag it; the cursor and a hin
 | Rotate it | Drag the ring around it (`Shift` snaps to 15°) |
 | Bevel an edge | Tap an edge (it lights up, and the touch area is generous). **Tap it again** to widen to the whole rim, once more to go back to one edge. **Press and hold** another edge to add it (hold a selected one to drop it); `Shift`-click works on a desktop. Or tap a face and press **Edges** to select every edge around it. The top bar's **Select** menu picks all top edges, bottom edges, vertical corners or every edge. Then tap the yellow dot, press Curved or Flat and drag: every selected edge gets the same bevel and size |
 | Round one corner | Click the vertical corner line the same way |
+| Repeat a shape | Select it and press **Repeat** (`R`). Ghost copies appear at once, equally spaced. Drag the white dot to set where they end, the lilac dot to bend the path, `−` / `+` for how many, the gap box to type an exact distance, **Around** to circle the shape, **Turn** to face along the path. `Enter` or the tick keeps them (one Undo removes them all), `Esc` cancels |
 | Delete | Delete in the bottom bar (asks first), or `Del` |
 | Look around | Drag empty space to orbit, right-drag to pan, scroll to zoom |
 
@@ -42,7 +43,7 @@ list. Everything else disappears from the 3D view until you press `I` or *Show a
 Escape steps back one level at a time: edge, face, selection, isolation.
 
 Tools (bottom bar): Move `M`, Group `G`, Isolate `I`, Hide `H`, Join `J` (stick the selected shapes together into one solid, each keeping its own height), Subtract `S`
-(select 2+ shapes; the one you picked last is cut out of the others, but only where they overlap in height), Repeat `R`. Grouped shapes select and move together.
+(select 2+ shapes; the one you picked last is cut out of the others, but only where they overlap in height), Repeat `R` (see the table). Grouped shapes select and move together.
 
 Also: `⌘/Ctrl+Z` undo, `⇧⌘Z` redo, `⌘D` duplicate, `Del` delete (or remove the selected bevels).
 
@@ -67,9 +68,9 @@ src/
     FloatingControls.tsx  edge bevel panel pinned to the selected edge
     Sidebar.tsx           content of the bar menus: properties, material, scene list, export
     ViewCube.tsx          orientation cube
-    *Modal.tsx            cut and pattern dialogs
   utils/
-    geometry.ts           polygon booleans, corner rounding, patterns
+    geometry.ts           polygon booleans, corner rounding
+    repeat.ts             equally spaced copies along a line, curve or circle
     primitives.ts         stock shapes (box, cylinder, triangle, hexagon)
     outline.ts            corner rounding, edge runs (a body = base outline + radii)
     edges.ts              pickable edges, per-edge bevel edits

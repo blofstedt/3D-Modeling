@@ -11,7 +11,7 @@ import {
   EdgeSel,
   FaceSel,
   Point2D,
-  RepeatConfig,
+  RepeatSession,
   ShapeGroup,
   SWATCHES,
 } from './types';
@@ -20,9 +20,9 @@ import Sidebar from './components/Sidebar';
 import BottomBar from './components/BottomBar';
 import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
-import RepeatPatternModal from './components/RepeatPatternModal';
 import { useHistory } from './hooks/useHistory';
-import { cutShape, getPolygonSignedArea, mergeShapes, calculateLinearPattern, calculateCurvedPattern } from './utils/geometry';
+import { cutShape, getPolygonSignedArea, mergeShapes } from './utils/geometry';
+import { defaultSession, makeCopies } from './utils/repeat';
 import { withOutline } from './utils/outline';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { joinBodies } from './utils/join';
@@ -140,18 +140,8 @@ export default function App() {
 
   /** Shapes waiting on the "Delete?" confirmation. */
   const [confirmDeleteIds, setConfirmDeleteIds] = useState<string[] | null>(null);
-  const [isRepeatModalOpen, setIsRepeatModalOpen] = useState(false);
-
-  const [repeatConfig, setRepeatConfig] = useState<RepeatConfig>({
-    type: 'linear',
-    count: 4,
-    startPoint: null,
-    controlPoint: null,
-    endPoint: null,
-    followCurve: true,
-    isDrawingLine: false,
-    drawingStep: 'start',
-  });
+  /** The open Repeat: ghost copies stay editable on the shape until it is finished or cancelled. */
+  const [repeat, setRepeat] = useState<RepeatSession | null>(null);
 
   // Toasts
   const [toast, setToast] = useState<string | null>(null);
@@ -171,10 +161,10 @@ export default function App() {
     [bodies, isolatedIds]
   );
 
-  // Once the pattern path has been drawn in the viewport, bring the dialog back to finish the job.
+  // A repeat can't outlive the shape it copies (deleted or undone away).
   useEffect(() => {
-    if (repeatConfig.drawingStep === 'done' && !repeatConfig.isDrawingLine) setIsRepeatModalOpen(true);
-  }, [repeatConfig.drawingStep, repeatConfig.isDrawingLine]);
+    if (repeat && !bodies.some((b) => b.id === repeat.bodyId)) setRepeat(null);
+  }, [bodies, repeat]);
 
   // Drop selections and isolation that no longer exist (after delete / undo).
   useEffect(() => {
@@ -479,12 +469,20 @@ export default function App() {
   );
 
   // ---- Commands -------------------------------------------------------------
+  /** Repeat opens ghost copies right on the shape; pressing it again (or Enter) keeps them. */
   const handleOpenRepeat = () => {
-    if (!selectedBodyId) {
+    if (repeat) {
+      handleFinishRepeat();
+      return;
+    }
+    if (!selectedBody) {
       notify('Select the shape you want to repeat first.');
       return;
     }
-    setIsRepeatModalOpen(true);
+    setSelectedFace(null);
+    setSelectedEdges([]);
+    setMoveOn(false);
+    setRepeat(defaultSession(selectedBody));
   };
 
   const handleGroupSelected = () => {
@@ -541,52 +539,19 @@ export default function App() {
     notify(`Joined ${targets.length} shapes into one.`);
   };
 
-  const handleApplyPattern = (config: RepeatConfig) => {
-    if (!selectedBody) return;
-
-    const n = selectedBody.points.length;
-    const cx = selectedBody.points.reduce((acc, p) => acc + p.x, 0) / n;
-    const cy = selectedBody.points.reduce((acc, p) => acc + p.y, 0) / n;
-
-    const hasPath = config.startPoint && config.endPoint;
-    const sp = hasPath ? config.startPoint! : { x: Math.round(cx), y: Math.round(cy) };
-    const ep = hasPath ? config.endPoint! : { x: Math.round(cx + 180), y: Math.round(cy) };
-
-    const count = Math.max(2, config.count);
-    const transforms =
-      config.type === 'curved' && config.controlPoint
-        ? calculateCurvedPattern(sp, config.controlPoint, ep, count)
-        : calculateLinearPattern(sp, ep, count);
-
-    const stamp = Date.now();
-    const copies: Body3D[] = [];
-    for (let i = 1; i < transforms.length; i++) {
-      // Optionally turn each copy to follow the path tangent, pivoting around the shape's centre.
-      const angle = config.followCurve && config.type === 'curved' ? transforms[i].angle - transforms[0].angle : 0;
-      copies.push({
-        ...selectedBody,
-        ...transformBody(selectedBody, { dx: transforms[i].x - cx, dy: transforms[i].y - cy, dz: 0, angle, cx, cy }),
-        id: `body_repeat_${stamp}_${i}`,
-        name: `${selectedBody.name} copy ${i}`,
-        groupId: undefined,
-        createdAt: new Date().toISOString(),
-      });
+  const handleFinishRepeat = () => {
+    const source = repeat && bodies.find((b) => b.id === repeat.bodyId);
+    if (!repeat || !source) {
+      setRepeat(null);
+      return;
     }
-
+    const copies = makeCopies(source, repeat, Date.now()).map((c) => ({ ...c, groupId: source.groupId }));
+    setRepeat(null);
     setBodies((prev) => [...prev, ...copies]);
     setIsolatedIds((prev) => (prev ? [...prev, ...copies.map((c) => c.id)] : prev));
-    notify(`Created ${copies.length} copies along a ${config.type} path.`);
-  };
-
-  const handleStartDrawingRepeatLine = () => {
-    setRepeatConfig((prev) => ({
-      ...prev,
-      isDrawingLine: true,
-      drawingStep: 'start',
-      startPoint: null,
-      controlPoint: null,
-      endPoint: null,
-    }));
+    // The whole row stays selected, so it can be moved or deleted as one straight away.
+    selectMany([source.id, ...copies.map((c) => c.id)]);
+    notify(`Made ${copies.length} copies. Undo (⌘Z) takes them back.`);
   };
 
   const handleClearWorkspace = () => {
@@ -664,18 +629,22 @@ export default function App() {
     if (key === 'escape') {
       // One step back each time: close dialogs, drop edge picks, deselect, show everything.
       if (openMenu) setOpenMenu(null);
-      else if (confirmDeleteIds || isRepeatModalOpen) {
-        setConfirmDeleteIds(null);
-        setIsRepeatModalOpen(false);
-          } else if (repeatConfig.isDrawingLine) {
-        setRepeatConfig((p) => ({ ...p, isDrawingLine: false, drawingStep: 'start' }));
-      } else if (selectedEdges.length) setSelectedEdges([]);
+      else if (confirmDeleteIds) setConfirmDeleteIds(null);
+      else if (repeat) setRepeat(null);
+      else if (selectedEdges.length) setSelectedEdges([]);
       else if (selectedFace) setSelectedFace(null);
       else if (selectedBodyIds.length) selectOnly(null);
       else if (isolatedIds) isolate(null);
       return;
     }
-    if (confirmDeleteIds || isRepeatModalOpen) return;
+    if (confirmDeleteIds) return;
+    if (repeat) {
+      if (key === 'enter' || key === 'r') {
+        e.preventDefault();
+        handleFinishRepeat();
+      }
+      return; // everything else waits until the repeat is finished
+    }
 
     switch (key) {
       case 'm':
@@ -792,8 +761,9 @@ export default function App() {
                   selectedFace={selectedFace}
                   onSelectFace={setSelectedFace}
                   onEdgeChange={handleEdgeChange}
-                  repeatConfig={repeatConfig}
-                  onUpdateRepeatConfig={setRepeatConfig}
+                  repeat={repeat}
+                  onUpdateRepeat={setRepeat}
+                  onFinishRepeat={handleFinishRepeat}
                   onDragStateChange={history.hold}
                   onHint={setHint}
                   moveOn={moveOn}
@@ -917,6 +887,7 @@ export default function App() {
         }}
         onJoin={handleMergeSelected}
         onSubtract={handleSubtractSelected}
+        repeatOn={!!repeat}
         onPattern={handleOpenRepeat}
         onDelete={() => requestDelete()}
       />
@@ -933,20 +904,6 @@ export default function App() {
             })()}
             onConfirm={() => handleDeleteSelected(confirmDeleteIds)}
             onCancel={() => setConfirmDeleteIds(null)}
-          />
-        )}
-        {isRepeatModalOpen && selectedBody && (
-          <RepeatPatternModal
-            key="repeat"
-            onClose={() => setIsRepeatModalOpen(false)}
-            selectedBody={selectedBody}
-            repeatConfig={repeatConfig}
-            setRepeatConfig={setRepeatConfig}
-            onStartDrawingLine={() => {
-              setIsRepeatModalOpen(false);
-              handleStartDrawingRepeatLine();
-            }}
-            onApplyPattern={handleApplyPattern}
           />
         )}
       </AnimatePresence>
