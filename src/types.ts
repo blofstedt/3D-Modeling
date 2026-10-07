@@ -62,6 +62,8 @@ export interface Body3D {
   visible: boolean;
   createdAt: string;
   groupId?: string;
+  /** Set on a derived copy made by a live repeat: the id of the shape it follows. Never edited directly. */
+  repeatOf?: string;
 }
 
 /** A selectable edge of a body: a top or bottom edge loop, or a vertical corner edge. */
@@ -102,7 +104,12 @@ export interface RepeatSession {
   count: number;
   /** Turn each copy to face along the path. */
   follow: boolean;
+  /** Set once the repeat is kept: it then lives in the document and its copies follow the source. */
+  linkId?: string;
 }
+
+/** A kept repeat. The copies it makes are derived: they are rebuilt whenever the source or the path changes. */
+export type RepeatLink = RepeatSession & { linkId: string };
 
 export const MATERIAL_PRESETS: MaterialPreset[] = [
   {

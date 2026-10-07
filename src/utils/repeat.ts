@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Body3D, Point2D, RepeatSession } from '../types';
+import { Body3D, Point2D, RepeatLink, RepeatSession } from '../types';
 import { BodyTransform, selectionBounds, transformBody } from './transform';
 
 const SAMPLES = 240;
@@ -131,15 +131,70 @@ export function bendHandle(s: RepeatSession): Point2D {
   return c ? { x: (s.start.x + 2 * c.x + s.end.x) / 4, y: (s.start.y + 2 * c.y + s.end.y) / 4 } : { x: (s.start.x + s.end.x) / 2, y: (s.start.y + s.end.y) / 2 };
 }
 
-/** The finished copies of `body`, ready to add to the scene. */
-export function makeCopies(body: Body3D, s: RepeatSession, stamp: number): Body3D[] {
+/** The copies of `body` along `s`, with ids that stay the same every time they are rebuilt. */
+export function makeCopies(body: Body3D, s: RepeatSession, idPrefix: string | number): Body3D[] {
   return copyTransforms(s).map((t, i) => ({
     ...body,
     ...transformBody(body, t),
-    id: `body_repeat_${stamp}_${i + 1}`,
+    id: `${idPrefix}_${i + 1}`,
     name: `${body.name} ${i + 2}`,
-    createdAt: new Date().toISOString(),
+    groupId: undefined,
+    repeatOf: body.id,
+    createdAt: body.createdAt,
   }));
+}
+
+/** `ids` plus every live-repeat copy that follows one of them: what moves or turns when the shape does. */
+export function withCopies(ids: string[], bodies: Body3D[]): string[] {
+  if (!bodies.some((b) => b.repeatOf)) return ids;
+  const set = new Set(ids);
+  return [...new Set([...ids, ...bodies.filter((b) => b.repeatOf && set.has(b.repeatOf)).map((b) => b.id)])];
+}
+
+const round2b = (n: number) => Math.round(n * 100) / 100;
+
+/** The same rigid move/turn a body gets, applied to a repeat's path so the whole row travels with its shape. */
+export function transformLink<T extends RepeatSession>(link: T, t: BodyTransform): T {
+  const cos = Math.cos(t.angle);
+  const sin = Math.sin(t.angle);
+  const move = (p: Point2D): Point2D => {
+    const rx = p.x - t.cx;
+    const ry = p.y - t.cy;
+    return { x: round2b(t.cx + rx * cos - ry * sin + t.dx), y: round2b(t.cy + rx * sin + ry * cos + t.dy) };
+  };
+  return { ...link, start: move(link.start), end: move(link.end), bend: link.bend ? move(link.bend) : null };
+}
+
+const cache = new Map<string, { source: Body3D; link: RepeatLink; copies: Body3D[] }>();
+
+/**
+ * Makes the copies match their repeats: rebuilds them from the source shape and the path, keeping their ids.
+ * A repeat whose source has gone (joined, deleted) lets go of its copies, which stay as ordinary shapes.
+ */
+export function syncRepeats(bodies: Body3D[], repeats: RepeatLink[]): { bodies: Body3D[]; repeats: RepeatLink[] } {
+  if (!repeats.length && !bodies.some((b) => b.repeatOf)) return { bodies, repeats };
+  const base = bodies.filter((b) => !b.repeatOf);
+  const byId = new Map(base.map((b) => [b.id, b]));
+  const kept: RepeatLink[] = [];
+  const derived: Body3D[] = [];
+  const followed = new Set<string>();
+  for (const link of repeats) {
+    const source = byId.get(link.bodyId);
+    if (!source || followed.has(source.id)) continue;
+    followed.add(source.id);
+    // The path is anchored to the shape's centre: when the shape grows on one side or moves, the path follows.
+    const c = selectionBounds([source])!;
+    const shift = { x: c.centerX - link.start.x, y: c.centerY - link.start.y };
+    let l = link;
+    if (Math.abs(shift.x) > 0.011 || Math.abs(shift.y) > 0.011) l = transformLink(link, { dx: shift.x, dy: shift.y, dz: 0, angle: 0, cx: 0, cy: 0 });
+    const hit = cache.get(l.linkId);
+    const copies = hit && hit.source === source && hit.link === l ? hit.copies : makeCopies(source, l, l.linkId);
+    cache.set(l.linkId, { source, link: l, copies });
+    kept.push(l);
+    derived.push(...copies);
+  }
+  const loose = bodies.filter((b) => b.repeatOf && !followed.has(b.repeatOf)).map((b) => ({ ...b, repeatOf: undefined }));
+  return { bodies: [...base, ...loose, ...derived], repeats: kept };
 }
 
 /** Switches a path repeat to going round a circle, keeping about the same gap between copies. */

@@ -11,6 +11,7 @@ import {
   EdgeSel,
   FaceSel,
   Point2D,
+  RepeatLink,
   RepeatSession,
   ShapeGroup,
   SWATCHES,
@@ -22,7 +23,7 @@ import TopBar from './components/TopBar';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
 import { useHistory } from './hooks/useHistory';
 import { cutShape, getPolygonSignedArea, mergeShapes } from './utils/geometry';
-import { defaultSession, makeCopies } from './utils/repeat';
+import { defaultSession, syncRepeats, transformLink } from './utils/repeat';
 import { withOutline } from './utils/outline';
 import { extrudeFace, setFaceMeasure } from './utils/faces';
 import { joinBodies } from './utils/join';
@@ -48,7 +49,15 @@ import {
 interface Doc {
   bodies: Body3D[];
   groups: ShapeGroup[];
+  /** Kept repeats: their copies are derived from the source shape and rebuilt on every change. */
+  repeats: RepeatLink[];
 }
+
+/** Settles a document: live-repeat copies are always rebuilt to match their source and path. */
+const settle = (d: Doc): Doc => {
+  const synced = syncRepeats(d.bodies, d.repeats);
+  return synced.bodies === d.bodies && synced.repeats === d.repeats ? d : { ...d, ...synced };
+};
 
 const STORAGE_KEY = 'craft3d:document:v3';
 
@@ -79,12 +88,12 @@ const loadInitialDoc = (): Doc => {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Doc;
-      if (Array.isArray(parsed.bodies) && Array.isArray(parsed.groups)) return parsed;
+      if (Array.isArray(parsed.bodies) && Array.isArray(parsed.groups)) return settle({ ...parsed, repeats: Array.isArray(parsed.repeats) ? parsed.repeats : [] });
     }
   } catch {
     // storage unavailable or corrupt: fall through to the starter scene
   }
-  return { bodies: createStarterBodies(), groups: [] };
+  return { bodies: createStarterBodies(), groups: [], repeats: [] };
 };
 
 const isTypingTarget = (target: EventTarget | null) => {
@@ -98,8 +107,15 @@ const isTypingTarget = (target: EventTarget | null) => {
 };
 
 export default function App() {
-  const [doc, setDoc] = useState<Doc>(loadInitialDoc);
-  const { bodies, groups } = doc;
+  const [doc, setDocRaw] = useState<Doc>(loadInitialDoc);
+  const { bodies, groups, repeats } = doc;
+
+  /** Every document change goes through here so repeat copies never fall out of step with their source. */
+  const setDoc = useCallback(
+    (update: Partial<Doc> | ((d: Doc) => Partial<Doc>)) =>
+      setDocRaw((d) => settle({ ...d, ...(typeof update === 'function' ? update(d) : update) })),
+    []
+  );
 
   const setBodies = useCallback(
     (update: Body3D[] | ((prev: Body3D[]) => Body3D[])) =>
@@ -112,7 +128,7 @@ export default function App() {
     []
   );
 
-  const history = useHistory(doc, setDoc);
+  const history = useHistory(doc, setDocRaw);
 
   // Autosave
   useEffect(() => {
@@ -155,10 +171,16 @@ export default function App() {
 
   const bodyCounter = useRef(bodies.length);
 
+  const editingRepeatOf = repeat?.bodyId ?? null;
+
   // Isolation hides the rest of the scene from the viewport.
   const displayBodies = useMemo(
-    () => (isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id)) : bodies),
-    [bodies, isolatedIds]
+    () => {
+      // Isolating a shape keeps its live copies; while its repeat is being edited, ghosts stand in for them.
+      const shown = isolatedIds ? bodies.filter((b) => isolatedIds.includes(b.id) || (!!b.repeatOf && isolatedIds.includes(b.repeatOf))) : bodies;
+      return editingRepeatOf ? shown.filter((b) => b.repeatOf !== editingRepeatOf) : shown;
+    },
+    [bodies, isolatedIds, editingRepeatOf]
   );
 
   // A repeat can't outlive the shape it copies (deleted or undone away).
@@ -239,9 +261,13 @@ export default function App() {
   const transformBodies = useCallback(
     (ids: string[], t: BodyTransform) => {
       const set = new Set(ids);
-      setBodies((prev) => prev.map((b) => (set.has(b.id) ? { ...b, ...transformBody(b, t) } : b)));
+      // Copies of a live repeat are rebuilt from their shape, so only the shape and its path are moved.
+      setDoc((d) => ({
+        bodies: d.bodies.map((b) => (set.has(b.id) && !b.repeatOf ? { ...b, ...transformBody(b, t) } : b)),
+        repeats: d.repeats.map((l) => (set.has(l.bodyId) ? transformLink(l, t) : l)),
+      }));
     },
-    [setBodies]
+    [setDoc]
   );
 
   const requestDelete = (targets: string[] = selectedBodyIds) => {
@@ -290,7 +316,11 @@ export default function App() {
     if (!targets.length) return;
     const ids = new Set(targets);
     const label = targets.length === 1 ? bodies.find((b) => b.id === targets[0])?.name ?? 'shape' : `${ids.size} shapes`;
-    setBodies((prev) => prev.filter((body) => !ids.has(body.id)));
+    // A shape takes the copies of its live repeat with it.
+    setDoc((d) => ({
+      bodies: d.bodies.filter((body) => !ids.has(body.id) && !(body.repeatOf && ids.has(body.repeatOf))),
+      repeats: d.repeats.filter((l) => !ids.has(l.bodyId)),
+    }));
     setGroups((prev) =>
       prev
         .map((g) => ({ ...g, bodyIds: g.bodyIds.filter((bid) => !ids.has(bid)) }))
@@ -482,7 +512,8 @@ export default function App() {
     setSelectedFace(null);
     setSelectedEdges([]);
     setMoveOn(false);
-    setRepeat(defaultSession(selectedBody));
+    // A shape that already repeats opens its own repeat for editing; any other starts a fresh one.
+    setRepeat(repeats.find((l) => l.bodyId === selectedBody.id) ?? defaultSession(selectedBody));
   };
 
   const handleGroupSelected = () => {
@@ -539,24 +570,32 @@ export default function App() {
     notify(`Joined ${targets.length} shapes into one.`);
   };
 
+  /** Keeps the repeat: from now on its copies follow the shape and the path. */
   const handleFinishRepeat = () => {
     const source = repeat && bodies.find((b) => b.id === repeat.bodyId);
     if (!repeat || !source) {
       setRepeat(null);
       return;
     }
-    const copies = makeCopies(source, repeat, Date.now()).map((c) => ({ ...c, groupId: source.groupId }));
+    const link: RepeatLink = { ...repeat, linkId: repeat.linkId ?? `rep_${Date.now()}` };
+    const fresh = !repeat.linkId;
     setRepeat(null);
-    setBodies((prev) => [...prev, ...copies]);
-    setIsolatedIds((prev) => (prev ? [...prev, ...copies.map((c) => c.id)] : prev));
-    // The whole row stays selected, so it can be moved or deleted as one straight away.
-    selectMany([source.id, ...copies.map((c) => c.id)]);
-    notify(`Made ${copies.length} copies. Undo (⌘Z) takes them back.`);
+    setDoc((d) => ({ repeats: [...d.repeats.filter((l) => l.linkId !== link.linkId), link] }));
+    selectOnly(source.id);
+    notify(fresh ? `${link.count} shapes in a row. Edit the first and the rest follow.` : 'Repeat updated.');
+  };
+
+  /** Lets go of a live repeat: its copies stay, as ordinary shapes you can edit one by one. */
+  const handleBreakRepeat = () => {
+    const ids = new Set(selectedBodyIds);
+    if (!repeats.some((l) => ids.has(l.bodyId))) return;
+    setDoc((d) => ({ repeats: d.repeats.filter((l) => !ids.has(l.bodyId)) }));
+    notify('The copies are now separate shapes.');
   };
 
   const handleClearWorkspace = () => {
     if (window.confirm('Remove every shape and start from an empty workspace?')) {
-      setDoc({ bodies: [], groups: [] });
+      setDoc({ bodies: [], groups: [], repeats: [] });
       selectOnly(null);
       setIsolatedIds(null);
       notify('Workspace cleared. Press ⌘Z to bring it back.');
@@ -565,7 +604,7 @@ export default function App() {
 
   const handleLoadDemo = () => {
     const starter = createStarterBodies();
-    setDoc({ bodies: starter, groups: [] });
+    setDoc({ bodies: starter, groups: [], repeats: [] });
     selectOnly(starter[0].id);
     setIsolatedIds(null);
     notify('Loaded the starter block.');
@@ -888,6 +927,8 @@ export default function App() {
         onJoin={handleMergeSelected}
         onSubtract={handleSubtractSelected}
         repeatOn={!!repeat}
+        repeated={selectedBodyIds.some((id) => repeats.some((l) => l.bodyId === id))}
+        onBreakRepeat={handleBreakRepeat}
         onPattern={handleOpenRepeat}
         onDelete={() => requestDelete()}
       />

@@ -25,6 +25,7 @@ import {
   SquareRoundCorner,
   Star,
   Trash2,
+  Unlink,
   Triangle,
   TriangleRight,
   type LucideIcon,
@@ -67,6 +68,9 @@ interface BottomBarProps {
   onSubtract: () => void;
   /** A repeat is open: the tool shows as on and pressing it keeps the copies. */
   repeatOn: boolean;
+  /** The selected shape has a live repeat, so Organize can let its copies go. */
+  repeated: boolean;
+  onBreakRepeat: () => void;
   onPattern: () => void;
   onDelete: () => void;
 }
@@ -95,6 +99,7 @@ export default function BottomBar(props: BottomBarProps) {
     { label: 'Subtract', key: 'S', icon: SquareMinus, onClick: props.onSubtract, disabled: selectedCount < 2, hint: 'Hold a shape to add it' },
     { label: props.isolated ? 'Show everything' : 'Isolate', key: 'I', icon: Focus, onClick: props.onIsolate, active: props.isolated, disabled: !props.isolated && selectedCount < 1, hint: 'Select a shape' },
     { label: 'Hide', key: 'H', icon: EyeOff, onClick: props.onHide, disabled: selectedCount < 1, hint: 'Select a shape' },
+    ...(props.repeated ? [{ label: 'Make copies separate', key: '', icon: Unlink, onClick: props.onBreakRepeat } as Tool] : []),
     ...(props.hiddenCount > 0 ? [{ label: `Show hidden (${props.hiddenCount})`, key: '', icon: Eye, onClick: props.onShowHidden } as Tool] : []),
   ];
   const deleteTool: Tool = { label: 'Delete', key: 'Del', icon: Trash2, onClick: props.onDelete, disabled: selectedCount < 1, hint: 'Select a shape', danger: true };

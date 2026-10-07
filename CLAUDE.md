@@ -64,20 +64,26 @@ Run `lint` and `test` before committing. UI changes need to be tried in the brow
 
 ## Roadmap (agreed direction, not yet built)
 
-### 1. Repeat along a path — direct, equally spaced (first version built)
+### 1. Repeat along a path — direct, equally spaced, live (built)
 
-Built: `R` opens ghost copies on the shape with no dialog (`utils/repeat.ts`, `RepeatChip`, the preview effect in
-`ModelViewer3D`). Spacing is by arc length (checked in `scripts/geometry-check.ts`). Drag the end dot, drag the
-middle dot to bend, `− +` count, type a gap, **Around** (circle), **Turn** (follow the path). Enter keeps the
-copies as ordinary shapes, all selected; Esc cancels; one Undo reverses it.
+`R` opens ghost copies on the shape with no dialog (`utils/repeat.ts`, `RepeatChip`, the preview effect in
+`ModelViewer3D`). Spacing is by arc length. Drag the end dot, drag the middle dot to bend, `− +` count, type a
+gap, **Around** (circle), **Turn** (follow the path). Enter keeps it, Esc cancels.
+
+A kept repeat is **live**: it is stored in `Doc.repeats` and its copies (`Body3D.repeatOf`) are *derived* —
+`syncRepeats` rebuilds them on every document change (all changes go through `setDoc` in `App.tsx`; never write
+copies directly). Rules that keep it obvious: tapping/dragging a copy acts on the source (the viewer maps the hit);
+moving/turning carries the path with it; the path stays anchored to the source's centre; deleting the source
+deletes its copies; if the source disappears another way (join, subtract) the copies stay as plain shapes;
+**Organize → Make copies separate** breaks the link on purpose. Pressing Repeat on a repeated shape edits it.
 
 Still to do:
-- Keep the repeat **live** after Done: store `{source, path, count/gap, follow}` so editing the source or path
-  updates every copy; "Make independent" bakes them to plain shapes.
 - Use any existing edge, drawn path or outline as the rail (tap it) instead of only a line/curve/circle.
 - Paths that rise and fall (3D), not only on the ground plane.
 - "Turn" pivots about the shape's bounding-box centre; very asymmetric shapes may want a pivot handle.
-- Reuse geometry across identical copies for large counts (max is 60 today).
+- Performance with many bevelled copies: every source edit rebuilds each copy's geometry (copies share the
+  source's outline, so cache one build and transform it). Max is 60 copies today.
+- Duplicate (⌘D) on a repeated shape copies the shape only, not its row.
 
 ### 2. Draw tool — Tinkercad's, but with paths that behave
 

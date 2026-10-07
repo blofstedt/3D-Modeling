@@ -10,8 +10,8 @@ import { applyEdgeChange, edgeSize, edgesAroundFace, edgesOfKind, findBevel, isW
 import { faceMeasure, setFaceMeasure } from '../src/utils/faces';
 import { resizeBody, transformBody } from '../src/utils/transform';
 import { joinBodies } from '../src/utils/join';
-import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, withSpacing } from '../src/utils/repeat';
-import { RepeatSession } from '../src/types';
+import { bendThrough, copyTransforms, defaultSession, makeCopies, spacing, stops, syncRepeats, transformLink, withCopies, withSpacing } from '../src/utils/repeat';
+import { RepeatLink, RepeatSession } from '../src/types';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -237,9 +237,34 @@ check('join of overlapping boxes is one polygon', overlap.length === 1 && near(M
   check('around puts every copy on one circle', rs.every((p) => near(Math.hypot(p.x, p.y - 100), 100, 0.01)));
   check('around spreads the copies evenly', near(Math.hypot(rs[1].x - rs[0].x, rs[1].y - rs[0].y), 100, 0.01));
   const src = body({ id: 'r' });
-  const copies = makeCopies(src, { ...base, follow: false }, 1);
+  const copies = makeCopies(src, { ...base, follow: false }, 'x');
   check('copies keep the shape and move only', copies.length === 3 && near(copies[0].points[0].x - src.points[0].x, spacing(base), 0.01) && copies[0].extrusionHeight === src.extrusionHeight);
   check('copy transforms match the copy count', copyTransforms(ring).length === 5);
+}
+
+
+// Live repeats: copies follow the source, and the path travels with it.
+{
+  const src = body({ id: 'src' });
+  const link: RepeatLink = { ...defaultSession(src), linkId: 'L' };
+  const first = syncRepeats([src], [link]);
+  check('a live repeat makes its copies', first.bodies.length === 4 && first.bodies.slice(1).every((b) => b.repeatOf === 'src'));
+  const again = syncRepeats(first.bodies, first.repeats);
+  check('syncing again changes nothing', again.bodies.length === 4 && again.bodies[1] === first.bodies[1], 'copy objects are reused');
+  const taller = syncRepeats(first.bodies.map((b) => (b.id === 'src' ? { ...b, extrusionHeight: 90 } : b)), first.repeats);
+  check('editing the source updates every copy', taller.bodies.slice(1).every((b) => b.extrusionHeight === 90));
+  const moved = { ...src, ...transformBody(src, { dx: 25, dy: 10, dz: 0, angle: 0, cx: 0, cy: 0 }) };
+  const row = syncRepeats(first.bodies.map((b) => (b.id === 'src' ? moved : b)), first.repeats);
+  check('moving the source carries the path along', near(row.repeats[0].end.x, link.end.x + 25, 0.05) && near(row.repeats[0].end.y, link.end.y + 10, 0.05));
+  check('copy ids stay the same through edits', row.bodies.slice(1).map((b) => b.id).join() === first.bodies.slice(1).map((b) => b.id).join());
+  const fewer = syncRepeats(first.bodies, [{ ...first.repeats[0], count: 2, end: first.repeats[0].start }]);
+  check('a smaller count removes copies', fewer.bodies.length === 2);
+  const t = { dx: 0, dy: 0, dz: 0, angle: Math.PI / 2, cx: link.start.x, cy: link.start.y };
+  const turned = transformLink(link, t);
+  check('turning a repeat turns its path about the pivot', near(turned.end.x, link.start.x, 0.05) && near(turned.end.y, link.start.y + (link.end.x - link.start.x), 0.05));
+  const orphan = syncRepeats(first.bodies.filter((b) => b.id !== 'src'), first.repeats);
+  check('losing the source keeps the copies as plain shapes', orphan.bodies.length === 3 && orphan.bodies.every((b) => !b.repeatOf) && orphan.repeats.length === 0);
+  check('copies come along when the shape moves', withCopies(['src'], first.bodies).length === 4);
 }
 
 if (failures) {

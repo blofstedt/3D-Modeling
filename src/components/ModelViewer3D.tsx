@@ -18,7 +18,7 @@ import { bottomRange, faceMeasure, moveBottom, offsetWall, sameFace, wallBase } 
 import { DEFAULT_BEVEL_SIZE, EdgePath, MAX_BEVEL_SIZE, edgeKey, edgeSize, edgeStyle, edgesAroundFace, edgesOfKind, listEdges, primaryEdge, toggleEdge } from '../utils/edges';
 import { getBase, holeIndex, holeLoops, isHoleIndex, outwardNormal, wallEnds } from '../utils/outline';
 import { BodyTransform, scaleBodyAbout, selectionBounds, transformBody } from '../utils/transform';
-import { bendHandle, bendThrough, copyTransforms, stops } from '../utils/repeat';
+import { bendHandle, bendThrough, copyTransforms, stops, withCopies } from '../utils/repeat';
 import ViewCube, { CubeFace } from './ViewCube';
 
 type GizmoKind = 'repeat-end' | 'repeat-bend' | 'extrude-height' | 'extrude-bottom' | 'offset-wall' | 'scale-corner' | 'edge-size' | 'rotate' | 'move-axis';
@@ -504,7 +504,7 @@ export default function ModelViewer3D({
       const b = new THREE.Vector3();
 
       for (const body of live.current.bodies) {
-        if (!body.visible) continue;
+        if (!body.visible || body.repeatOf) continue; // a live copy is picked through its shape
         for (const edge of listEdges(body)) {
           let best = Infinity;
           let bestPoint: THREE.Vector3 | null = null;
@@ -601,8 +601,11 @@ export default function ModelViewer3D({
       let obj: THREE.Object3D | null = hit.object;
       while (obj && !obj.userData.bodyId) obj = obj.parent;
       if (!obj) return null;
-      const bodyId: string = obj.userData.bodyId;
-      return { type: 'body', bodyId, point: hit.point.clone(), face: faceAt(bodyId, hit) };
+      const hitId: string = obj.userData.bodyId;
+      const face = faceAt(hitId, hit);
+      // Touching a live copy is touching the shape it follows: that is the one that can be edited.
+      const bodyId = bodyOf(hitId)?.repeatOf ?? hitId;
+      return { type: 'body', bodyId, point: hit.point.clone(), face: { ...face, bodyId } };
     };
 
     // ---- Hover feedback ----------------------------------------------------
@@ -639,8 +642,9 @@ export default function ModelViewer3D({
     const refreshOutlines = () => {
       const { selectedBodyIds: ids, selectedBodyId: id } = live.current;
       entriesRef.current.forEach((entry, bodyId) => {
-        const selected = bodyId === id || ids.includes(bodyId);
-        const hovered = bodyId === hoverBodyId;
+        const root = entry.body.repeatOf ?? bodyId;
+        const selected = root === id || ids.includes(root);
+        const hovered = root === hoverBodyId;
         entry.outline.visible = selected || hovered;
         (entry.outline.material as THREE.LineBasicMaterial).opacity = selected ? 1 : 0.45;
       });
@@ -730,9 +734,9 @@ export default function ModelViewer3D({
     /** Bodies that move together when `id` is dragged: the selection if it includes it, else its group. */
     const movingSet = (id: string): string[] => {
       const { selectedBodyIds: sel, bodies: all } = live.current;
-      if (sel.includes(id)) return sel;
+      if (sel.includes(id)) return withCopies(sel, all);
       const group = all.find((b) => b.id === id)?.groupId;
-      return group ? all.filter((b) => b.groupId === group).map((b) => b.id) : [id];
+      return withCopies(group ? all.filter((b) => b.groupId === group).map((b) => b.id) : [id], all);
     };
 
     const restoreGizmos = () => {
@@ -825,7 +829,7 @@ export default function ModelViewer3D({
         case 'extrude-height':
           return body ? { ...common, kind: 'height', bodyId: body.id, initialHeight: body.extrusionHeight, nextHeight: body.extrusionHeight } : null;
         case 'move-axis': {
-          const ids = live.current.selectedBodyIds;
+          const ids = withCopies(live.current.selectedBodyIds, live.current.bodies);
           const picked = ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b);
           const bounds = selectionBounds(picked);
           if (!bounds || !hit.axis) return null;
@@ -857,7 +861,7 @@ export default function ModelViewer3D({
           return first ? { ...common, kind: 'edge-size', sels, initialSize: edgeSize(first, primaryEdge(sels)) } : null;
         }
         default: {
-          const ids = live.current.selectedBodyIds;
+          const ids = withCopies(live.current.selectedBodyIds, live.current.bodies);
           const bounds = selectionBounds(ids.map((i) => bodyOf(i)).filter((b): b is Body3D => !!b));
           if (!bounds) return null;
           const planeY = bounds.minElevation + 0.3;
@@ -1567,7 +1571,9 @@ export default function ModelViewer3D({
     }
 
     const ids = selectedBodyIds.length ? selectedBodyIds : selectedBodyId ? [selectedBodyId] : [];
-    const picked = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
+    const core = ids.map((id) => bodies.find((b) => b.id === id)).filter((b): b is Body3D => !!b && b.visible);
+    // The move arrows and the turning ring take in a shape's live copies; the shape's own handles are for the shape alone.
+    const picked = withCopies(core.map((b) => b.id), bodies).map((id) => bodies.find((b) => b.id === id)!).filter((b) => b.visible);
     if (!picked.length) {
       popRef.current = null;
       popKeyRef.current = '';
@@ -1646,7 +1652,7 @@ export default function ModelViewer3D({
     ring.add(ringLine, ringHit);
     gizmoGroup.add(ring);
 
-    const body = picked.length === 1 ? picked[0] : null;
+    const body = core.length === 1 ? core[0] : null;
     if (body) {
       const elev = body.elevation ?? 0;
       const top = elev + body.extrusionHeight;
